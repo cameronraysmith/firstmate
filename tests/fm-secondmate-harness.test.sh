@@ -1128,10 +1128,10 @@ reread_retry_report_path() {
 }
 
 reread_mode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %Lp "$1"
-  else
+  if fm_stat_is_gnu; then
     stat -c %a "$1"
+  else
+    stat -f %Lp "$1"
   fi
 }
 

@@ -265,6 +265,9 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STAT_LOG"
 case "$1 $2" in
+  # The capability probe asks a GNU stat this before trusting the -c forms
+  # below, so a fake claiming to be GNU has to answer it like one.
+  '-c %h') printf '1\n' ;;
   '-c %a') printf '600\n' ;;
   '-c %Y') printf '1783792800\n' ;;
   '-c %s') LC_ALL=C wc -c < "$3" | tr -d ' ' ;;
