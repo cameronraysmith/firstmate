@@ -154,6 +154,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$FM_DAEMON_DIR/fm-tmux-lib.sh"
 
+# shellcheck source=bin/fm-stat-lib.sh
+. "$FM_DAEMON_DIR/fm-stat-lib.sh"
+
 # shellcheck source=bin/fm-backend.sh
 . "$FM_DAEMON_DIR/fm-backend.sh"
 
@@ -229,10 +232,10 @@ AFK_FLAG_NAME=".afk"
 _state_root() { printf '%s' "${FM_STATE_OVERRIDE:-$FM_HOME/state}"; }
 
 # --- portable stat (same trap as fm-watch.sh: no `stat -f || stat -c`) -------
-if [ "$(uname)" = Darwin ]; then
-  _stat_file_mtime() { stat -f %m "$1" 2>/dev/null; }
-else
+if fm_stat_is_gnu; then
   _stat_file_mtime() { stat -c %Y "$1" 2>/dev/null; }
+else
+  _stat_file_mtime() { stat -f %m "$1" 2>/dev/null; }
 fi
 _now() { date +%s; }
 _file_age() {  # seconds since mtime; very large if missing

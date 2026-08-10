@@ -88,6 +88,8 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-stat-lib.sh
+. "$SCRIPT_DIR/fm-stat-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -100,19 +102,19 @@ WATCHER_STALE_GRACE=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
 # or starting the loop. Running it as a script executes the runtime exactly as
 # before, byte-for-byte.
 
-# Portable stat. macOS (BSD) stat uses `-f <fmt>`; Linux (GNU) stat uses `-c <fmt>`.
-# Do NOT use the `stat -f <fmt> ... || stat -c <fmt> ...` fallback form: on Linux
+# Portable stat. GNU stat uses `-c <fmt>`; BSD stat uses `-f <fmt>`.
+# Do NOT use the `stat -f <fmt> ... || stat -c <fmt> ...` fallback form: under GNU
 # `stat -f` is *filesystem* stat and writes a partial filesystem dump ("File: ...",
 # "Blocks: ...") to stdout before failing, so the fallback's correct output gets
 # appended to that garbage. Arithmetic under `set -u` then aborts on the stray
 # token (e.g. the word "File" read as an unset variable), which silently kills the
-# watcher mid-cycle. Detect the platform once and pick the right form.
-if [ "$(uname)" = Darwin ]; then
-  stat_mtime() { stat -f %m "$1" 2>/dev/null; }        # epoch seconds of mtime
-  stat_sig()   { stat -f '%z:%Fm' "$1" 2>/dev/null; }   # size:mtime signature
+# watcher mid-cycle. Ask the stat on PATH which form it speaks, once.
+if fm_stat_is_gnu; then
+  stat_mtime() { stat -c %Y "$1" 2>/dev/null; }        # epoch seconds of mtime
+  stat_sig()   { stat -c '%s:%Y' "$1" 2>/dev/null; }    # size:mtime signature
 else
-  stat_mtime() { stat -c %Y "$1" 2>/dev/null; }
-  stat_sig()   { stat -c '%s:%Y' "$1" 2>/dev/null; }
+  stat_mtime() { stat -f %m "$1" 2>/dev/null; }
+  stat_sig()   { stat -f '%z:%Fm' "$1" 2>/dev/null; }
 fi
 
 POLL=${FM_POLL:-15}                   # seconds between cycles

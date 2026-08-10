@@ -14,10 +14,10 @@ TMP_ROOT=$(fm_test_tmproot fm-secondmate-safety)
 export FM_BACKEND=tmux
 
 file_mode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %Lp "$1"
-  else
+  if fm_stat_is_gnu; then
     stat -c %a "$1"
+  else
+    stat -f %Lp "$1"
   fi
 }
 
