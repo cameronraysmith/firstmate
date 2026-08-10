@@ -14,12 +14,15 @@
 # identity-matched watcher is still required. The status fields here retain the
 # beacon-age details used in their messages.
 
-# Portable mtime; Linux stat lacks -f, macOS stat lacks -c.
+# shellcheck source=bin/fm-stat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-stat-lib.sh"
+
+# Portable mtime; GNU stat lacks -f's file semantics, BSD stat lacks -c.
 fm_sup_stat_mtime() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %m "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %Y "$1" 2>/dev/null
+  else
+    stat -f %m "$1" 2>/dev/null
   fi
 }
 
