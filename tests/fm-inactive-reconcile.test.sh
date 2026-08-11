@@ -15,20 +15,10 @@ FM_REAL_STAT_IS_GNU=0
 fm_stat_is_gnu && FM_REAL_STAT_IS_GNU=1
 export FM_REAL_STAT FM_REAL_STAT_IS_GNU
 
-set_mtime() { # <epoch> <path>
-  local epoch=$1 path=$2 stamp
-  if stamp=$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null); then
-    touch -t "$stamp" "$path"
-  else
-    stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S)
-    touch -t "$stamp" "$path"
-  fi
-}
-
 age() { # <path>...
   local path now
   now=$(( $(date +%s) - 120 ))
-  for path in "$@"; do set_mtime "$now" "$path"; done
+  for path in "$@"; do fm_test_set_mtime "$now" "$path" || fail "could not backdate $path"; done
 }
 
 make_tools() { # <world>
