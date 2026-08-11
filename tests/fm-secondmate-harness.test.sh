@@ -309,14 +309,15 @@ test_propagate_lib() {
   [ -f "$dest/trace-context" ] || fail "trace-context not propagated by the default inheritable set"
 
   # 2. idempotent: an unchanged re-run does not churn the mtime
-  m1=$(date -r "$dest/crew-harness" +%s 2>/dev/null || stat -c %Y "$dest/crew-harness")
+  m1=$(fm_test_file_mtime "$dest/crew-harness")
+  [ -n "$m1" ] || fail "could not read the propagated crew-harness mtime"
   sleep 1
   stdout="$d/unchanged.out"
   stderr="$d/unchanged.err"
   propagate_inheritable_config "$src" "$dest" >"$stdout" 2>"$stderr"
   [ ! -s "$stdout" ] || fail "unchanged propagation wrote to stdout"
   [ ! -s "$stderr" ] || fail "unchanged propagation wrote to stderr"
-  m2=$(date -r "$dest/crew-harness" +%s 2>/dev/null || stat -c %Y "$dest/crew-harness")
+  m2=$(fm_test_file_mtime "$dest/crew-harness")
   [ "$m1" = "$m2" ] || fail "idempotent re-run churned mtime ($m1 -> $m2)"
 
   # 3. a changed source value converges downstream
