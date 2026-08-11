@@ -46,6 +46,78 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=bin/fm-stat-lib.sh
 . "$ROOT/bin/fm-stat-lib.sh"
 
+# --- date(1) dialect and portable file timestamps ---------------------------
+#
+# Backdating a fixture file needs an epoch rendered as a `touch -t` stamp, and
+# that render is the one date(1) read whose flag differs by implementation: GNU
+# spells it `date -d @<epoch>` and BSD spells it `date -r <epoch>`. Tests must
+# not choose between them from `uname`, for the reason bin/fm-stat-lib.sh gives
+# for stat: a GNU coreutils date ahead of /bin/date on a macOS PATH answers only
+# the GNU form, so a Darwin-keyed fixture hands `-r` to a date that cannot read
+# it. Everything else these helpers need is already portable - `touch -t`,
+# `touch -mt`, and `date -r <file>` behave identically in both dialects.
+#
+# The GNU form is probed FIRST because the two directions are not symmetric.
+# Measured on 2026-08-11 against GNU coreutils date 9.7 and macOS /bin/date:
+#
+#   BSD  date -d @<epoch>  ->  "illegal option -- d", exit 1, nothing on stdout.
+#   GNU  date -r <epoch>   ->  reads <epoch> as a FILE NAME. With no such file it
+#                              exits 1 with nothing on stdout, but a file of that
+#                              name in the working directory makes it print THAT
+#                              file's mtime and exit 0 - a wrong answer no caller
+#                              can tell from a right one.
+#
+# So unlike GNU `stat -f`, neither direction dumps a report into the caller's
+# stream; the hazard is a silently wrong timestamp instead. Probing GNU first
+# removes it, because the BSD form is reached only once the GNU one has refused.
+#
+# The verdict is cached against the PATH it was resolved under, for the same
+# reason the stat probe caches that way: fixtures legitimately narrow PATH
+# mid-process, and the date found there can speak the other dialect.
+
+_fm_test_date_cache_valid() {
+  [ -n "${_FM_TEST_DATE_FLAVOR:-}" ] && [ "${_FM_TEST_DATE_FLAVOR_PATH-}" = "${PATH-}" ]
+}
+
+fm_test_date_detect() {
+  if date -d @0 +%Y >/dev/null 2>&1; then
+    _FM_TEST_DATE_FLAVOR=gnu
+  elif date -r 0 +%Y >/dev/null 2>&1; then
+    _FM_TEST_DATE_FLAVOR=bsd
+  else
+    _FM_TEST_DATE_FLAVOR=none
+    printf 'fm_test_date: no usable date(1) on PATH: neither the GNU -d @<epoch> form nor the BSD -r <epoch> form works\n' >&2
+  fi
+  _FM_TEST_DATE_FLAVOR_PATH=${PATH-}
+  [ "$_FM_TEST_DATE_FLAVOR" != none ]
+}
+
+fm_test_date_flavor() {
+  _fm_test_date_cache_valid || fm_test_date_detect || :
+  printf '%s\n' "$_FM_TEST_DATE_FLAVOR"
+  [ "$_FM_TEST_DATE_FLAVOR" != none ]
+}
+
+# fm_test_epoch_stamp <epoch>: echo <epoch> as the local-time stamp `touch -t`
+# takes. Nonzero, with the diagnostic above, when no date(1) can render it.
+fm_test_epoch_stamp() {
+  _fm_test_date_cache_valid || fm_test_date_detect || return 1
+  case "$_FM_TEST_DATE_FLAVOR" in
+    gnu) date -d "@$1" +%Y%m%d%H%M.%S ;;
+    bsd) date -r "$1" +%Y%m%d%H%M.%S ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_test_set_mtime <epoch> <file>: backdate (or forward-date) <file>'s mtime to
+# exactly <epoch>. This is the one call fixtures should use to age a status file,
+# a marker, or a beacon.
+fm_test_set_mtime() {
+  local stamp
+  stamp=$(fm_test_epoch_stamp "$1") || return 1
+  touch -mt "$stamp" "$2"
+}
+
 # fm_test_file_mtime <file>: echo <file>'s mtime in epoch seconds.
 fm_test_file_mtime() {
   if fm_stat_is_gnu; then
