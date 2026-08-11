@@ -125,19 +125,6 @@ file_mtime() {
   if fm_stat_is_gnu; then stat -c %Y "$1" 2>/dev/null; else stat -f %m "$1" 2>/dev/null; fi
 }
 
-# Set <file>'s mtime to exactly <epoch> seconds, for aging a busy-turn marker by
-# a precise amount (touch -t takes a local-time stamp, not an epoch, on both
-# platforms, so convert via BSD `date -r` or GNU `date -d @`).
-set_mtime() {  # <epoch> <file>
-  local epoch=$1 f=$2 stamp
-  if stamp=$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null); then
-    touch -t "$stamp" "$f"
-  else
-    stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S)
-    touch -t "$stamp" "$f"
-  fi
-}
-
 # Signature a primed .seen-* marker must hold so the per-poll signal scan does not
 # fire on a pre-existing status (mirrors fm-watch.sh's stat_sig exactly).
 seen_sig() {
@@ -161,7 +148,7 @@ seen_sig() {
 # Busy-turn-age fixtures create/backdate turn-ended directly (there is no real
 # harness touching it), so without this the marker's own first sighting would
 # fire an unrelated "signal:" wake and mask the busy-turn-age assertion under
-# test. Call again after any further touch/set_mtime on the same file.
+# test. Call again after any further touch/fm_test_set_mtime on the same file.
 prime_turnend_seen() {  # <file>
   local f=$1 base
   base=$(basename "$f" | tr '.' '_')
@@ -481,9 +468,9 @@ test_crew_worktree_written_since_classifier() {
   anchor="$state/anchor"; wt="$dir/wt"; home="$dir/mate-home"; statedir_wt="$dir/wt-with-state"
   mkdir -p "$wt/src" "$wt/.git/objects"
   printf 'old\n' > "$wt/src/existing.c"
-  set_mtime "$(( $(date +%s) - 300 ))" "$wt/src/existing.c"
+  fm_test_set_mtime "$(( $(date +%s) - 300 ))" "$wt/src/existing.c" || fail "could not set mtime on $wt/src/existing.c"
   : > "$anchor"
-  set_mtime "$(( $(date +%s) - 120 ))" "$anchor"
+  fm_test_set_mtime "$(( $(date +%s) - 120 ))" "$anchor" || fail "could not set mtime on $anchor"
 
   # No recorded worktree at all: absence of evidence, never a positive.
   printf 'window=test:fm-a\nkind=ship\n' > "$state/a.meta"
@@ -546,7 +533,7 @@ test_empty_write_prune_widens_the_probe() {
   anchor="$state/anchor"; wt="$dir/wt"
   mkdir -p "$wt/src" "$wt/.git"
   : > "$anchor"
-  set_mtime "$(( $(date +%s) - 120 ))" "$anchor"
+  fm_test_set_mtime "$(( $(date +%s) - 120 ))" "$anchor" || fail "could not set mtime on $anchor"
   printf 'window=test:fm-e\nkind=ship\nworktree=%s\n' "$wt" > "$state/e.meta"
   saved=$FM_WORKTREE_WRITE_PRUNE
   FM_WORKTREE_WRITE_PRUNE=''
@@ -557,7 +544,7 @@ test_empty_write_prune_widens_the_probe() {
   crew_worktree_written_since e "$state" "$anchor" \
     || fail "an empty prune list disabled the probe instead of widening it"
   # Widened means nothing is skipped, including what the default list prunes.
-  set_mtime "$(( $(date +%s) - 900 ))" "$wt/src/new.c"
+  fm_test_set_mtime "$(( $(date +%s) - 900 ))" "$wt/src/new.c" || fail "could not set mtime on $wt/src/new.c"
   printf 'pack\n' > "$wt/.git/index"
   crew_worktree_written_since e "$state" "$anchor" \
     || fail "an empty prune list still skipped a directory the default list prunes"
@@ -581,7 +568,7 @@ test_empty_write_prune_from_the_environment_widens_the_probe() {
   anchor="$state/anchor"; wt="$dir/wt"
   mkdir -p "$wt/.git/objects"
   : > "$anchor"
-  set_mtime "$(( $(date +%s) - 120 ))" "$anchor"
+  fm_test_set_mtime "$(( $(date +%s) - 120 ))" "$anchor" || fail "could not set mtime on $anchor"
   printf 'window=test:fm-wenv\nkind=ship\nworktree=%s\n' "$wt" > "$state/wenv.meta"
   # The one thing written since the anchor sits exactly where the DEFAULT list prunes.
   printf 'pack\n' > "$wt/.git/objects/fresh"
@@ -608,7 +595,7 @@ test_worktree_write_probe_is_wall_clock_bounded() {
   anchor="$state/anchor"; wt="$dir/wt"; slowbin="$dir/slowbin"; fastbin="$dir/fastbin"
   mkdir -p "$wt/src" "$slowbin" "$fastbin"
   : > "$anchor"
-  set_mtime "$(( $(date +%s) - 120 ))" "$anchor"
+  fm_test_set_mtime "$(( $(date +%s) - 120 ))" "$anchor" || fail "could not set mtime on $anchor"
   printf 'window=test:fm-slow\nkind=ship\nworktree=%s\n' "$wt" > "$state/slow.meta"
   # Both stand-ins report the same hit; only one of them takes longer than the bound
   # to do it, so the prompt one shows what a positive outcome looks like and the
@@ -1908,8 +1895,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   # status file, re-prime .seen-* to the new signature so the signal scan stays
   # quiet, and confirm it re-surfaces as a paused recheck - never a wedge.
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate the paused status file"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
   : > "$out"
   printf 'idle, holding for upstream (token 2)' > "$capture_file"
@@ -1945,8 +1931,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
   printf 'paused: held per captain while an external decision is pending\n' > "$statusf"
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate the paused status file"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text "idle bare shell after agent exit")
@@ -1991,8 +1976,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
   printf 'captain-held [key=route]: tracked by held-decision-route\n' > "$statusf"
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate the paused status file"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text "idle bare shell after captain-held transfer")
@@ -2064,8 +2048,7 @@ test_secondmate_paused_resurfaces_in_normal_mode() {
   printf 'window=%s\nkind=secondmate\n' "$window" > "$state/secondmate-held.meta"
   printf 'paused: awaiting the upstream release\n' > "$statusf"
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate the paused status file"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-secondmate-held_status"
   key=$(printf '%s' "$window" | tr '.:/' '___')
   pane_hash=$(hash_text "idle awaiting external")
@@ -2098,8 +2081,7 @@ test_secondmate_captain_held_resurfaces_in_normal_mode() {
   printf 'window=%s\nkind=secondmate\n' "$window" > "$state/secondmate-hold.meta"
   printf 'captain-held [key=route]: tracked by task-decision-route\n' > "$statusf"
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate $statusf"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-secondmate-hold_status"
   key=$(printf '%s' "$window" | tr '.:/' '___')
   pane_hash=$(hash_text "idle awaiting the captain")
@@ -2654,8 +2636,7 @@ test_busy_declared_pause_is_rechecked_not_wedge_escalated() {
   # branch whose pause bookkeeping the bound must not wipe. It re-surfaces once
   # as a recheck, never as a wedge.
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate $statusf"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-review-scout_status"
   printf '%s' "$(hash_text "$(cat "$capture_file")")" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
@@ -2927,7 +2908,8 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
 
-  set_mtime $(( $(date +%s) - 300 )) "$state/busy-default.turn-ended"
+  fm_test_set_mtime $(( $(date +%s) - 300 )) "$state/busy-default.turn-ended" \
+    || fail "could not age the busy-turn marker"
   prime_turnend_seen "$state/busy-default.turn-ended"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
@@ -2940,7 +2922,8 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional five-minute-bound stop"
 
-  set_mtime $(( $(date +%s) - 4000 )) "$state/busy-default.turn-ended"
+  fm_test_set_mtime $(( $(date +%s) - 4000 )) "$state/busy-default.turn-ended" \
+    || fail "could not age the busy-turn marker"
   prime_turnend_seen "$state/busy-default.turn-ended"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -3031,7 +3014,7 @@ test_wedge_escalation_deferred_while_worktree_is_written() {
   printf '%s' "$pane_hash" > "$state/.stale-$key"
   back=$(( $(date +%s) - 500 ))
   echo "$back" > "$state/.stale-since-$key"
-  set_mtime "$back" "$state/.stale-since-$key"
+  fm_test_set_mtime "$back" "$state/.stale-since-$key" || fail "could not set mtime on $state/.stale-since-$key"
 
   # Phase A: the crew wrote a file after the idle window opened. Deferred.
   printf 'int main(void) { return 0; }\n' > "$wt/src/main.c"
@@ -3054,9 +3037,9 @@ test_wedge_escalation_deferred_while_worktree_is_written() {
 
   # Phase B: same fixture, same quiet pane, but nothing written during this idle
   # window (the crew really is stalled). The unchanged schedule must still fire.
-  set_mtime "$(( $(date +%s) - 900 ))" "$wt/src/main.c"
+  fm_test_set_mtime "$(( $(date +%s) - 900 ))" "$wt/src/main.c" || fail "could not set mtime on $wt/src/main.c"
   echo "$back" > "$state/.stale-since-$key"
-  set_mtime "$back" "$state/.stale-since-$key"
+  fm_test_set_mtime "$back" "$state/.stale-since-$key" || fail "could not set mtime on $state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
@@ -3095,10 +3078,10 @@ test_write_deferral_resurfaces_on_the_bounded_cadence() {
   printf '%s' "$pane_hash" > "$state/.stale-$key"
   back=$(( $(date +%s) - 500 ))
   echo "$back" > "$state/.stale-since-$key"
-  set_mtime "$back" "$state/.stale-since-$key"
+  fm_test_set_mtime "$back" "$state/.stale-since-$key" || fail "could not set mtime on $state/.stale-since-$key"
   # This pane has been deferring on write evidence for 500s already.
   : > "$state/.writing-since-$key"
-  set_mtime "$back" "$state/.writing-since-$key"
+  fm_test_set_mtime "$back" "$state/.writing-since-$key" || fail "could not set mtime on $state/.writing-since-$key"
   printf 'churn\n' > "$wt/src/main.c"
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -3143,10 +3126,10 @@ test_secondmate_home_supervision_churn_is_not_write_evidence() {
   printf 'working: implementing\n' > "$state/mate.status"
   sig=$(seen_sig "$state/mate.status"); printf '%s' "$sig" > "$state/.seen-mate_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
-  set_mtime "$(( $(date +%s) - 4000 ))" "$state/mate.meta"
+  fm_test_set_mtime "$(( $(date +%s) - 4000 ))" "$state/mate.meta" || fail "could not set mtime on $state/mate.meta"
   back=$(( $(date +%s) - 500 ))
   echo "$back" > "$state/.stale-since-$key"
-  set_mtime "$back" "$state/.stale-since-$key"
+  fm_test_set_mtime "$back" "$state/.stale-since-$key" || fail "could not set mtime on $state/.stale-since-$key"
   # The only thing written since the idle window opened is the mate home's own
   # supervision bookkeeping.
   printf 'beat\n' > "$home/state/.last-watcher-beat"
@@ -3192,7 +3175,7 @@ test_timer_repair_drops_a_finished_write_deferral_chain() {
   # bounded re-surface window.
   back=$(( $(date +%s) - 5000 ))
   : > "$state/.writing-since-$key"
-  set_mtime "$back" "$state/.writing-since-$key"
+  fm_test_set_mtime "$back" "$state/.writing-since-$key" || fail "could not set mtime on $state/.writing-since-$key"
   # The idle-window timer is corrupt, so this poll repairs it and opens a NEW quiet
   # window without probing the worktree at all.
   printf 'corrupt\n' > "$state/.stale-since-$key"
@@ -3218,7 +3201,7 @@ test_timer_repair_drops_a_finished_write_deferral_chain() {
   # inheriting the finished chain's age.
   back=$(( $(date +%s) - 500 ))
   echo "$back" > "$state/.stale-since-$key"
-  set_mtime "$back" "$state/.stale-since-$key"
+  fm_test_set_mtime "$back" "$state/.stale-since-$key" || fail "could not set mtime on $state/.stale-since-$key"
   printf 'int main(void) { return 0; }\n' > "$wt/src/main.c"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -3258,7 +3241,7 @@ test_terminal_first_sight_drops_a_finished_write_deferral_chain() {
   printf '1\n' > "$state/.count-$key"
   back=$(( $(date +%s) - 5000 ))
   : > "$state/.writing-since-$key"
-  set_mtime "$back" "$state/.writing-since-$key"
+  fm_test_set_mtime "$back" "$state/.writing-since-$key" || fail "could not set mtime on $state/.writing-since-$key"
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
 
   # First sight of this hash, absorbed because the active run outranks the stale
@@ -3284,7 +3267,7 @@ test_terminal_first_sight_drops_a_finished_write_deferral_chain() {
   rm -f "$state/.stale-$key" "$state/.stale-since-$key"
   printf '1\n' > "$state/.count-$key"
   : > "$state/.writing-since-$key"
-  set_mtime "$back" "$state/.writing-since-$key"
+  fm_test_set_mtime "$back" "$state/.writing-since-$key" || fail "could not set mtime on $state/.writing-since-$key"
   FM_FAKE_CREW_STATE='state: unknown · source: none · no run, no busy pane'
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -3775,8 +3758,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   statusf="$state/afk-held.status"
   printf 'paused: awaiting the upstream tool release\n' > "$statusf"
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate the paused status file"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-afk-held_status"
   date '+%s' > "$state/.afk"
   key=$(printf '%s' "$window" | tr '.:/' '___')
