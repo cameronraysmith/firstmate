@@ -63,6 +63,20 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Ship and scout scaffolds both carry a testing-scope section. Without one, each
+# worker decides alone how much to run beyond its own change, and a reasonable
+# one picks the largest available option; the cost of that is supervision rather
+# than confidence, since the worker ends its turn while a long run finishes.
+# The section names no test tool, command, lane, or runner flag: this one
+# scaffold serves every registered project and the caller-supplied repo string
+# cannot identify which, so any concrete command would be wrong in most of them.
+# Ship and scout bound the run differently - a ship task by its own diff, a scout
+# by the question it was sent to answer - because breadth is sometimes a scout's
+# actual finding. Both require the worker to state what it ran and why, and to
+# escalate rather than silently widen when it judges the blast radius wider than
+# that bound, so bounding scope never quietly reduces coverage. The secondmate
+# charter carries no such section: it runs nothing itself and delegates to
+# crewmates whose own briefs come from this same scaffold.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -341,6 +355,37 @@ IFS= read -r -d '' DECISION_KEY_PROTOCOL <<'EOF' || true
 EOF
 DECISION_KEY_PROTOCOL=${DECISION_KEY_PROTOCOL%$'\n'}
 
+# Why no command is named, shared verbatim so the ship and scout sections cannot
+# drift into two different justifications for the same constraint.
+IFS= read -r -d '' TESTING_SCOPE_NO_COMMAND <<'EOF' || true
+This brief names no test command on purpose - one scaffold serves every project - so working out how this repo selects and runs a subset is part of the task.
+EOF
+TESTING_SCOPE_NO_COMMAND=${TESTING_SCOPE_NO_COMMAND%$'\n'}
+
+# A ship task's run is bounded by its own diff.
+IFS= read -r -d '' TESTING_SCOPE_SHIP <<EOF || true
+# Testing scope
+Run the checks that cover the change you made; the project's entire suite is not the default.
+Pick the narrowest selection that would still fail if this change were wrong: what exercises the code you touched, plus its immediate callers and anything sharing state with it.
+$TESTING_SCOPE_NO_COMMAND
+A run far larger than the change is a signal to re-select rather than evidence of thoroughness; declaring the wait under rule 4 stops a long run reading as a wedge, but it does not make an oversized selection the right one.
+Record what you ran and why that selection covers this change in the work you hand back - the commit message, and the PR description when this task opens one - including anything relevant you deliberately left out, so the judgement is visible rather than inferred later from a silence.
+If you judge the blast radius wider than your own diff - shared infrastructure, a test harness, a build or configuration surface, or anything most of the project runs through - do not quietly widen into a long run and do not quietly settle for narrower coverage either: escalate under rule 6 with what you would run and roughly how long it takes, and let firstmate decide.
+EOF
+TESTING_SCOPE_SHIP=${TESTING_SCOPE_SHIP%$'\n'}
+
+# A scout has no diff, and breadth is sometimes the finding itself, so its run is
+# bounded by the question it was sent to answer instead.
+IFS= read -r -d '' TESTING_SCOPE_SCOUT <<EOF || true
+# Testing scope
+Run what the question you were sent to answer actually needs, and no more.
+Breadth is legitimate when breadth is the finding - reproducing an intermittent failure, or mapping what a change would disturb - but choose it because the question demands it, never as a default.
+$TESTING_SCOPE_NO_COMMAND
+Record in the report what you ran and why that selection answers the question, so a reader can judge how far the evidence reaches instead of guessing at it.
+If answering the question properly needs a run far wider or longer than the question appears to justify, escalate under rule 6 with what you would run and roughly how long it takes, rather than silently starting it or silently skipping it.
+EOF
+TESTING_SCOPE_SCOUT=${TESTING_SCOPE_SCOUT%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -382,6 +427,8 @@ $DECISION_KEY_PROTOCOL
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
 $INBOX_SECTION
+
+$TESTING_SCOPE_SCOUT
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -504,6 +551,8 @@ $DECISION_KEY_PROTOCOL
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
 $INBOX_SECTION
+
+$TESTING_SCOPE_SHIP
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
