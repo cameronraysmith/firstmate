@@ -1212,6 +1212,12 @@ watcher_cleanup() {
       transition=release-lock-existing
     fi
   fi
+  # A stand-down signal exits from wherever the loop happened to be, including
+  # from inside a lock critical section that this process is still recorded as
+  # holding. Drop those before the recovery transition below re-enters the same
+  # locks. Each call is a no-op when this process is not the recorded holder.
+  fm_lock_release "$WATCHER_DOWNTIME_MARKER.lock"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
