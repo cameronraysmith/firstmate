@@ -1288,7 +1288,10 @@ fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
 # process group and the sole foreground process, the foreground process name
 # and argv0 resolve to the same recognized shell, the operating-system
 # process table shows exactly that one shell row with no child process, and
-# the shell sits in a sleeping or idle state.
+# the shell is affirmatively not running: sleeping or idle when ps reports a
+# state character at all, and otherwise proved to have consumed no processor
+# time across a settle window. Every other condition above stays mandatory in
+# both cases, and a state that cannot be read or classified is never idle.
 # An idle interactive shell transiently hosts short-lived prompt helpers
 # (verified on the real 0.7.5 lab: a workspace.move relayout makes zsh redraw
 # its prompt, spawning starship as a second foreground process for a few
@@ -1314,7 +1317,7 @@ fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
 # contract and the settle retry.
 fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid foreground_pgid count
-  local process_pid name argv0 shell_name rows stat ps_bin
+  local process_pid name argv0 shell_name rows state ps_bin
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -1352,9 +1355,77 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
     $2 == shell { child++ }
     END { exit(found == 1 && child == 0 ? 0 : 1) }
   ' || return 1
-  stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
-  case "$stat" in S*|I*) ;; *) return 1 ;; esac
+  state=$(fm_backend_herdr_pid_state_char "$ps_bin" "$shell_pid") || return 1
+  case "$state" in
+    S|I) ;;
+    '') fm_backend_herdr_pid_cpu_quiescent "$ps_bin" "$shell_pid" || return 1 ;;
+    *) return 1 ;;
+  esac
   printf '%s\n' "$shell_pid"
+}
+
+# fm_backend_herdr_pid_state_char: the process STATE character <ps-bin> reports
+# for <pid>, or empty when that implementation reports none.
+# Both BSD and Linux ps lead STAT with the state and append flag characters
+# after it, so only the FIRST character can be classified; the two alphabets
+# overlap, which is why nothing beyond that first character is interpreted.
+# An empty result is a normal reading rather than an error. Verified on
+# 2026-08-12: the nix procps-1003.1-2008 build that PATH resolves ps to on this
+# fleet's macOS host prints flags alone - "s+" for an idle interactive login
+# shell where /bin/ps prints "Ss+" - and omits BOTH the sleeping and the running
+# state, so STAT from that implementation cannot separate idle from busy at all.
+# Failing to read STAT stays an error, and only a genuinely absent state
+# character reports empty.
+fm_backend_herdr_pid_state_char() {  # <ps-bin> <pid>
+  local stat
+  stat=$("$1" -p "$2" -o stat= 2>/dev/null) || return 1
+  stat=$(printf '%s' "$stat" | tr -d '[:space:]')
+  case "$stat" in
+    [DIRSTtUWXZ]*) printf '%.1s' "$stat" ;;
+  esac
+}
+
+# fm_backend_herdr_pid_cpu_time: <pid>'s cumulative processor time, from the
+# first process-accounting source that answers with a well-formed value.
+# The configured ps is tried first so a test or operator override still owns the
+# reading, then the system ps at its absolute path, because the degenerate
+# implementation above answers `-o time=` with its keyword list instead of a
+# value. Anything that is not digits, colons, and dots is that error text or
+# another unusable answer, never a measurement.
+fm_backend_herdr_pid_cpu_time() {  # <ps-bin> <pid>
+  local candidate value
+  for candidate in "$1" /bin/ps; do
+    [ -n "$candidate" ] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    value=$("$candidate" -p "$2" -o time= 2>/dev/null) || continue
+    value=$(printf '%s' "$value" | tr -d '[:space:]')
+    case "$value" in
+      ''|*[!0-9:.]*) continue ;;
+    esac
+    printf '%s' "$value"
+    return 0
+  done
+  return 1
+}
+
+# fm_backend_herdr_pid_cpu_quiescent: affirmative proof that <pid> consumed no
+# measurable processor time across one settle window.
+# This is the fallback for a ps that reports no state character, and it is
+# deliberately independent of that field rather than a relaxation of it: two
+# readings of cumulative processor time that are both well-formed and identical
+# positively establish that the process ran for none of the window, which is the
+# one thing the state character contributed that the caller's other guards do
+# not already prove. A shell spinning inside a builtin has no child process and
+# holds its own terminal foreground group, so it satisfies every other guard and
+# is caught only here.
+# An unreadable or malformed reading from every source refuses, so an unknown
+# state is never accepted as idle.
+fm_backend_herdr_pid_cpu_quiescent() {  # <ps-bin> <pid>
+  local first second
+  first=$(fm_backend_herdr_pid_cpu_time "$1" "$2") || return 1
+  sleep "${FM_BACKEND_HERDR_CPU_QUIESCENCE_WINDOW:-0.2}"
+  second=$(fm_backend_herdr_pid_cpu_time "$1" "$2") || return 1
+  [ "$first" = "$second" ]
 }
 
 # fm_backend_herdr_projection_order_best_effort: place the exact workspace id
