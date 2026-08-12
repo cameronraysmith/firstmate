@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Acquire or inspect the per-home firstmate session lock.
-# Writes the harness (agent) process PID found by walking the shell's ancestry,
-# which lives as long as the firstmate session - unlike the transient subshell
-# PID of any one tool call, which is dead moments after it is written.
+# Publishes state/.lock, holding the harness process PID found by walking the
+# shell's ancestry, which lives at least as long as the firstmate session -
+# unlike the transient subshell PID of any one tool call, which is dead moments
+# after it is written. That pid carries liveness only: it can be a daemon shared
+# by several sessions, so exclusivity comes from the session identity recorded
+# alongside it in state/.lock.session (bin/fm-session-lock-lib.sh owns both).
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
 #        fm-lock.sh status    print holder and liveness; always exits 0
 set -u
@@ -56,12 +59,12 @@ trap release_claim_lock EXIT
 trap 'exit 1' HUP INT TERM
 
 if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
-  old=$(cat "$LOCK" 2>/dev/null || true)
-  if [ "$old" = "$me" ]; then
+  if fm_session_lock_owned_by_self "$STATE"; then
     echo "lock acquired: harness pid $me"
     exit 0
   fi
-  if fm_harness_pid_alive "$old"; then
+  if fm_session_lock_holder_is_other_live_session "$STATE"; then
+    old=$(cat "$LOCK" 2>/dev/null || true)
     echo "error: another live firstmate session holds the lock (pid $old); operate read-only until resolved" >&2
     exit 1
   fi
@@ -86,10 +89,19 @@ if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
     echo "error: session lock is unreadable; operate read-only until resolved" >&2
     exit 1
   }
-  if [ "$old" != "$me" ] && fm_harness_pid_alive "$old"; then
+  if ! fm_session_lock_owned_by_self "$STATE" \
+    && fm_session_lock_holder_is_other_live_session "$STATE"; then
     echo "error: another live firstmate session holds the lock (pid $old); operate read-only until resolved" >&2
     exit 1
   fi
+fi
+# The identity record goes down FIRST so state/.lock is never published without
+# the record that says which session it belongs to. Any window in the other
+# order publishes a lock that a sibling session would read as unclaimed and take
+# ancestry membership as ownership of - the exact defect this record closes.
+if ! fm_session_lock_record_write "$STATE" "$me"; then
+  echo "error: cannot record session-lock identity; operate read-only until resolved" >&2
+  exit 1
 fi
 if ! { printf '%s\n' "$me" > "$LOCK"; } 2>/dev/null; then
   echo "error: cannot write session lock; operate read-only until resolved" >&2
