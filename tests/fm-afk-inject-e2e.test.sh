@@ -50,8 +50,9 @@ pass() { printf 'ok - %s\n' "$1"; }
 cleanup_all() {
   if [ -n "${DAEMON_PID:-}" ]; then
     afk_exit "${STATE_DIR:-}" 2>/dev/null || true
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+    # Bounded: a daemon that does not act on the stop must not strand the
+    # private tmux server teardown below (tests/cleanup-safety.sh).
+    fm_test_reap_bounded "$DAEMON_PID" >/dev/null 2>&1 || true
   fi
   if [ -n "${SOCKET:-}" ] && [ -n "${REAL_TMUX:-}" ]; then
     "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || true
@@ -69,6 +70,9 @@ LOG_FILE="$STATE_DIR/submitted.log"
 : > "$LOG_FILE"
 
 # Source the daemon to get FM_INJECT_MARK, afk_enter, afk_exit.
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
+
 # shellcheck source=/dev/null
 . "$DAEMON"
 
@@ -194,8 +198,7 @@ start_daemon() {
 stop_daemon() {
   [ -n "${DAEMON_PID:-}" ] || return 0
   afk_exit "$STATE_DIR" 2>/dev/null || true
-  kill "$DAEMON_PID" 2>/dev/null || true
-  wait "$DAEMON_PID" 2>/dev/null || true
+  fm_test_reap_bounded "$DAEMON_PID" >/dev/null 2>&1 || true
   DAEMON_PID=""
   sleep 1
 }
