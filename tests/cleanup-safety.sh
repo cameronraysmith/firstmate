@@ -109,14 +109,19 @@ fm_test_wait_bounded() {  # <pid> [ticks]
 # --- treehouse pool release -------------------------------------------------
 #
 # Registration is keyed on the fixture PROJECT path, not on an acquired worktree
-# path, for two reasons. It is declarative at fixture-creation time, so it is
-# already in place if the run aborts before any worktree exists; and treehouse
-# itself stays the authority on which slots belong to that project, so a slot
-# the suite never recorded in its own metadata is still released.
+# path: it is declarative at fixture-creation time, so it is already in place if
+# the run aborts before any worktree exists, and it covers a slot the suite never
+# recorded in its own metadata.
 #
 # The registry is a `$$`-keyed file rather than a shell array because the usual
 # call shape in this suite runs helpers inside `$(...)`, whose in-process state
 # dies with the subshell. tests/lib.sh documents that constraint in full.
+#
+# Which slots belong to a project is answered by reading the pool on disk, NOT by
+# asking treehouse. A CLI call that merely fails reports the same empty list as a
+# project with no slots, and a release that cannot tell those apart silently
+# leaves the strand it exists to prevent - observed doing exactly that, leaving 11
+# slots pooled against a deleted fixture while reporting success.
 
 FM_TEST_POOL_REGISTRY=${FM_TEST_POOL_REGISTRY:-}
 if [ -z "$FM_TEST_POOL_REGISTRY" ]; then
@@ -132,15 +137,23 @@ fm_test_pool_register() {  # <project-path>
   printf '%s\n' "$proj" >> "$FM_TEST_POOL_REGISTRY"
 }
 
-# Worktree paths out of `treehouse status --json`. The paths treehouse prints
-# here are pool paths under its own root, which carry no JSON-escaped character,
-# so this stays free of a jq dependency the non-herdr suites do not have.
-fm_test_pool_worktrees() {  # <project-path>
-  local proj=$1 json
-  json=$(cd "$proj" && treehouse status --json 2>/dev/null) || return 1
-  printf '%s' "$json" \
-    | grep -o '"path":"[^"]*"' \
-    | sed -e 's/^"path":"//' -e 's/"$//'
+# Every managed worktree pooled against this repository, read off the pool itself:
+# each slot's .git file names the backing repository it was created from, which is
+# the same evidence `treehouse prune --prune-orphans` reports on. No treehouse
+# call, no JSON parsing, and no way for a failed command to look like an empty
+# pool.
+fm_test_pool_slots_for() {  # <physical-project-path>
+  local proj=$1 slot backing repo
+  [ -n "$proj" ] || return 0
+  [ -d "$FM_TEST_TREEHOUSE_ROOT" ] || return 0
+  for slot in "$FM_TEST_TREEHOUSE_ROOT"/*/*/*; do
+    [ -f "$slot/.git" ] || continue
+    backing=$(sed -n 's/^gitdir: //p' "$slot/.git" 2>/dev/null | head -1)
+    [ -n "$backing" ] || continue
+    repo=${backing%%/.git/worktrees/*}
+    [ "$repo" = "$proj" ] || continue
+    printf '%s\n' "$slot"
+  done
 }
 
 # A pool that never handed out a worktree still leaves its directory behind, and
@@ -192,12 +205,15 @@ fm_test_pool_rmdir_if_empty() {  # <pool-dir>
 # strand in place. --include-in-use terminates the slot's processes first, and
 # --include-unlanded covers fixture commits that were never merged anywhere.
 fm_test_pool_release() {  # <project-path>
-  local proj=${1:-} wt pool rc=0 pools='' pools_before=''
+  local proj=${1:-} real='' wt pool rc=0 pools='' pools_before=''
   [ -n "$proj" ] || return 0
   command -v treehouse >/dev/null 2>&1 || return 0
   # Without the repository, treehouse cannot resolve its pool at all; that is
   # the strand this function exists to prevent, not a state it can repair.
   [ -d "$proj" ] || return 0
+  # Slots record the repository's PHYSICAL path, which is what they must be
+  # matched against.
+  real=$(cd "$proj" && pwd -P) || return 1
   pools_before=$(fm_test_pool_root_entries)
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
@@ -212,17 +228,24 @@ fm_test_pool_release() {  # <project-path>
       rc=1
     }
   done <<EOF
-$(fm_test_pool_worktrees "$proj")
+$(fm_test_pool_slots_for "$real")
 EOF
-  # Anything still pooled here is a strand that survived the destroys above.
+  # Anything still pooled here survived the destroys above, so it is the strand
+  # itself. Reported loudly rather than returned quietly: a release that cannot
+  # complete has to fail the run that depended on it.
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     printf 'cleanup-safety: worktree still pooled against %s after release: %s\n' \
-      "$proj" "$wt" >&2
+      "$real" "$wt" >&2
     rc=1
   done <<EOF
-$(fm_test_pool_worktrees "$proj")
+$(fm_test_pool_slots_for "$real")
 EOF
+  # A read of this project's pool status, for its side effect only: it creates the
+  # pool directory of a project that never acquired a slot, so the diff below can
+  # see and remove it. Its output is deliberately unused - see the header on why
+  # slot membership never comes from a CLI call.
+  (cd "$proj" && treehouse status >/dev/null 2>&1) || true
   # Any pool directory that appeared across the reads above belongs to this
   # project: those reads named no other repository.
   while IFS= read -r pool; do
