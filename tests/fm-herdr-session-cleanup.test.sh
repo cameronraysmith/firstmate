@@ -55,6 +55,56 @@ if (
 fi
 pass "process proof reads Linux Herdr argv arrays and rejects malformed executable identities"
 
+# Some ps implementations report no state character at all - the nix
+# procps-1003.1-2008 build prints "Ns+" for BOTH an idle and a spinning shell -
+# so the state check alone made the whole proof inert there. Absent a state
+# character the proof must fall back to affirmative processor quiescence, and it
+# must still refuse whenever that cannot be read or is not quiescent.
+STATELESS_PS="$TMP_ROOT/stateless-ps"
+cat > "$STATELESS_PS" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-axo pid=,ppid=") printf '1 0\n67 1\n' ;;
+  "-p 67 -o stat=") printf '%s\n' "${FAKE_STAT:-Ns+}" ;;
+  "-p 67 -o time=")
+    [ "${FAKE_TIME_UNREADABLE:-0}" = 1 ] && exit 1
+    if [ "${FAKE_TIME_MOVES:-0}" = 1 ]; then
+      count=$(cat "${FAKE_TIME_COUNTER:?}" 2>/dev/null || printf 0)
+      printf '%s\n' "$((count + 1))" > "${FAKE_TIME_COUNTER:?}"
+      printf '0:0%s.00\n' "$count"
+    else
+      printf '0:00.42\n'
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$STATELESS_PS"
+IDLE_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":["-bash"],"argv0":"bash","name":"bash","pid":67}]}}}'
+stateless_proof() {  # <env assignments via caller>
+  # shellcheck disable=SC2329 # invoked indirectly by the idle-shell proof.
+  fm_backend_herdr_cli() { printf '%s\n' "$IDLE_PROCESS_INFO"; }
+  FM_HERDR_PS_BIN="$STATELESS_PS" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    FM_BACKEND_HERDR_CPU_QUIESCENCE_WINDOW=0 \
+    fm_backend_herdr_pane_idle_shell_pid test w2:p1
+}
+( stateless_proof ) >/dev/null 2>&1 \
+  || fail "a stateless ps reading with quiescent processor time was refused"
+pass "an absent state character falls back to affirmative processor quiescence"
+( FAKE_TIME_MOVES=1 FAKE_TIME_COUNTER="$TMP_ROOT/cpu-counter" stateless_proof ) >/dev/null 2>&1 \
+  && fail "a shell consuming processor time was accepted as idle"
+pass "an absent state character refuses a shell that is still consuming processor time"
+( FAKE_TIME_UNREADABLE=1 stateless_proof ) >/dev/null 2>&1 \
+  && fail "an unreadable processor-time reading was accepted as idle"
+pass "an absent state character refuses when processor time cannot be read at all"
+( FAKE_STAT=R stateless_proof ) >/dev/null 2>&1 \
+  && fail "a running state character was accepted as idle"
+( FAKE_STAT=T stateless_proof ) >/dev/null 2>&1 \
+  && fail "a stopped state character was accepted as idle"
+( FAKE_STAT=Ss+ stateless_proof ) >/dev/null 2>&1 \
+  || fail "a present sleeping state character stopped being accepted on its own"
+pass "a present state character keeps deciding on its own, accepting only sleeping or idle"
+
 TOKEN=AbCdEfGhIjKlMnOpQrStUv
 ID=task
 WS=w2

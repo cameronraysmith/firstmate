@@ -183,7 +183,11 @@ The title must contain exactly one token occurrence across the named-session sna
 The task's ordinary metadata must be absent, and the candidate must have exactly one tab and exactly one pane.
 Before cleanup, Firstmate acquires the existing task-id spawn lock and then the shared named-session presentation lock.
 Inside both locks it takes one exact snapshot, requires one unambiguous non-target focus and the exact title, token, tab, and pane shape, positively confirms no registered agent, and reads Herdr's process information for the exact named-session pane.
-The process proof requires one recognized idle shell as both the shell process and the sole foreground process-group member, an operating-system process-table row for that shell, no child process, and a sleeping or idle shell state.
+The process proof requires one recognized idle shell as both the shell process and the sole foreground process-group member, an operating-system process-table row for that shell, no child process, and affirmative evidence that the shell is not running.
+That last condition reads the shell's state character when `ps` reports one, accepting only sleeping or idle, and refuses any other state.
+Not every `ps` reports one: the nix `procps-1003.1-2008` build prints flags alone, `s+` where `/bin/ps` prints `Ss+`, and omits the running state as well as the sleeping one, so an idle shell and a shell spinning inside a builtin are indistinguishable through that field.
+When the state character is absent the proof falls back to processor quiescence instead - two well-formed readings of the shell's cumulative processor time, taken across a settle window, that are identical - which is exactly the contribution the state character made that the other conditions do not already establish, since a builtin spin has no child process and holds its own terminal foreground group.
+The fallback is independent of the state field rather than a relaxation of it: every other condition stays mandatory, and a state that cannot be read, or a processor time that no source reports in a well-formed way, refuses rather than being treated as idle.
 The proof retries strict single samples for a bounded settle window because an idle interactive shell transiently hosts short-lived prompt helpers; a genuinely busy pane fails every sample.
 Any foreground command, child process, active shell job, unknown shell, unreadable process table, missing field, or API error preserves the pane.
 Firstmate immediately revalidates the same journal, metadata absence, workspace title and token uniqueness, one-tab and one-pane topology, exact pane relationship, absent agent, process proof, and non-target focus before calling the existing exact-pane focus-preserving close helper.
@@ -208,7 +212,7 @@ Operational compromises:
 - Crashes, lost responses, failed exact-pane cleanup, or human renames can leave quarantined spaces; teardown and session start remove only the exact home-local, uniquely journal-correlated, childless idle-shell shape above.
 - Spaces have no cross-home cleanup path, and a secondmate child can clean up only from its exact home.
 - Every stale-looking space outside that narrow proof still requires manual cleanup in Herdr's UI after human inspection, or the journal restoration above.
-- A leftover whose remaining shell cannot be proved lone, childless, and idle is never retired; it keeps a bindable journal and is retried at each session start, so an environment where that proof cannot pass preserves the leftover indefinitely rather than closing it on weaker evidence.
+- A leftover whose remaining shell cannot be proved lone, childless, and not running is never retired; it keeps a bindable journal and is retried at each session start, so a pane that never settles is preserved indefinitely rather than closed on weaker evidence.
 - Regaining a dedicated space after degradation requires stopping the flat task, manually checking the stale projection, and clearing its journal before a genuinely fresh launch.
 - The visible token is only a restart-stable correlator and never substitutes for the exact binding.
 
