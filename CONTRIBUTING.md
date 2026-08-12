@@ -98,9 +98,11 @@ bin/fm-test-isolation-proof.sh --pool watcher-wake-lock --jobs 4   # re-run an a
 @AGENTS.md
 EOF
 [ "$(readlink .claude/skills)" = "../.agents/skills" ]
-tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
+tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status"  # scratch state for the re-arm smoke test below
+FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 
+The re-arm smoke test is two commands because a firstmate primary's watcher-arm seatbelt approves the arm call only after a short list of approved setup nodes, which building a scratch directory and writing a file into it are not; [`docs/arm-pretool-check.md`](docs/arm-pretool-check.md) owns that blessed shape, and `tests/fm-arm-pretool-check.test.sh` asserts every command in the block above survives it.
 `bin/fm-test-run.sh` is the single owner of behavior-suite selection, portable CI lane composition, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
