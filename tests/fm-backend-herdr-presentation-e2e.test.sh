@@ -727,7 +727,8 @@ else
   LOCK_CONTENTION_STATUS=$?
 fi
 : > "$LOCK_CONTENTION_RELEASE"
-wait "$LOCK_CONTENTION_OWNER_PID" || fail "guarded lab presentation lock owner failed"
+fm_test_wait_bounded "$LOCK_CONTENTION_OWNER_PID" \
+  || fail "guarded lab presentation lock owner failed or did not release within the bound"
 LOCK_CONTENTION_OWNER_PID=
 [ "$LOCK_CONTENTION_STATUS" -eq 0 ] \
   || fail "bounded presentation lock contention did not fall back to a successful flat spawn: $(cat "$TMP_ROOT/lock-contended.err")"
@@ -1160,7 +1161,8 @@ else
   AFLAT_STATUS=$?
 fi
 : > "$CROSS_LOCK_RELEASE"
-wait "$CROSS_LOCK_PID" || fail "cross-home session lock owner failed"
+fm_test_wait_bounded "$CROSS_LOCK_PID" \
+  || fail "cross-home session lock owner failed or did not release within the bound"
 [ "$AFLAT_STATUS" -eq 0 ] \
   || fail "cross-home lock contention did not fall back flat: $(cat "$TMP_ROOT/aflat.err")"
 grep -F "presentation focus lock unavailable; using the ordinary flat layout without projection" "$TMP_ROOT/aflat.err" >/dev/null 2>&1 \
