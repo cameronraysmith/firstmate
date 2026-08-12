@@ -342,7 +342,12 @@ test_launcher_identity_resolves_the_exact_pane_tab_and_workspace() {
   pass "fm_backend_herdr_launcher_identity: resolves the launcher's exact workspace even when a same-labeled workspace sorts first"
 }
 
-test_launcher_identity_refuses_a_pane_from_another_session_name() {
+# Since worker placement became registry-selected, an orchestrator in one
+# session spawning into a project's own session is the ORDINARY case, not a
+# corrupt identity: the launcher has no workspace in the target session for a
+# worker to be placed under. That is 2 (fall back to the per-home container),
+# not 1 (refuse). Refusing here would refuse every dispatch in the fleet.
+test_launcher_identity_reports_no_ancestry_for_another_session_name() {
   local dir log resp fb out status
   dir="$TMP_ROOT/launcher-xsession"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   fb=$(make_herdr_fakebin "$dir")
@@ -350,10 +355,10 @@ test_launcher_identity_refuses_a_pane_from_another_session_name() {
     HERDR_ENV=1 HERDR_PANE_ID=w7:p3 HERDR_SESSION=someother \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_launcher_identity fmtest' "$ROOT" 2>&1 )
   status=$?
-  expect_code 1 "$status" "a launcher pane naming another herdr session must refuse"
-  assert_contains "$out" "cross-session parent identity" "the cross-session refusal did not explain itself"
-  [ ! -s "$log" ] || fail "a cross-session launcher identity must be refused before any herdr call"
-  pass "fm_backend_herdr_launcher_identity: refuses a launcher pane that names a different herdr session"
+  expect_code 2 "$status" "a launcher pane in another herdr session has no ancestry to inherit in this one"
+  [ -z "$out" ] || fail "the ordinary cross-session case must stay silent, got: $out"
+  [ ! -s "$log" ] || fail "a cross-session launcher identity must be settled before any herdr call"
+  pass "fm_backend_herdr_launcher_identity: a launcher in a different session reports no inheritable ancestry instead of refusing"
 }
 
 test_launcher_identity_refuses_a_missing_server_socket() {
@@ -381,7 +386,7 @@ test_launcher_identity_refuses_a_pane_from_another_server_socket() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_launcher_identity fmtest' "$ROOT" 2>&1 )
   status=$?
   expect_code 1 "$status" "a launcher pane on a different herdr server socket must refuse"
-  assert_contains "$out" "cross-session parent identity" "the cross-socket refusal did not explain itself"
+  assert_contains "$out" "self-contradictory parent identity" "the cross-socket refusal did not explain itself"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''get' "a cross-server launcher identity must be refused before its pane is trusted"
   pass "fm_backend_herdr_launcher_identity: refuses a launcher pane whose injected socket belongs to another herdr server"
 }
@@ -489,7 +494,7 @@ test_container_ensure_refuses_an_ambiguous_home_label() {
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w7","label":"firstmate"}]}}\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" 2>&1 )
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /tmp' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "container_ensure must fail when the home workspace is ambiguous"
   assert_contains "$out" "labeled 'firstmate'" "container_ensure buried the specific ambiguity it refused"
@@ -515,8 +520,8 @@ test_container_ensure_starts_server_and_workspace() {
   # the seeded tab/pane ids in the SAME response - verified empirically).
   printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=stale-ambient \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w1\tw1:t9' ] || fail "container_ensure should echo '<session>:<workspace_id>\\t<seeded_default_tab_id>', got '$out'"
   assert_contains "$(cat "$log")" "HERDR_SESSION=fmtest"$'\x1f''server' "container_ensure did not start the herdr server"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate' \
@@ -531,8 +536,8 @@ test_container_ensure_reuses_existing_workspace() {
   printf '{"server":{"running":true}}\n' > "$resp/2.out"
   printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"firstmate"}]}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=stale-ambient \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w9\t' ] || fail "container_ensure should reuse the existing firstmate workspace id with an EMPTY seeded-tab field (an ADOPTED workspace is never a prune candidate), got '$out'"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "container_ensure should not create a workspace that already exists"
   pass "fm_backend_herdr_container_ensure: reuses an existing firstmate workspace without recreating it, and reports no seeded default tab (adopted, not created)"
@@ -793,7 +798,7 @@ test_container_ensure_creates_with_no_focus_flag() {
   printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w1\tw1:t1' ] || fail "container_ensure should still echo '<session>:<workspace_id>\\t<seeded_default_tab_id>', got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate'$'\x1f''--no-focus' \
     "container_ensure's workspace create did not pass --no-focus (focus-safety: never steal the captain's attention on spawn)"
@@ -810,7 +815,7 @@ test_container_ensure_uses_secondmate_home_label() {
   printf '{"result":{"workspace":{"workspace_id":"w9","label":"2ndmate-sshhip-h7"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w9\tw9:t1' ] || fail "container_ensure did not echo the expected session:workspace_id + seeded default tab id, got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''2ndmate-sshhip-h7' \
     "container_ensure did not create the workspace under this secondmate home's own label"
@@ -880,10 +885,10 @@ SH
 # contract, its explicit opt-out, its explicit opt-in, and the version floor
 # that decides the unconfigured default at that interface.
 presentation_enabled_verdict() {  # <config-dir> <fakebin> [state-dir] [session] -> "on"/"off"
-  HERDR_SESSION="${4:-}" PATH="$2:$PATH" bash -c '
+  PATH="$2:$PATH" HERDR_SESSION=stale-ambient bash -c '
     . "$0/bin/backends/herdr.sh"
-    if fm_backend_herdr_presentation_enabled "$1" "$2"; then printf "on\n"; else printf "off\n"; fi
-  ' "$ROOT" "$1" "${3:-}"
+    if fm_backend_herdr_presentation_enabled "$1" "$2" "$3"; then printf "on\n"; else printf "off\n"; fi
+  ' "$ROOT" "$1" "${3:-}" "${4:-fmtest}"
 }
 
 # The exact release identities measured against the real macOS aarch64 release
@@ -1266,7 +1271,7 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
       fm_backend_herdr_projection_focus_restore() { return 0; }
       token=$(fm_backend_herdr_projection_journal_create "$1" task-p2) || exit 1
       label=$(fm_backend_herdr_projection_workspace_label task-p2 "$token")
-      fm_backend_herdr_projection_create_task /tmp/proj "$label" fm-task-p2 || exit 1
+      fm_backend_herdr_projection_create_task fmtest /tmp/proj "$label" fm-task-p2 || exit 1
       printf "%s %s %s %s %s\n" \
         "$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID" \
         "$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID" \
@@ -1305,7 +1310,7 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
   printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/11.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }; fm_backend_herdr_projection_focus_restore() { return 0; }; fm_backend_herdr_projection_create_task /tmp/proj label fm-task-p2' "$ROOT" 2>&1)
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }; fm_backend_herdr_projection_focus_restore() { return 0; }; fm_backend_herdr_projection_create_task fmtest /tmp/proj label fm-task-p2' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "a concurrent tab should prevent exact one-pane projection convergence"
   assert_contains "$out" "did not converge to exactly one task pane" \
@@ -3687,7 +3692,7 @@ test_workspace_ensure_prunes_default_tab() {
   dir="$TMP_ROOT/prune-default"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
   fb=$(make_herdr_statefake "$dir")
   raw=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT" ) \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /proj' "$ROOT" ) \
     || fail "container_ensure failed against the stateful fake"
   container=${raw%%$'\t'*}
   seeded=${raw#*$'\t'}
@@ -3722,7 +3727,7 @@ test_repeated_cycles_reuse_one_workspace_no_orphans() {
   fb=$(make_herdr_statefake "$dir")
   for i in 1 2 3; do
     raw=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
-      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT" ) \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /proj' "$ROOT" ) \
       || fail "cycle $i: container_ensure failed"
     container=${raw%%$'\t'*}
     seeded=${raw#*$'\t'}
@@ -3795,7 +3800,7 @@ test_adopted_workspace_never_prunes_default_tab() {
   # container_ensure never ran a `workspace create` call to produce it.
   jq -n '{next:2,workspaces:[{workspace_id:"w1",label:"firstmate"}],tabs:[{tab_id:"w1:t1",label:"1",workspace_id:"w1",pane_id:"w1:p1"}],agent_status:{}}' > "$state"
   raw=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT" ) \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /proj' "$ROOT" ) \
     || fail "container_ensure failed against the stateful fake"
   container=${raw%%$'\t'*}
   seeded=${raw#*$'\t'}
@@ -3837,7 +3842,7 @@ test_label_collision_startup_workspace_leaves_live_tab_alone() {
   # live agent (agent_status=working), exactly like the captain's own pane.
   jq -n '{next:2,workspaces:[{workspace_id:"w1",label:"firstmate"}],tabs:[{tab_id:"w1:t1",label:"1",workspace_id:"w1",pane_id:"w1:p1"}],agent_status:{"w1:p1":"working"}}' > "$state"
   raw=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT" ) \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /proj' "$ROOT" ) \
     || fail "container_ensure failed against the stateful fake"
   container=${raw%%$'\t'*}
   seeded=${raw#*$'\t'}
@@ -3868,7 +3873,7 @@ test_prune_refuses_a_working_agent_pane_defense_in_depth() {
   dir="$TMP_ROOT/prune-busy-defense"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
   fb=$(make_herdr_statefake "$dir")
   raw=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT" ) \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure fmtest /proj' "$ROOT" ) \
     || fail "container_ensure failed against the stateful fake"
   container=${raw%%$'\t'*}
   seeded=${raw#*$'\t'}
@@ -4200,9 +4205,149 @@ test_wait_transition_clean_timeout_returns_1() {
   pass "fm_backend_herdr_wait_transition: stock macOS Bash clean timeout closes fd 9 and returns 1"
 }
 
+# --- registry-selected placement and the self-location detector --------------
+#
+# Worker placement is chosen from the project registry and must never fall back
+# to the injected environment, which describes wherever the LAUNCHING process
+# was created rather than where this process runs. Each case below drives the
+# two apart deliberately: the environment names one session and the caller
+# passes another, so a regression that reads the environment cannot pass by
+# coincidence.
+
+test_container_ensure_ignores_a_contradictory_ambient_session() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/container-ambient"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
+  printf '{"server":{"running":true}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w4","label":"firstmate"}]}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 \
+    HERDR_ENV=1 HERDR_SESSION=stale-daemon-session HERDR_SOCKET_PATH=/tmp/fm-herdr-unit/stale.sock \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure project-session /tmp' "$ROOT" )
+  [ "$out" = $'project-session:w4\t' ] \
+    || fail "container_ensure must place in the session it was GIVEN, got '$out'"
+  # The session-independent client version probe is deliberately unscoped and
+  # still inherits the ambient variable, so the discriminator is the routing
+  # flag every session-scoped call carries, not the variable's mere presence.
+  assert_not_contains "$(cat "$log")" $'\x1f''--session'$'\x1f''stale-daemon-session' \
+    "container_ensure routed a session-scoped call through the injected ambient session"
+  assert_contains "$(cat "$log")" "HERDR_SESSION=project-session"$'\x1f''workspace'$'\x1f''list' \
+    "container_ensure did not address the given session"
+  pass "fm_backend_herdr_container_ensure: places in the session it is given even when HERDR_SESSION names a different one"
+}
+
+test_container_ensure_refuses_without_an_explicit_session() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/container-nosession"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=stale-daemon-session \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure "" /tmp' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "container_ensure must refuse an empty session instead of defaulting to the ambient one"
+  assert_contains "$out" "explicit target session" "the empty-session refusal did not explain itself"
+  [ ! -s "$log" ] || fail "an unplaceable spawn must reach no herdr call at all"
+  pass "fm_backend_herdr_container_ensure: refuses an empty session rather than falling back to the environment"
+}
+
+test_projection_create_task_refuses_without_an_explicit_session() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-nosession"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=stale-daemon-session \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_create_task "" /tmp/proj label fm-task' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "projection_create_task must refuse an empty session"
+  assert_contains "$out" "explicit target session" "the empty-session refusal did not explain itself"
+  [ ! -s "$log" ] || fail "an unplaceable projection must reach no herdr call at all"
+  pass "fm_backend_herdr_projection_create_task: refuses an empty session rather than falling back to the environment"
+}
+
+test_self_pid_chain_reports_this_process_and_its_parent() {
+  local chain
+  chain=$( bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_self_pid_chain | tr "\n" " "' "$ROOT" )
+  case " $chain " in
+    *" $$ "*) : ;;
+    *) fail "the ancestry of a direct child must contain this test's own pid $$, got '$chain'" ;;
+  esac
+  case "$chain" in
+    *[!0-9\ ]*) fail "the ancestry must be pids only, got '$chain'" ;;
+  esac
+  pass "fm_backend_herdr_self_pid_chain: walks a real process's ancestry up from itself"
+}
+
+# The verdict is decided by the process tree, so these cases feed the classifier
+# a pane whose shell pid IS an ancestor and one whose shell pid provably is not.
+# $$ here is the test script's own pid, and the `bash -c` below is its child, so
+# it is genuinely in that child's ancestry. The non-ancestor uses a pid above
+# every allocatable pid rather than a live one, so the case cannot flake if the
+# machine happens to recycle a pid mid-run.
+ambient_claim_verdict() {  # <dir> <shell-pid-json> -> mine|not-mine|unknown
+  local dir=$1 body=$2 log resp fb
+  mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' "$body" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_ambient_claim_verdict claimed-session w7:p3' "$ROOT"
+}
+
+test_ambient_claim_verdict_proves_an_accurate_identity() {
+  local verdict
+  verdict=$(ambient_claim_verdict "$TMP_ROOT/claim-mine" \
+    "{\"result\":{\"process_info\":{\"pane_id\":\"w7:p3\",\"shell_pid\":$$}}}")
+  [ "$verdict" = mine ] \
+    || fail "a pane whose shell is this process's own ancestor must verify as mine, got '$verdict'"
+  pass "fm_backend_herdr_ambient_claim_verdict: proves an injected identity that really describes this process"
+}
+
+test_ambient_claim_verdict_disproves_a_stale_identity() {
+  local verdict
+  verdict=$(ambient_claim_verdict "$TMP_ROOT/claim-stale" \
+    '{"result":{"process_info":{"pane_id":"w7:p3","shell_pid":2147483647}}}')
+  [ "$verdict" = not-mine ] \
+    || fail "a pane whose shell is not an ancestor must be disproved, got '$verdict'"
+  pass "fm_backend_herdr_ambient_claim_verdict: disproves a stale injected identity from the process tree"
+}
+
+test_ambient_claim_verdict_reports_unknown_without_evidence() {
+  local verdict
+  verdict=$(ambient_claim_verdict "$TMP_ROOT/claim-unreadable" \
+    '{"error":{"code":"pane_not_found"}}')
+  [ "$verdict" = unknown ] \
+    || fail "an unreadable pane must report unknown rather than guessing, got '$verdict'"
+  verdict=$( bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_ambient_claim_verdict claimed-session ""' "$ROOT" )
+  [ "$verdict" = unknown ] || fail "no claimed pane must report unknown, got '$verdict'"
+  pass "fm_backend_herdr_ambient_claim_verdict: reports unknown rather than guessing when the evidence is missing"
+}
+
+test_whereami_reports_a_process_with_no_herdr_identity() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/whereami-none"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1: `herdr session list --json` (bare, not session-scoped) -> one running
+  # session; 2: its `pane list` -> no panes, so nothing can own this process.
+  printf '{"sessions":[{"name":"default","default":true,"running":true,"socket_path":"/tmp/fm-herdr-unit/d.sock"}]}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[]}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH -u HERDR_SESSION \
+    "$ROOT/bin/fm-herdr-whereami.sh" 2>&1 )
+  status=$?
+  expect_code 3 "$status" "an unlocatable process must exit 3"
+  assert_contains "$out" "UNRESOLVED" "whereami did not say it could not locate this process"
+  assert_contains "$out" "no herdr pane identity at all" "whereami did not report the absent claim"
+  pass "bin/fm-herdr-whereami.sh: reports an unresolved location instead of guessing one"
+}
+
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 
+test_container_ensure_ignores_a_contradictory_ambient_session
+test_container_ensure_refuses_without_an_explicit_session
+test_projection_create_task_refuses_without_an_explicit_session
+test_self_pid_chain_reports_this_process_and_its_parent
+test_ambient_claim_verdict_proves_an_accurate_identity
+test_ambient_claim_verdict_disproves_a_stale_identity
+test_ambient_claim_verdict_reports_unknown_without_evidence
+test_whereami_reports_a_process_with_no_herdr_identity
 test_version_check_accepts_current_protocol
 test_version_check_refuses_old_protocol
 test_version_check_refuses_missing_herdr
@@ -4215,7 +4360,7 @@ test_cli_helper_sets_env_and_appends_trailing_session_flag
 test_launcher_identity_absent_without_a_herdr_pane
 test_launcher_identity_absent_when_herdr_env_alone_is_set
 test_launcher_identity_resolves_the_exact_pane_tab_and_workspace
-test_launcher_identity_refuses_a_pane_from_another_session_name
+test_launcher_identity_reports_no_ancestry_for_another_session_name
 test_launcher_identity_refuses_a_missing_server_socket
 test_launcher_identity_refuses_a_pane_from_another_server_socket
 test_launcher_identity_refuses_an_unreadable_pane
