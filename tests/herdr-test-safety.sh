@@ -33,6 +33,27 @@ herdr_forget_inherited_pane() {
   unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 }
 
+# The session Firstmate reserves for ORCHESTRATORS is the captain's live
+# `default` in production, so sourcing this module immediately poisons it with a
+# name Herdr itself rejects. A suite that spawns a secondmate without calling
+# herdr_reserve_orchestrator_session below then FAILS on an invalid session name
+# instead of quietly standing a workspace up in the captain's own fleet, and the
+# name it fails on says what to do about it.
+#
+# This is fail-closed rather than a convention because the failure it prevents
+# is silent and lands outside the test's own lab: a crewmate or scout is placed
+# from the project registry, which a suite pins by registering its scratch
+# project, but a secondmate is not a worker and is placed here instead
+# (docs/herdr-backend.md "Session selection").
+export FM_BACKEND_HERDR_ORCHESTRATOR_SESSION='unpinned/call-herdr_reserve_orchestrator_session-first'
+
+# herdr_reserve_orchestrator_session: redirect that reservation into this
+# suite's own lab session.
+herdr_reserve_orchestrator_session() { # <lab-session>
+  fm_herdr_lab_validate_name "$1" || return 1
+  export FM_BACKEND_HERDR_ORCHESTRATOR_SESSION="$1"
+}
+
 herdr_refuse_if_default() { # <session>
   fm_herdr_lab_refuse_if_default "$1"
 }
