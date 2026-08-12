@@ -4,7 +4,7 @@
 # Usage: fm-herdr-session-cleanup.sh
 #
 # The caller must already own this Firstmate home's session lock. This script is
-# home-local and considers only the current named Herdr session and ordinary
+# home-local and considers only the Herdr sessions its own records name and
 # state/*.herdr-presentation journals in the effective FM_HOME. Each candidate
 # is additionally serialized by the existing state/.spawn-<task>.lock and the
 # shared named-session Herdr presentation lock, in that order.
@@ -62,6 +62,42 @@ fm_herdr_cleanup_home_identity() {
   (cd "$FM_HOME" 2>/dev/null && pwd -P)
 }
 
+# fm_herdr_cleanup_sessions: every distinct Herdr session THIS home's own
+# durable records name, one per line.
+#
+# Workers are partitioned one session per project (docs/herdr-backend.md
+# "Session selection"), so a home's projections are spread across the sessions
+# of the projects it has dispatched to and are not all in whatever session the
+# operator's environment happens to name. The candidate set is read back from
+# the records that placed them: a bound projection journal names its own
+# session, and a published task endpoint names its own. Both are consulted
+# because a journal that never reached its binding records no session while its
+# task metadata may already exist.
+#
+# An empty result means this home has nothing to sweep, which is the correct
+# conservative outcome - never a reason to fall back to an ambient session and
+# sweep a window this home may not own.
+fm_herdr_cleanup_sessions() {
+  local journal id meta session target
+  {
+    for journal in "$STATE"/*"$FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX"; do
+      [ -f "$journal" ] && [ ! -L "$journal" ] || continue
+      id=$(basename "$journal" "$FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX")
+      if fm_backend_herdr_projection_journal_snapshot "$journal" "$id" 2>/dev/null; then
+        [ -z "$FM_BACKEND_HERDR_JOURNAL_SESSION" ] \
+          || printf '%s\n' "$FM_BACKEND_HERDR_JOURNAL_SESSION"
+      fi
+      meta="$STATE/$id.meta"
+      [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+      [ "$(fm_backend_of_meta "$meta")" = herdr ] || continue
+      target=$(fm_backend_target_of_meta "$meta")
+      session=${target%%:*}
+      [ -n "$session" ] && [ "$session" != "$target" ] || continue
+      printf '%s\n' "$session"
+    done
+  } | sort -u
+}
+
 fm_herdr_cleanup_journal_matches() { # <title> <session> <home-real>
   local title=$1 session=$2 home_real=$3 journal id expected journal_home
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
@@ -70,6 +106,7 @@ fm_herdr_cleanup_journal_matches() { # <title> <session> <home-real>
     id=$(basename "$journal" "$FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX")
     fm_task_id_creation_valid "$id" || continue
     fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || continue
+    # shellcheck disable=SC2153  # sibling out-parameter of the same snapshot call, not a typo for _SESSION
     if [ "$FM_BACKEND_HERDR_JOURNAL_VERSION" = 2 ]; then
       journal_home=$(fm_backend_herdr_projection_home_identity \
         "$FM_BACKEND_HERDR_JOURNAL_HOME" 2>/dev/null) || continue
@@ -308,26 +345,30 @@ fm_herdr_session_cleanup() {
     fm_herdr_cleanup_warn 'home identity is unreadable; preserving every candidate'
     return 0
   }
-  session=$(fm_backend_herdr_session)
-  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
-    fm_herdr_cleanup_warn "session '$session' workspace discovery failed; preserving every candidate"
-    return 0
-  }
-  candidates=$(printf '%s' "$list" | jq -er '
-    .result.workspaces
-    | select(type == "array")
-    | .[]
-    | select((.workspace_id | type) == "string" and (.workspace_id | length) > 0)
-    | select((.label | type) == "string" and (.label | length) > 0)
-    | [.workspace_id, .label] | @tsv
-  ' 2>/dev/null) || {
-    fm_herdr_cleanup_warn "session '$session' workspace discovery was unreadable; preserving every candidate"
-    return 0
-  }
-  while IFS=$'\t' read -r workspace title; do
-    [ -n "$workspace" ] && [ -n "$title" ] || continue
-    fm_herdr_cleanup_one "$session" "$workspace" "$title" "$home_real"
-  done <<< "$candidates"
+  while IFS= read -r session; do
+    [ -n "$session" ] || continue
+    list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
+      fm_herdr_cleanup_warn "session '$session' workspace discovery failed; preserving every candidate"
+      continue
+    }
+    candidates=$(printf '%s' "$list" | jq -er '
+      .result.workspaces
+      | select(type == "array")
+      | .[]
+      | select((.workspace_id | type) == "string" and (.workspace_id | length) > 0)
+      | select((.label | type) == "string" and (.label | length) > 0)
+      | [.workspace_id, .label] | @tsv
+    ' 2>/dev/null) || {
+      fm_herdr_cleanup_warn "session '$session' workspace discovery was unreadable; preserving every candidate"
+      continue
+    }
+    while IFS=$'\t' read -r workspace title; do
+      [ -n "$workspace" ] && [ -n "$title" ] || continue
+      fm_herdr_cleanup_one "$session" "$workspace" "$title" "$home_real"
+    done <<< "$candidates"
+  done <<EOF
+$(fm_herdr_cleanup_sessions)
+EOF
   return 0
 }
 
