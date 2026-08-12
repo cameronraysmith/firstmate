@@ -164,6 +164,14 @@ launcher_lab workspace create --cwd "$TMP_ROOT" --label firstmate --no-focus >/d
 
 LAUNCHER_TABS_BEFORE=$(tab_labels_in launcher_lab)
 
+# What the captain is looking at while workers are created in another session.
+focused_workspace_in() {  # <lab-fn>
+  "$1" workspace list 2>/dev/null \
+    | jq -r '[.result.workspaces[]? | select(.focused == true) | .workspace_id][0] // empty' 2>/dev/null
+}
+LAUNCHER_FOCUS_BEFORE=$(focused_workspace_in launcher_lab)
+[ -n "$LAUNCHER_FOCUS_BEFORE" ] || fail "could not read the launcher session's focused workspace"
+
 # run_spawn_in_launcher_pane <task-id> <project-dir> [extra fm-spawn args...]
 # Runs the real fm-spawn.sh inside the launcher session's real pane, so the
 # HERDR_* identity comes from Herdr's own injection.
@@ -216,7 +224,9 @@ pass "real herdr E2E: a worker spawned from a real pane in one session lands in 
 session_has_pane launcher_lab "$LAUNCH_PANE" || fail "the spawn disturbed the launcher's own pane"
 [ "$(launcher_lab workspace list 2>/dev/null | jq -r '[.result.workspaces[]? | select(.label == "firstmate")] | length')" = 2 ] \
   || fail "the spawn created or removed a workspace in the launcher's session"
-pass "real herdr E2E: neither same-labeled workspace in the launcher's own session is adopted, created into, or mutated"
+[ "$(focused_workspace_in launcher_lab)" = "$LAUNCHER_FOCUS_BEFORE" ] \
+  || fail "the spawn moved focus in the session the captain is watching"
+pass "real herdr E2E: neither same-labeled workspace in the launcher's own session is adopted, created into, or mutated, and focus there does not move"
 
 # --- 3. a scout is partitioned by the same rule ------------------------------
 
