@@ -42,6 +42,18 @@ brief_keyed_example() {  # <brief> <verb>
   return 0
 }
 
+# The "# Testing scope" section of a generated brief: its header line through the
+# blank line that ends it. Scoping the tool-agnosticism check to this section keeps
+# the rest of the brief's legitimate concrete tooling (gh-axi, chrome-devtools-axi,
+# the Herdr lab helper) out of it.
+brief_testing_scope() {  # <brief>
+  awk '
+    $0 == "# Testing scope" { inside = 1 }
+    inside && $0 == "" { exit }
+    inside { print }
+  ' "$1"
+}
+
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
@@ -881,6 +893,83 @@ test_status_protocol_demonstrates_the_decision_key_position() {
   pass "fm-brief.sh: ship and scout scaffolds demonstrate a keyed open/close pair the fold honors"
 }
 
+# Every crewmate scaffold must bound how much the worker runs beyond its own
+# change, because an unbounded default has each worker decide alone and a
+# reasonable one picks the largest available option, which costs supervision
+# rather than confidence. The bound must be stated without naming a runner: one
+# scaffold serves every registered project and the caller-supplied repo string
+# cannot identify which, so any concrete command would be wrong in most of them.
+# The forbidden-tool check is what stops a later edit from quietly reintroducing
+# one after a firstmate-repo task made a specific runner feel obvious.
+test_testing_scope_is_present_and_tool_agnostic() {
+  local home id kind brief section forbidden invocation
+  home="$TMP_ROOT/testing-scope-home"
+  mkdir -p "$home/data"
+  # Two patterns, because runner names split into two classes. Names that are only
+  # ever tools are matched bare; names that are also ordinary English (`make`,
+  # `just`, `go`, `run`) are matched only as an invocation with a target, so a
+  # sentence may still say "make an oversized selection" or "a long run". Both are
+  # word-boundary matched with a portable ERE rather than \b, which BSD grep does
+  # not honor, so "justify" and "judgement" never read as the `just` runner.
+  forbidden='fm-test-run|cargo|nix|pytest|tox|npm|yarn|pnpm|bun|gradle|mvn|maven|ctest|cmake|vitest|jest|mocha|rspec|phpunit|dotnet|bats|shellcheck|makefile|justfile'
+  invocation='(make|just|go|swift|bazel|rake|dune|meson|ninja) (test|tests|check|build|run|all|lint)'
+
+  for kind in no-mistakes direct-PR local-only scout; do
+    id="scope-$kind"
+    # A deliberately non-firstmate repo argument: the guidance has to be correct
+    # in the thirteen registered projects that are not the one this scaffold
+    # lives in, and firstmate's own runner must not leak in through the scaffold.
+    case "$kind" in
+      scout) FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+        "$ROOT/bin/fm-brief.sh" "$id" some-rust-crate --scout >/dev/null 2>&1 ;;
+      *) FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+        "$ROOT/bin/fm-brief.sh" "$id" some-rust-crate --mode "$kind" >/dev/null 2>&1 ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    section=$(brief_testing_scope "$brief")
+    [ -n "$section" ] || fail "$kind brief carries no '# Testing scope' section"
+
+    assert_contains "$section" "what you ran and why" \
+      "$kind testing scope does not make the worker state what it ran and why"
+    assert_contains "$section" "escalate under rule 6" \
+      "$kind testing scope gives no escalation path, so bounding scope could silently reduce coverage"
+    assert_contains "$section" "names no test command on purpose" \
+      "$kind testing scope drops the shared reason no command is named"
+    case "$kind" in
+      scout) assert_contains "$section" "the question you were sent to answer" \
+        "scout testing scope must bound the run by its question: a scout has no diff, and breadth is sometimes the finding" ;;
+      *) assert_contains "$section" "blast radius wider than your own diff" \
+        "$kind testing scope must bound the run by the change the worker actually made" ;;
+    esac
+
+    if printf '%s\n' "$section" | grep -Eiq -- "(^|[^a-z])($forbidden)([^a-z]|\$)"; then
+      fail "$kind testing scope names a concrete test tool, which would be wrong in most registered projects:"$'\n'"$section"
+    fi
+    if printf '%s\n' "$section" | grep -Eiq -- "(^|[^a-z])($invocation)([^a-z]|\$)"; then
+      fail "$kind testing scope names a concrete test invocation, which would be wrong in most registered projects:"$'\n'"$section"
+    fi
+    if printf '%s\n' "$section" | grep -Eq -- '(^|[[:space:]])--[a-z]'; then
+      fail "$kind testing scope names a runner flag:"$'\n'"$section"
+    fi
+    if printf '%s\n' "$section" | grep -Fq -- '.sh'; then
+      fail "$kind testing scope names a script path:"$'\n'"$section"
+    fi
+  done
+
+  # A secondmate runs nothing itself; it delegates to crewmates whose own briefs
+  # come from this same scaffold, so a copy here would be a second owner of the
+  # same contract, free to drift.
+  FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" scope-secondmate --secondmate alpha >/dev/null 2>&1
+  brief="$home/data/scope-secondmate/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
+  assert_no_grep "# Testing scope" "$brief" \
+    "secondmate charter must not restate the testing-scope contract its crewmates' briefs already carry"
+  pass "fm-brief.sh: ship and scout scaffolds bound testing scope without naming a test tool"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -926,4 +1015,5 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_crewmate_scaffolds_declare_own_background_work
 test_scout_and_secondmate_load_decision_hold_policy
 test_status_protocol_demonstrates_the_decision_key_position
+test_testing_scope_is_present_and_tool_agnostic
 test_scout_and_secondmate_scaffold
