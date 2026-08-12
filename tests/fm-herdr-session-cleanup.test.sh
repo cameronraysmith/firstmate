@@ -66,8 +66,39 @@ LOCK_LOG="$TMP_ROOT/locks.log"
 CLOSE_LOG="$TMP_ROOT/closes.log"
 mkdir -p "$FIXTURE_DIR"
 
+SESSIONS_ERR="$TMP_ROOT/sessions.err"
+LEGACY_ID=legacy-task
+printf 'version=1\ntask_id=%s\nprojection_id=%s\n' "$ID" "$TOKEN" \
+  > "$FM_STATE_OVERRIDE/$ID.herdr-presentation"
+printf 'version=1\ntask_id=%s\nprojection_id=%s\n' "$LEGACY_ID" "$TOKEN" \
+  > "$FM_STATE_OVERRIDE/$LEGACY_ID.herdr-presentation"
+SESSIONS=$(fm_herdr_cleanup_sessions 2>"$SESSIONS_ERR")
+[ -z "$SESSIONS" ] || fail "journals naming no session enumerated one" "$SESSIONS"
+SESSIONS_WARNING=$(cat "$SESSIONS_ERR")
+assert_contains "$SESSIONS_WARNING" "task IDs $LEGACY_ID, $ID" \
+  "an empty session enumeration must name every affected task ID"
+assert_contains "$SESSIONS_WARNING" "inspect those tasks in Herdr" \
+  "an empty session enumeration warning must give an operator action"
+pass "an empty session enumeration names the affected tasks and an operator action"
+
+{
+  printf 'version=2\ntask_id=%s\nprojection_id=%s\n' "$ID" "$TOKEN"
+  printf 'home=%s\nsession=named-session\nworkspace_id=%s\ntab_id=%s\npane_id=%s\n' \
+    "$FM_HOME" "$WS" "$TAB" "$PANE"
+  printf 'parent_workspace_id=w1\nparent_label=firstmate\nworkspace_label=%s\ntask_label=fm-%s\n' \
+    "$TITLE" "$ID"
+} > "$FM_STATE_OVERRIDE/$ID.herdr-presentation"
+rm -f "$FM_STATE_OVERRIDE/$LEGACY_ID.herdr-presentation"
+SESSIONS=$(fm_herdr_cleanup_sessions 2>"$SESSIONS_ERR")
+[ "$SESSIONS" = named-session ] \
+  || fail "a bound journal did not name its own session" "$SESSIONS"
+[ ! -s "$SESSIONS_ERR" ] \
+  || fail "a non-empty enumeration warned" "$(cat "$SESSIONS_ERR")"
+pass "a bound journal names its own session without warning"
+rm -f "$FM_STATE_OVERRIDE/$ID.herdr-presentation" "$SESSIONS_ERR"
+
 fm_backend_name() { printf herdr; }
-fm_backend_herdr_session() { printf test; }
+fm_herdr_cleanup_sessions() { printf test; }
 fm_backend_herdr_presentation_session_lock_path() { printf '%s/presentation.lock' "$TMP_ROOT"; }
 fm_lock_try_acquire() {
   printf '%s\n' "$1" >> "$LOCK_LOG"
