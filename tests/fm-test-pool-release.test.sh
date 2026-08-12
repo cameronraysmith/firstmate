@@ -171,9 +171,12 @@ while :; do sleep 0.1; done" >/dev/null 2>&1 &
 # cost.
 
 test_pool_directory_released_when_no_worktree_was_acquired() {
-  local harness report pool
+  local harness report repo pool found=0
   harness=$(fm_test_tmproot fm-pool-release-untouched)
   report="$harness/report"
+  # An origin remote, matching what the herdr suites build: it changes the pool
+  # identity treehouse derives, which is why the pool directory is observed
+  # rather than computed.
   bash -c "
 set -u
 . '$LIB'
@@ -186,15 +189,22 @@ printf 'x\n' > \"\$REPO/README.md\"
 git -C \"\$REPO\" add README.md
 git -C \"\$REPO\" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
   commit -qm initial
+git clone --quiet --bare \"\$REPO\" \"\$REPO.origin.git\"
+git -C \"\$REPO\" remote add origin \"file://\$REPO.origin.git\"
 printf 'repo=%s\n' \"\$REPO\" > '$report'
-printf 'pool=%s\n' \"\$(fm_test_pool_dir_for \"\$REPO\")\" >> '$report'
-if [ -e \"\$(fm_test_pool_dir_for \"\$REPO\")\" ]; then exit 92; fi
 exit 0
-" || fail "the untouched-pool child failed, or its pool directory existed before any release"
-  pool=$(report_pool "$report")
-  [ -n "$pool" ] || fail "the untouched-pool child never published a pool directory"
-  assert_pool_released "$report" \
-    "a pool whose directory only the release itself creates is removed, not left behind"
+" || fail "the untouched-pool child failed"
+  repo=$(report_repo "$report")
+  [ -n "$repo" ] || fail "the untouched-pool child never published its fixture repo"
+  assert_absent "$repo" "the untouched-pool fixture repository survived cleanup"
+  for pool in "$FM_TEST_TREEHOUSE_ROOT/$FIXTURE_POOL_PREFIX"*; do
+    [ -d "$pool" ] || continue
+    found=1
+    force_release_pool "$pool"
+  done
+  [ "$found" -eq 0 ] || fail \
+    "a project that never acquired a worktree left its pool directory behind"
+  pass "a pool whose directory only the release itself creates is removed, not left behind"
 }
 
 # --- pool release adds no orphan -------------------------------------------
@@ -231,6 +241,28 @@ test_reap_bounded_returns_on_a_child_ignoring_term() {
   [ "$elapsed" -le 20 ] || fail \
     "fm_test_reap_bounded took ${elapsed}s on a child ignoring SIGTERM; it is not bounded"
   pass "fm_test_reap_bounded escalates past a child that ignores SIGTERM and returns bounded"
+}
+
+# The status-preserving variant: an assertion on a child's own exit status must
+# survive being bounded, or bounding it would silently weaken the assertion.
+test_wait_bounded_preserves_status_and_bounds_a_hang() {
+  local pid start elapsed rc
+  bash -c 'exit 7' &
+  pid=$!
+  rc=0
+  fm_test_wait_bounded "$pid" 100 || rc=$?
+  [ "$rc" -eq 7 ] || fail "fm_test_wait_bounded reported $rc for a child that exited 7"
+
+  bash -c 'trap "" TERM; while :; do sleep 0.1; done' &
+  pid=$!
+  start=$(date +%s)
+  rc=0
+  fm_test_wait_bounded "$pid" 5 || rc=$?
+  elapsed=$(( $(date +%s) - start ))
+  [ "$rc" -eq 124 ] || fail "fm_test_wait_bounded reported $rc instead of a timeout for a child that never exits"
+  fm_test_pid_live "$pid" && fail "fm_test_wait_bounded timed out without reaping the child"
+  [ "$elapsed" -le 20 ] || fail "fm_test_wait_bounded took ${elapsed}s; it is not bounded"
+  pass "fm_test_wait_bounded returns the child's own status, and bounds a child that never exits"
 }
 
 # The acceptance criterion itself: a child that never exits must not prevent the
@@ -283,5 +315,6 @@ test_pool_released_on_sigterm
 test_pool_directory_released_when_no_worktree_was_acquired
 test_release_cycle_adds_no_orphan
 test_reap_bounded_returns_on_a_child_ignoring_term
+test_wait_bounded_preserves_status_and_bounds_a_hang
 test_teardown_after_a_stuck_child_is_reached
 test_suite_left_no_fixture_pool_behind
