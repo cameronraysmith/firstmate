@@ -408,6 +408,65 @@ EOF
   pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
 }
 
+# The same registry line also records the Herdr session a project's workers are
+# placed in. Unlike the posture output above, which falls back to the most
+# rigorous default so a typo never silently drops a gate, the session selector
+# FAILS CLOSED: there is no safe default placement, and guessing one is the
+# defect it exists to remove.
+test_project_mode_reads_the_recorded_herdr_session() {
+  local home out err status
+  home="$TMP_ROOT/project-session/home"
+  mkdir -p "$home/data"
+  cat > "$home/data/projects.md" <<'EOF'
+- withses [direct-PR session=fm-withses] - fixture (added 2026-01-01)
+- reordered [no-mistakes session=fm-reordered +yolo] - fixture (added 2026-01-01)
+- sesonly [session=fm-sesonly] - fixture (added 2026-01-01)
+- legacy - fixture with no annotation bracket at all (added 2026-01-01)
+- noses [direct-PR] - fixture (added 2026-01-01)
+- badname [direct-PR session=has/slash] - fixture (added 2026-01-01)
+- reserved [direct-PR session=default] - fixture (added 2026-01-01)
+EOF
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --session withses 2>/dev/null)
+  [ "$out" = fm-withses ] || fail "the recorded session was not read back (got '$out')"
+
+  # The bracket's tokens are order-independent apart from the leading mode, so a
+  # session recorded before +yolo must not shadow either one.
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --session reordered 2>/dev/null)
+  [ "$out" = fm-reordered ] || fail "a session token before +yolo was not read (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" reordered 2>/dev/null)
+  [ "$out" = "no-mistakes on" ] || fail "a session token displaced the posture on the same line (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --session sesonly 2>/dev/null)
+  [ "$out" = fm-sesonly ] || fail "a session recorded without a mode was not read (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" sesonly 2>/dev/null)
+  [ "$out" = "no-mistakes off" ] || fail "a session-only bracket was mistaken for a mode (got '$out')"
+
+  # An older firstmate must keep reading a registry a newer one extended, so a
+  # recorded session never disturbs the posture the mechanical consumers read.
+  out=$(FM_HOME="$home" "$PROJECT_MODE" withses 2>/dev/null)
+  [ "$out" = "direct-PR off" ] || fail "a recorded session changed the registered posture (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" withses 2>&1 >/dev/null)
+  [ -z "$err" ] || fail "a recorded session warned on the posture path: $err"
+
+  for project in legacy noses badname reserved missing; do
+    out=$(FM_HOME="$home" "$PROJECT_MODE" --session "$project" 2>/dev/null) && status=0 || status=$?
+    [ "$status" -ne 0 ] || fail "--session $project must fail closed, printed '$out'"
+    [ -z "$out" ] || fail "--session $project printed a session it could not justify: '$out'"
+  done
+
+  err=$(FM_HOME="$home" "$PROJECT_MODE" --session noses 2>&1 >/dev/null)
+  assert_contains "$err" "noses" "the missing-session refusal did not name the project"
+  assert_contains "$err" "session=<herdr-session>" "the missing-session refusal did not name the edit that fixes it"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" --session badname 2>&1 >/dev/null)
+  assert_contains "$err" "has/slash" "the invalid-name refusal did not name the value Herdr would reject"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" --session reserved 2>&1 >/dev/null)
+  assert_contains "$err" "orchestrator" "the reserved-session refusal did not explain what 'default' is for"
+
+  out=$(FM_HOME="$TMP_ROOT/project-session/absent" "$PROJECT_MODE" --session withses 2>/dev/null) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "--session must fail closed with no registry at all, printed '$out'"
+  pass "fm-project-mode: --session reads the recorded Herdr session and fails closed on every case it cannot justify"
+}
+
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
@@ -417,4 +476,5 @@ test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
+test_project_mode_reads_the_recorded_herdr_session
 echo "# all fm-task-delivery tests passed"
