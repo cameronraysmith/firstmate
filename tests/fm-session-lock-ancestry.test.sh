@@ -45,6 +45,22 @@ lib_eval() {  # <fakebin> <expression>
   " "$LIB"
 }
 
+# The same, with fm-wake-lib.sh loaded first so the recycle-proof pid identity
+# the session lock records is available. FM_PROC_ROOT_OVERRIDE points at a path
+# that does not exist so the identity always comes from the fake ps: a fixture
+# pid can collide with a real one, and a real /proc entry for that collision
+# would answer instead of the process table this case constructs.
+lib_eval_full() {  # <fakebin> <state> <expression>
+  local fakebin=$1 state=$2 expr=$3
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" \
+    FM_PROC_ROOT_OVERRIDE="$state/absent-proc" bash -c "
+    . \"\$0\"
+    . \"\$1\"
+    kill() { return 0; }
+    $expr
+  " "$ROOT/bin/fm-wake-lib.sh" "$LIB"
+}
+
 test_version_named_session_is_identified_on_both_platforms() {
   local dir fakebin shape got
   dir="$TMP_ROOT/version-named"
@@ -355,10 +371,253 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+# --- e2e: two sessions sharing ONE daemon ancestor ---------------------------
+#
+# The reproducing configuration for a lease that admitted two owners. Claude
+# Code runs each background session of a home as a claimed spare under one
+# shared daemon, so every session's contiguous harness run ends at the SAME
+# outermost pid. Both sessions therefore compute the identical harness pid, the
+# second finds that pid already in state/.lock, and pid equality reads as proof
+# it owns a home it never claimed.
+#
+# The fixture builds exactly that shape with real processes: one harness-named
+# daemon, orphaned to init so the walk terminates inside the fixture, running
+# two harness-named session children that each carry their own session id.
+
+install_lock_scripts() {
+  local dir=$1
+  mkdir -p "$dir/bin" "$dir/state"
+  cp "$ROOT/bin/fm-lock.sh" "$ROOT/bin/fm-session-lock-lib.sh" \
+    "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-stat-lib.sh" "$dir/bin/"
+  chmod +x "$dir/bin/fm-lock.sh"
+}
+
+# One lock attempt by session <label>, recorded under <tag>. `hold` keeps the
+# session process alive until released, so a competing attempt runs while this
+# one is genuinely still live; `once` returns as soon as the attempt is recorded.
+make_shared_daemon_home() {  # <dir>
+  local dir=$1
+  install_lock_scripts "$dir"
+  cat > "$dir/attempt.sh" <<'SH'
+#!/usr/bin/env bash
+label=$1 tag=$2 mode=$3
+export CLAUDE_CODE_SESSION_ID="fixture-session-$label"
+printf '%s\n' "$$" > "$FM_HOME/state/$tag.pid"
+( . "$FM_HOME/bin/fm-session-lock-lib.sh"; fm_harness_ancestry_pid ) \
+  > "$FM_HOME/state/$tag.ancestor" 2>/dev/null || true
+"$FM_HOME/bin/fm-lock.sh" > "$FM_HOME/state/$tag.out" 2>&1
+printf '%s\n' "$?" > "$FM_HOME/state/$tag.rc"
+[ "$mode" = hold ] || exit 0
+i=0
+while [ "$i" -lt 600 ] && [ ! -e "$FM_HOME/state/release-$label" ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+SH
+  cat > "$dir/daemon.sh" <<'SH'
+#!/usr/bin/env bash
+i=0
+while [ "$i" -lt 200 ] && [ "$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')" != 1 ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+printf '%s\n' "$$" > "$FM_HOME/state/daemon-pid"
+await() {  # <state-file>
+  local n=0
+  while [ "$n" -lt 600 ] && [ ! -s "$FM_HOME/state/$1" ]; do
+    sleep 0.05
+    n=$((n + 1))
+  done
+}
+"$FM_CLAUDE_BIN" "$FM_HOME/attempt.sh" a a1 hold &
+holder=$!
+await a1.rc
+"$FM_CLAUDE_BIN" "$FM_HOME/attempt.sh" b b1 once
+"$FM_CLAUDE_BIN" "$FM_HOME/attempt.sh" a a2 once
+: > "$FM_HOME/state/release-a"
+wait "$holder"
+"$FM_CLAUDE_BIN" "$FM_HOME/attempt.sh" b b2 once
+printf 'done\n' > "$FM_HOME/state/fixture.done"
+SH
+  chmod +x "$dir/attempt.sh" "$dir/daemon.sh"
+}
+
+run_shared_daemon_fixture() {  # <dir>
+  local dir=$1 i
+  FM_HOME="$dir" FM_CLAUDE_BIN="$NAMED_CLAUDE" \
+    bash -c '"$0" "$1" &' "$NAMED_CLAUDE" "$dir/daemon.sh"
+  i=0
+  while [ "$i" -lt 1200 ] && [ ! -s "$dir/state/fixture.done" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$dir/state/fixture.done" ] || fail "the shared-daemon fixture never finished"
+}
+
+attempt_rc() {  # <dir> <tag>
+  tr -d '[:space:]' < "$1/state/$2.rc"
+}
+
+attempt_out() {  # <dir> <tag>
+  cat "$1/state/$2.out" 2>/dev/null || true
+}
+
+test_e2e_second_session_under_one_daemon_is_refused() {
+  local dir a_pid b_pid a_ancestor b_ancestor
+  dir="$TMP_ROOT/e2e-shared-daemon"
+  make_shared_daemon_home "$dir"
+  run_shared_daemon_fixture "$dir"
+
+  # Without this the case could pass vacuously against two sessions that never
+  # shared an ancestor at all, which is not the configuration that reproduces.
+  a_pid=$(tr -d '[:space:]' < "$dir/state/a1.pid")
+  b_pid=$(tr -d '[:space:]' < "$dir/state/b1.pid")
+  a_ancestor=$(tr -d '[:space:]' < "$dir/state/a1.ancestor")
+  b_ancestor=$(tr -d '[:space:]' < "$dir/state/b1.ancestor")
+  [ -n "$a_pid" ] && [ "$a_pid" != "$b_pid" ] \
+    || fail "fixture did not produce two distinct sessions: a=$a_pid b=$b_pid"
+  [ -n "$a_ancestor" ] && [ "$a_ancestor" = "$b_ancestor" ] \
+    || fail "fixture did not reproduce one shared harness ancestor: a=$a_ancestor b=$b_ancestor"
+
+  expect_code 0 "$(attempt_rc "$dir" a1)" "the first session must claim the home"
+  assert_contains "$(attempt_out "$dir" a1)" "lock acquired" \
+    "the first session did not report the lease as acquired"
+
+  expect_code 1 "$(attempt_rc "$dir" b1)" \
+    "a second session under the same daemon ancestor must be refused the lease"
+  assert_contains "$(attempt_out "$dir" b1)" "another live firstmate session holds the lock" \
+    "the refused session did not receive the read-only diagnostic"
+
+  # Refusing the sibling must not cost the holder its own home.
+  expect_code 0 "$(attempt_rc "$dir" a2)" \
+    "the session that holds the lease was refused its own home"
+
+  # Once the holder is gone the daemon is still alive. It is shared
+  # infrastructure, not a session, so it must not hold the home hostage.
+  expect_code 0 "$(attempt_rc "$dir" b2)" \
+    "the surviving shared daemon locked out the next session of the home"
+  pass "session-lock e2e: two sessions under one daemon ancestor get exactly one owner"
+}
+
+# --- unit: session identity and recycle-proof holder liveness ----------------
+
+# A process table in which pid 400 parents this process, both report as claude,
+# and every other pid is an ordinary shell. That is the daemon-sharing shape
+# reduced to its essentials: the recorded lock pid IS an ancestor of the prober.
+make_shared_ancestor_ps() {  # <fakebin> <parent-pid>
+  local fakebin=$1 parent=$2
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -o) field=\$2; shift 2 ;;
+    -p) pid=\$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "\$pid:\$field" in
+  $parent:comm=) printf '%s\n' claude ;;
+  $parent:args=) printf '%s\n' claude ;;
+  $parent:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' claude ;;
+  *:args=) printf '%s\n' claude ;;
+  *:ppid=) printf '%s\n' $parent ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+}
+
+test_session_identity_decides_ownership_among_ancestry_siblings() {
+  local dir fakebin owner
+  dir="$TMP_ROOT/identity-siblings"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  make_shared_ancestor_ps "$fakebin" 400
+  printf '400\n' > "$dir/state/.lock"
+  printf 'pid 400\nsession sess-a\nchain 777 \nchain 400 \n' > "$dir/state/.lock.session"
+
+  CLAUDE_CODE_SESSION_ID=sess-a lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
+    || fail "the session recorded on the lease did not recognize its own home"
+  if CLAUDE_CODE_SESSION_ID=sess-b lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'"; then
+    fail "a sibling session claimed a home whose lease names another session"
+  fi
+  # With no session id on either side the answer must stay exactly what it was
+  # before sessions could be told apart: ancestry membership.
+  rm -f "$dir/state/.lock.session"
+  owner="fm_session_lock_owned_by_self '$dir/state'"
+  ( unset CLAUDE_CODE_SESSION_ID FM_SESSION_ID; lib_eval "$fakebin" "$owner" ) \
+    || fail "a lock with no recorded session stopped answering by ancestry membership"
+  pass "session-lock: the recorded session id, not a shared ancestor pid, decides ownership"
+}
+
+# The record's chain pid is deliberately OUTSIDE the prober's ancestry here:
+# that is what makes it evidence of another session rather than of shared
+# infrastructure. The fake process table resolves no harness ancestry for the
+# prober at all, so nothing about pid 700 can be read as inherited.
+make_recorded_holder_ps() {  # <fakebin>
+  local fakebin=$1
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+requested=$*
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$requested" in
+  *lstart*)
+    if [ "$pid" = "${FM_TEST_RECYCLED_PID:-}" ]; then
+      printf '%s\n' 'Wed Aug 12 14:11:00 2026 claude --resume'
+    else
+      printf '%s\n' 'Wed Aug 12 13:05:32 2026 claude --resume'
+    fi
+    exit 0
+    ;;
+esac
+case "$pid:$field" in
+  700:comm=) printf '%s\n' claude ;;
+  700:args=) printf '%s\n' claude ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' bash ;;
+  *:ppid=) printf '%s\n' 1 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+}
+
+test_recycled_holder_pid_is_not_a_live_holder() {
+  local dir fakebin holder
+  dir="$TMP_ROOT/recycled-holder"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  make_recorded_holder_ps "$fakebin"
+  printf '700\n' > "$dir/state/.lock"
+  printf 'pid 700\nsession sess-other\nchain 700 Wed Aug 12 13:05:32 2026 claude --resume\n' \
+    > "$dir/state/.lock.session"
+  holder="fm_session_lock_holder_is_other_live_session '$dir/state'"
+
+  ( unset CLAUDE_CODE_SESSION_ID FM_SESSION_ID; lib_eval_full "$fakebin" "$dir/state" "$holder" ) \
+    || fail "a still-running recorded holder was not recognized as another live session"
+  if ( unset CLAUDE_CODE_SESSION_ID FM_SESSION_ID
+    FM_TEST_RECYCLED_PID=700 lib_eval_full "$fakebin" "$dir/state" "$holder" ); then
+    fail "a recycled pid wearing the recorded holder's number was read as a live holder"
+  fi
+  pass "session-lock: a recycled pid does not keep the recorded holder alive"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
+test_session_identity_decides_ownership_among_ancestry_siblings
+test_recycled_holder_pid_is_not_a_live_holder
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
+test_e2e_second_session_under_one_daemon_is_refused
