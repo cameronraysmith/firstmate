@@ -91,6 +91,11 @@ mkdir -p "$STATE" "$DATA/$ID" "$CONFIG"
 # presentation projection and keep the assertions on the flat per-home workspace.
 printf 'off\n' > "$CONFIG/herdr-presentation-spaces"
 printf 'trivial autodetect-smoke brief: nothing to do.\n' > "$DATA/$ID/brief.md"
+# Worker placement is registry-selected, so the throwaway project below is
+# registered against this suite's isolated lab session. Backend AUTO-DETECTION
+# is what this suite tests; placement has its own suite.
+printf -- '- scratch-project [no-mistakes session=%s] - throwaway (added 2026-01-01)\n' \
+  "$HERDR_LAB_SESSION" > "$DATA/projects.md"
 
 PROJ="$TMP_ROOT/scratch-project"
 mkdir -p "$PROJ"

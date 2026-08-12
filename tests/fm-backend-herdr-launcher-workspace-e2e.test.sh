@@ -194,6 +194,22 @@ printf 'trivial secondmate charter brief: nothing to do.\n' > "$PRIMARY_HOME/dat
 
 PROJ="$TMP_ROOT/scratch-project"; make_scratch_project "$PROJ"
 
+# Worker placement is selected from each home's own project registry, so every
+# home that spawns here registers the scratch project against this suite's
+# isolated lab session. Placement is the SUBJECT of the neighbouring
+# session-per-project suite; here it only has to be pinned to the lab so the
+# launcher-workspace guarantees below run where they always did.
+for home in "$PRIMARY_HOME" "$SM_HOME" "$PRES_HOME"; do
+  mkdir -p "$home/data"
+  printf -- '- %s [no-mistakes session=%s] - scratch project (added 2026-01-01)\n' \
+    "$(basename "$PROJ")" "$HERDR_LAB_SESSION" > "$home/data/projects.md"
+done
+# A secondmate is an orchestrator rather than a worker, so it is placed in the
+# reserved orchestrator session. Redirect that reservation into the lab for the
+# duration of this suite; the captain's real `default` session is never a test
+# subject.
+herdr_reserve_orchestrator_session "$HERDR_LAB_SESSION" || fail "could not reserve the lab orchestrator session"
+
 # One unrelated workspace, kept FOCUSED throughout, so every placement result
 # below is also evidence that the globally focused workspace is never the target.
 read -r WS_OTHER WS_OTHER_TAB _ <<EOF
