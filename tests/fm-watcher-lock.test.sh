@@ -366,6 +366,160 @@ test_lock_empty_pid_uses_minimum_grace() {
   pass "empty mid-acquire lock keeps a minimum grace"
 }
 
+# Install a stat(1) that PASSES the dialect probe and then answers the mtime
+# query with something that is not an mtime, and echo the bin dir to prepend to
+# PATH. This is the gap the probe cannot close: bin/fm-stat-lib.sh proves the
+# format flag is accepted, never that the field came back, so the answer itself
+# has to be validated downstream. Real stat implementations cannot be driven
+# into this state on demand, and CI's lanes never see it, so a shim is the only
+# way to pin the guard anywhere.
+#
+#   empty   - exits 0 having printed nothing
+#   garbage - exits 0 having printed multi-line non-numeric text
+make_unusable_stat_bin() {  # <dir> <empty|garbage>
+  local dir=$1 kind=$2
+  mkdir -p "$dir"
+  cat > "$dir/stat" <<SH
+#!/bin/sh
+case "\$1" in
+  -c)
+    case "\$2" in
+      %h) printf '1\n'; exit 0 ;;
+      %Y)
+        case "$kind" in
+          empty) exit 0 ;;
+          garbage) printf 'File: "/x"\nID: 1 Namelen: 255\n'; exit 0 ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
+exit 1
+SH
+  chmod +x "$dir/stat"
+  printf '%s\n' "$dir"
+}
+
+# run_with_unusable_stat <case> <empty|garbage> <state> <snippet>
+# Run <snippet> against the production library with only the unusable stat on
+# PATH, merging stderr into stdout and returning the snippet's own exit code.
+# The snippet runs from inside <state> so it can name lock paths relatively and
+# stay free of expansions belonging to this shell.
+run_with_unusable_stat() {
+  local name=$1 kind=$2 state=$3 snippet=$4 bin
+  bin=$(make_unusable_stat_bin "$TMP_ROOT/$name/statbin.$kind" "$kind") || return 1
+  (
+    cd "$state" || exit 1
+    PATH="$bin:$PATH" FM_STATE_OVERRIDE="$state" bash -c "
+      set -u
+      . '$LIB'
+      $snippet
+    " _ 2>&1
+  )
+}
+
+test_unusable_mtime_never_reaches_an_integer_comparison() {
+  local dir state kind age out
+  dir=$(make_case lock-unusable-mtime)
+  state="$dir/state"
+  mkdir "$state/.contend.lock"
+  for kind in empty garbage; do
+    age=$(run_with_unusable_stat lock-unusable-mtime "$kind" "$state" \
+      'fm_path_age .contend.lock')
+    assert_not_contains "$age" 'syntax error in expression' \
+      "a stat answering '$kind' must not reach shell arithmetic unvalidated"
+    case "$age" in
+      ''|*[!0-9]*) fail "fm_path_age must print one integer under a stat answering '$kind', got: [$age]" ;;
+    esac
+    out=$(run_with_unusable_stat lock-unusable-mtime "$kind" "$state" \
+      'fm_lock_mid_acquire_is_fresh .contend.lock ""')
+    assert_not_contains "$out" 'integer expression expected' \
+      "a stat answering '$kind' must not compare an empty value as an integer"
+  done
+  pass "an unusable mtime never reaches an integer comparison as an empty value"
+}
+
+test_unusable_mtime_does_not_read_as_epoch_zero() {
+  local dir state kind age now
+  dir=$(make_case lock-unusable-epoch)
+  state="$dir/state"
+  now=$(date +%s)
+  for kind in empty garbage; do
+    age=$(run_with_unusable_stat lock-unusable-epoch "$kind" "$state" 'fm_path_age .')
+    case "$age" in
+      ''|*[!0-9]*) fail "fm_path_age must answer with an integer under '$kind', got: [$age]" ;;
+    esac
+    # An unusable answer read as epoch zero renders any path as decades stale.
+    # Anything near the current epoch is that defect, whatever its exact value.
+    [ "$age" -lt $((now / 2)) ] \
+      || fail "fm_path_age under '$kind' reported an epoch-derived age ($age), not a bounded verdict"
+  done
+  pass "an unusable mtime yields a bounded staleness verdict, not an epoch-derived figure"
+}
+
+test_lock_with_unmeasurable_age_is_not_stolen() {
+  local dir state verdict acquire
+  dir=$(make_case lock-unmeasurable-age)
+  state="$dir/state"
+  mkdir "$state/.contend.lock"
+  # A lock path that EXISTS with no readable age is indeterminate, never
+  # evidence that its owner is gone: stealing it here is how two processes end
+  # up holding the same singleton.
+  if run_with_unusable_stat lock-unmeasurable-age garbage "$state" \
+    'fm_lock_mid_acquire_is_fresh .contend.lock ""' >/dev/null; then
+    verdict=held
+  else
+    verdict=reclaimable
+  fi
+  [ "$verdict" = held ] \
+    || fail "a lock whose age cannot be measured was judged $verdict"
+  if run_with_unusable_stat lock-unmeasurable-age garbage "$state" \
+    'fm_lock_try_acquire .contend.lock' >/dev/null; then
+    acquire=stolen
+  else
+    acquire=refused
+  fi
+  [ "$acquire" = refused ] \
+    || fail "a lock whose age cannot be measured was $acquire"
+  [ -d "$state/.contend.lock" ] || fail 'the unmeasurable lock dir was removed'
+  pass "a lock whose age cannot be measured is left alone rather than stolen"
+}
+
+test_absent_lock_path_stays_determinate_under_a_broken_stat() {
+  local dir state verdict
+  dir=$(make_case lock-absent-broken-stat)
+  state="$dir/state"
+  # Absence is determinate even when nothing can be measured: a lock path that
+  # is gone holds nothing, so acquisition must not stall waiting on it.
+  if run_with_unusable_stat lock-absent-broken-stat garbage "$state" \
+    'fm_lock_mid_acquire_is_fresh .gone.lock ""' >/dev/null; then
+    verdict=held
+  else
+    verdict=absent
+  fi
+  [ "$verdict" = absent ] \
+    || fail "an absent lock path was judged $verdict when the mtime is unreadable"
+  pass "an absent lock path stays determinate under a broken stat"
+}
+
+test_lock_non_numeric_stale_threshold_falls_back_to_the_minimum() {
+  local dir state lockdir out
+  dir=$(make_case lock-bad-threshold)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  mkdir "$lockdir"
+  out=$(FM_LOCK_STALE_AFTER=garbage FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if fm_lock_mid_acquire_is_fresh "$2" ""; then rc=held; else rc=reclaimable; fi
+    printf "verdict=%s\n" "$rc"
+  ' _ "$LIB" "$lockdir" 2>&1)
+  assert_not_contains "$out" 'integer expression expected' \
+    'a non-numeric stale threshold must not be compared as an integer'
+  assert_contains "$out" 'verdict=held' \
+    'a non-numeric stale threshold must fall back to the minimum grace, not to no grace'
+  pass "a non-numeric stale threshold falls back to the minimum grace"
+}
+
 test_lock_late_claim_loses_after_recreate() {
   local dir state lockdir out
   dir=$(make_case lock-late-claim)
@@ -1239,6 +1393,11 @@ test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
+test_unusable_mtime_never_reaches_an_integer_comparison
+test_unusable_mtime_does_not_read_as_epoch_zero
+test_lock_with_unmeasurable_age_is_not_stolen
+test_absent_lock_path_stays_determinate_under_a_broken_stat
+test_lock_non_numeric_stale_threshold_falls_back_to_the_minimum
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
