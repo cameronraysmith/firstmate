@@ -161,6 +161,9 @@ pass() {
 FM_TEST_CLEANUP_DIRS=()
 FM_TEST_CLEANUP_REGISTRY=$(mktemp "${TMPDIR:-/tmp}/.fm-test-cleanup.$$.XXXXXX") || return 1
 
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
+
 fm_test_pid_identity() {
   local pid=$1
   FM_STATE_OVERRIDE="${TMPDIR:-/tmp}" bash -c \
@@ -284,7 +287,14 @@ fm_test_stop_children() {
 
 fm_test_cleanup() {
   local d
+  # Children first, so nothing this test started is still writing inside a
+  # worktree or fixture root while the two removals below run.
   fm_test_stop_children || :
+  # Then the pools, before the fixture roots go rather than after: a treehouse
+  # pool created against a fixture repository lives outside that root, so
+  # deleting the root first strands the pool with slots whose backing repository
+  # no longer exists. tests/cleanup-safety.sh owns that release.
+  fm_test_pool_release_all || true
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
