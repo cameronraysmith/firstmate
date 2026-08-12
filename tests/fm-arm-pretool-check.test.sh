@@ -127,7 +127,7 @@ matrix_case E01 allow "bin/fm-watch-checkpoint.sh --seconds '180;still-one-arg'"
 matrix_case E02 allow "bin/fm-watch-checkpoint.sh --label 'fm-watch-arm.sh; literal argument'"
 matrix_case E03 allow 'bin/fm-watch-arm.sh # output > file &'
 matrix_case E04 allow $'# setup comment with fm-watch.sh; && >\nsource "config/x-mode.env"\nbin/fm-watch-checkpoint.sh --seconds 180'
-matrix_case E05 deny "FM_HOME=$ROOT bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case E05 allow "FM_HOME=$ROOT bin/fm-watch-checkpoint.sh --seconds 180"
 matrix_case E06 deny "env FM_HOME=$ROOT bin/fm-watch-arm.sh"
 matrix_case E07 deny "source '/tmp/not-firstmate/config/x-mode.env'; bin/fm-watch-checkpoint.sh --seconds 180"
 matrix_case E08 deny "bash -lc 'bin/fm-watch-checkpoint.sh --seconds 180'"
@@ -140,6 +140,48 @@ matrix_case E14 allow '$FM_HOME/bin/fm-teardown.sh &'
 matrix_case E15 allow '$FM_HOME/bin/fm-watch-arm.sh'
 matrix_case E16 allow '~/firstmate/bin/fm-watch-checkpoint.sh --seconds 180'
 matrix_case E17 allow 'for f in 1; do echo fm-watch; done'
+
+# Compound grammar the classifier models. Before it did, every one of these fell
+# back to a raw substring scan of the whole command and was denied for merely
+# NAMING a protected script in a data position; the paired G-deny rows prove the
+# modelling did not buy that back by weakening an actual arm.
+matrix_case G01 allow 'for t in fm-watch-child-segfault fm-pkill-thing; do bin/fm-crew-state.sh "$t"; done'
+matrix_case G02 allow 'for f in bin/fm-watch.sh bin/fm-spawn.sh; do git cat-file -e "HEAD:$f"; done'
+matrix_case G03 allow 'if [ -f bin/fm-watch.sh ]; then wc -l bin/fm-watch.sh; fi'
+matrix_case G04 allow 'while read -r d; do rg -n "bin/fm-watch-arm.sh" "$d"; done'
+matrix_case G05 allow $'for s in a; do cat >> notes.md <<EOF\nNo kill, no pkill: it only named bin/fm-watch.sh.\nEOF\ndone'
+matrix_case G06 deny 'for x in 1; do bin/fm-watch-arm.sh; done'
+matrix_case G07 deny 'if true; then bin/fm-watch-arm.sh; fi'
+matrix_case G08 deny 'while true; do bin/fm-watch-checkpoint.sh --seconds 180; done'
+matrix_case G09 deny 'if false; then true; else bin/fm-watch-arm.sh; fi'
+matrix_case G10 deny 'for f in bin/fm-watch-arm.sh; do "$f"; done'
+matrix_case G11 deny 'for p in fm-watch; do pkill -f "$p"; done'
+matrix_case G12 deny '! bin/fm-watch-arm.sh'
+
+# A shell in noexec mode parses its input and executes none of it, so a
+# `bash -n` syntax check of a protected script is a read-only inspection.
+matrix_case N01 allow 'bash -n bin/fm-watch-arm.sh'
+matrix_case N02 allow 'bash -n bin/fm-watch.sh'
+matrix_case N03 allow 'sh -n bin/fm-watch-checkpoint.sh'
+matrix_case N04 allow 'zsh -n bin/fm-watch-arm.sh'
+matrix_case N05 allow 'bash -nc "bin/fm-watch-arm.sh &"'
+matrix_case N06 allow 'bash -o noexec bin/fm-watch-arm.sh'
+matrix_case N07 deny 'bash -i -n bin/fm-watch-arm.sh'
+matrix_case N08 deny 'bash -o errexit bin/fm-watch-arm.sh'
+matrix_case N09 deny 'bash --rcfile /tmp/rc bin/fm-watch-arm.sh'
+matrix_case N10 deny 'bash -n bin/fm-watch-arm.sh && bin/fm-watch-arm.sh &'
+
+# Inline environment assignments on the final protected node are the already
+# blessed `export NAME=<word>` setup node with a narrower scope, so they are
+# approved; every other shape guard still applies over them.
+matrix_case V01 allow 'FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh'
+matrix_case V02 allow 'FM_POLL=1 exec bin/fm-watch-arm.sh'
+matrix_case V03 deny 'FM_POLL=1 bin/fm-watch-arm.sh &'
+matrix_case V04 deny 'FM_POLL=1 bin/fm-watch-arm.sh | cat'
+matrix_case V05 deny 'FM_POLL=1 bin/fm-watch-arm.sh >/tmp/out'
+matrix_case V06 deny 'FM_X=$(whoami) bin/fm-watch-arm.sh'
+matrix_case V07 deny 'FM_POLL=1 bin/fm-watch.sh'
+matrix_case V08 deny 'echo hi; FM_POLL=1 bin/fm-watch-arm.sh'
 
 MATRIX_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-arm-policy-matrix.XXXXXX")
 FM_TEST_CLEANUP_DIRS+=("$MATRIX_TMP")
@@ -224,7 +266,7 @@ test_direct_policy_contract() {
   assert_policy direct-pipeline $'deny\twatcher-pipeline' 'bin/fm-watch-arm.sh | cat'
   assert_policy direct-leading-redirection $'deny\twatcher-redirection' '>/tmp/out bin/fm-watch-arm.sh'
   assert_policy direct-unclassifiable $'deny\tunclassifiable-protected-command' "bin/fm-watch-arm.sh 'unterminated"
-  assert_policy direct-unsupported $'deny\tunclassifiable-protected-command' 'if true; then bin/fm-watch-arm.sh; fi'
+  assert_policy direct-unsupported $'deny\twatcher-nested' 'if true; then bin/fm-watch-arm.sh; fi'
   assert_policy direct-constructed-payload $'deny\twatcher-nested' "WATCHER='bin/fm-watch-arm.sh &'; bash -lc \"\$WATCHER\""
   assert_policy direct-parameter-export allow 'export FM_HOME=${HOME}; bin/fm-watch-checkpoint.sh --seconds 180'
   assert_policy direct-expanded-arm-blessed allow '$FM_HOME/bin/fm-watch-arm.sh'
@@ -237,6 +279,101 @@ test_direct_policy_contract() {
   heredoc_watcher=$'bin/fm-watch-arm.sh <<\'EOF\'\ndata only\nEOF'
   assert_policy direct-heredoc-data allow "$heredoc_data"
   assert_policy direct-heredoc-watcher $'deny\twatcher-redirection' "$heredoc_watcher"
+}
+
+# --- modelled compound grammar, noexec shells, inline assignments -------------
+
+test_modelled_compound_grammar() {
+  # A loop, conditional, or `!` no longer collapses to a raw substring scan, so
+  # a protected name in a data position keeps its data meaning and an actual
+  # protected execution inside the construct is named accurately instead of
+  # reported as unclassifiable.
+  assert_policy compound-longer-token allow 'for t in fm-watch-child-segfault fm-pkill-thing; do bin/fm-crew-state.sh "$t"; done'
+  assert_policy compound-data-list allow 'for f in bin/fm-watch.sh; do git cat-file -e "HEAD:$f"; done'
+  assert_policy compound-prose-heredoc allow $'for s in a; do cat >> notes.md <<EOF\nNo kill, no pkill: it only named bin/fm-watch.sh.\nEOF\ndone'
+  assert_policy compound-arm-in-loop $'deny\twatcher-nested' 'for x in 1; do bin/fm-watch-arm.sh; done'
+  assert_policy compound-negated-arm $'deny\twatcher-nested' '! bin/fm-watch-arm.sh'
+  assert_policy compound-watch-in-loop $'deny\twatcher-direct' 'for x in 1; do bin/fm-watch.sh; done'
+  # A `for` header binds its variable, so the loop body executing that variable
+  # is still the protected identity rather than an unrelated command.
+  assert_policy compound-loop-binding $'deny\twatcher-nested' 'for f in bin/fm-watch-arm.sh; do "$f"; done'
+  assert_policy compound-loop-kill-binding $'deny\tbroad-watcher-kill' 'for p in fm-watch; do pkill -f "$p"; done'
+  # A header nested inside another construct still has to be read as a header,
+  # or the inner loop variable is bound under the wrong name and lost.
+  assert_policy compound-nested-loop-binding $'deny\twatcher-nested' 'while true; do for f in bin/fm-watch-arm.sh; do "$f"; done; done'
+  assert_policy compound-nested-loop-kill $'deny\tbroad-watcher-kill' 'for a in 1; do for b in 1; do pkill -f fm-watch; done; done'
+  assert_policy compound-nested-loop-data allow 'for d in docs tests; do for f in bin/fm-watch.sh; do rg -n "$f" "$d"; done; done'
+  # A header binds pids from a watcher pgrep exactly as an assignment does.
+  assert_policy compound-loop-pgrep-kill $'deny\tbroad-watcher-kill' 'for p in $(pgrep -f fm-watch); do kill "$p"; done'
+  assert_policy compound-loop-pgrep-backtick $'deny\tbroad-watcher-kill' 'for p in `pgrep -f fm-watch`; do kill "$p"; done'
+  assert_policy compound-loop-pgrep-readonly allow 'for p in $(pgrep -f fm-watch); do echo "$p"; done'
+  # Constructs the classifier still cannot locate command positions in keep
+  # failing closed rather than inheriting the modelled path's allow.
+  assert_policy compound-arithmetic-for $'deny\tunclassifiable-protected-command' 'for ((i=0;i<1;i++)); do bin/fm-watch-arm.sh; done'
+  assert_policy compound-case $'deny\tbroad-watcher-kill' 'case x in x) pkill -f fm-watch ;; esac'
+  assert_policy compound-time $'deny\tunclassifiable-protected-command' 'time bin/fm-watch-arm.sh'
+  # Quoting removes a reserved word's keyword property, so `"do" <script>` runs
+  # a command named do and never the script.
+  assert_policy compound-quoted-keyword allow '"do" bin/fm-watch-arm.sh &'
+}
+
+test_noexec_shell_is_not_an_execution_sink() {
+  assert_policy noexec-arm allow 'bash -n bin/fm-watch-arm.sh'
+  assert_policy noexec-watch allow 'bash -n bin/fm-watch.sh'
+  assert_policy noexec-command-payload allow 'bash -nc "bin/fm-watch-arm.sh &"'
+  assert_policy noexec-long-form allow 'bash -o noexec bin/fm-watch-arm.sh'
+  assert_policy noexec-heredoc allow $'bash -n <<\'EOF\'\nbin/fm-watch-arm.sh &\nEOF'
+  # -n is documented as ignored for an interactive shell, so -i withdraws the
+  # non-execution proof.
+  assert_policy noexec-interactive $'deny\twatcher-nested' 'bash -i -n bin/fm-watch-arm.sh'
+  # An option that takes a separate argument must not be mistaken for the script
+  # operand, or the real operand after it is never inspected.
+  assert_policy noexec-option-argument $'deny\twatcher-nested' 'bash -o errexit bin/fm-watch-arm.sh'
+  assert_policy noexec-rcfile-argument $'deny\twatcher-nested' 'bash --rcfile /tmp/rc bin/fm-watch-arm.sh'
+  # noexec covers only the shell it is passed to.
+  assert_policy noexec-not-laundering $'deny\twatcher-background' 'bash -n bin/fm-watch-arm.sh && bin/fm-watch-arm.sh &'
+}
+
+test_inline_assignment_is_blessed_setup() {
+  assert_policy inline-assignment allow 'FM_SIGNAL_GRACE=1 FM_POLL=1 bin/fm-watch-arm.sh'
+  assert_policy inline-assignment-exec allow 'FM_POLL=1 exec bin/fm-watch-arm.sh'
+  assert_policy inline-assignment-expansion allow 'FM_STATE_OVERRIDE="$tmp" bin/fm-watch-arm.sh'
+  assert_policy inline-assignment-background $'deny\twatcher-background' 'FM_POLL=1 bin/fm-watch-arm.sh &'
+  assert_policy inline-assignment-substitution $'deny\twatcher-nested' 'FM_X=$(whoami) bin/fm-watch-arm.sh'
+  assert_policy inline-assignment-watch $'deny\twatcher-direct' 'FM_POLL=1 bin/fm-watch.sh'
+  assert_policy inline-assignment-bundled $'deny\twatcher-bundled' 'echo hi; FM_POLL=1 bin/fm-watch-arm.sh'
+  # An assignment that names a protected script still cannot launder it into
+  # command position.
+  assert_policy inline-assignment-indirect $'deny\twatcher-nested' 'X=bin/fm-watch-arm.sh $X'
+  # env stays an external wrapper with its own command-line-restructuring
+  # options, so it is not the same case as a shell-performed assignment.
+  assert_policy inline-assignment-not-env $'deny\twatcher-nested' 'env FM_POLL=1 bin/fm-watch-arm.sh'
+}
+
+# --- documented contributor commands must survive their own guard -------------
+
+# The guard denying a command CONTRIBUTING.md tells contributors to run is the
+# defect class this suite exists to prevent, so bind the two surfaces directly:
+# every command in the pre-push block is classified, and none may deny.
+test_documented_toolbelt_commands_are_allowed() {
+  local doc="$ROOT/CONTRIBUTING.md" block line rc checked=0
+  block=$(awk '/^Check and test the toolbelt before pushing:/{found=1} found && /^```sh$/{inblock=1; next} inblock && /^```$/{exit} inblock' "$doc")
+  [ -n "$block" ] || fail "could not locate the CONTRIBUTING.md pre-push command block"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    "$CHECK" --command "$line" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -eq 0 ] || fail "CONTRIBUTING.md documents a command the arm guard denies (exit $rc): $line"
+    checked=$((checked + 1))
+  done <<EOF
+$block
+EOF
+  [ "$checked" -ge 8 ] || fail "expected the documented pre-push block to yield commands, got $checked"
+  # The block must still carry the watcher re-arm smoke test itself; without
+  # this the guard above goes vacuous the moment that line is deleted.
+  printf '%s\n' "$block" | grep -q 'bin/fm-watch-arm.sh' \
+    || fail "CONTRIBUTING.md pre-push block no longer contains the watcher re-arm smoke test"
+  pass "all $checked documented pre-push commands are allowed by the arm guard"
 }
 
 # --- CLI parsing -------------------------------------------------------------
@@ -456,6 +593,10 @@ test_shellcheck_clean() {
 
 test_full_acceptance_matrix
 test_direct_policy_contract
+test_modelled_compound_grammar
+test_noexec_shell_is_not_an_execution_sink
+test_inline_assignment_is_blessed_setup
+test_documented_toolbelt_commands_are_allowed
 test_command_equals_form
 test_background_flag_accepted_and_non_gating
 test_unknown_flag_errors
