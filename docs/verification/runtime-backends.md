@@ -340,6 +340,47 @@ ok - real herdr E2E: teardown closes only the worker's own pane and leaves the l
 That suite's headline case runs `bin/fm-spawn.sh` inside a real Herdr pane, so the parent identity comes from Herdr's own injection rather than a composed environment.
 Cross-session and contradictory bindings are covered deterministically in `tests/fm-backend-herdr.test.sh`, which can script a second server's socket without provisioning one.
 
+### Session selection and self-location
+
+Which session a worker is placed in is owned by:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-backend-herdr-session-per-project-e2e.test.sh
+```
+
+Observed guarantees on 2026-08-12 against Herdr 0.8.0 protocol 19, driving a real launcher pane in one live lab session that places its workers into a second:
+
+```text
+ok - real herdr E2E: a worker spawned from a real pane in one session lands in the session its project registry records, verified by pane list against that session
+ok - real herdr E2E: neither same-labeled workspace in the launcher's own session is adopted, created into, or mutated
+ok - real herdr E2E: a scout is placed by the same registry rule as a crewmate
+ok - real herdr E2E: an unregistered project refuses the spawn and creates nothing in either session
+ok - real herdr E2E: a registered project with no recorded session refuses the spawn and creates nothing
+ok - real herdr E2E: crew-state, peek, and steer all resolve a worker in a session the orchestrator is not in
+ok - real herdr E2E: teardown closes only that worker's pane in its own project session and never touches the launcher's
+```
+
+The self-location detector rests on one vendor-emitted field, checked on 2026-08-12 against Herdr 0.8.0 in a guarded lab pane:
+
+```sh
+"$HERDR_LAB_HELPER" run "$LAB" pane process-info --pane w1:p1 \
+  | jq -c '.result.process_info | {pane_id, shell_pid}'
+```
+
+```text
+{"pane_id":"w1:p1","shell_pid":86773}
+```
+
+That pid is the pane's own shell and stays fixed while the pane's foreground process changes, which is what makes it an identity rather than a snapshot.
+Running a marker command in the same pane moved `foreground_cwd` to that command's directory and set `terminal_title` to its command line, while a freshly created pane reported `terminal_title: null`; neither can carry a self-location verdict alone, so the detector compares `shell_pid` against the querying process's own ancestry instead.
+A process launched inside the pane confirmed the match, its ancestry running self, then `shell_pid` 86773, then the session's server.
+
+Session creation does not disturb the captain's view: `herdr server --session <name>` routes to `server::headless::run_server` in Herdr 0.8.0 `src/main.rs` and creates the session directory when it binds its socket, while `herdr session attach <name>` launches the attached terminal UI.
+Session names are validated against Herdr's own rule in `src/session.rs`: one to 64 bytes of ASCII letters, digits, `.`, `_`, and `-`, never `.` or `..`.
+
+If a future release drops `shell_pid`, the detector reports an unresolved location and the spawn-time warning goes silent; placement is unaffected either way, because the registry alone selects it.
+
 ### Per-home and presentation topology
 
 Per-home behavior is owned by:
