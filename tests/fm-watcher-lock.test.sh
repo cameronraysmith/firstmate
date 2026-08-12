@@ -1081,6 +1081,108 @@ test_stale_watch_reclaim_publishes_before_clear() {
   pass "stale watcher reclaim publishes durable recovery evidence before clear"
 }
 
+# A stand-down signal leaves the watcher from wherever its loop happened to be,
+# including from inside a recovery critical section it still holds. The EXIT
+# cleanup then republishes downtime and releases the singleton lock, which
+# re-enters that same lock. No other process can release it, so a wait there can
+# never end. Hold both recovery locks exactly as an interrupted cycle leaves
+# them, then require the stand-down transition to finish with its continuity
+# evidence intact.
+test_stand_down_completes_from_a_self_held_critical_section() {
+  local dir state out pid status
+  dir=$(make_case self-held-critical-section)
+  state="$dir/state"
+  out="$dir/stand-down.out"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090
+    . "$1"
+    marker="$STATE/.watcher-down"
+    watch_lock="$STATE/.watch.lock"
+    fm_lock_try_acquire "$watch_lock" || exit 11
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 12
+    fm_lock_acquire_wait "$marker.lock" || exit 13
+    fm_recovery_transition "$marker" release-lock "$watch_lock" downtime || exit 14
+    [ ! -e "$watch_lock" ] && [ ! -L "$watch_lock" ] || exit 15
+    case "$(cat "$marker" 2>/dev/null || true)" in
+      pending:downtime:*) ;;
+      *) exit 16 ;;
+    esac
+  ' _ "$LIB" > "$out" 2>&1 &
+  pid=$!
+  wait_for_exit "$pid" 150
+  status=$?
+  [ "$status" -ne 124 ] \
+    || fail "stand-down never returned from a recovery lock this process already held"
+  [ "$status" -eq 0 ] \
+    || fail "stand-down from a self-held critical section failed (code $status): $(cat "$out")"
+  pass "watcher stand-down completes from a recovery critical section it still holds"
+}
+
+# The end-to-end form of the same defect: one TERM, no second signal, while the
+# watcher is inside that critical section. The downtime-marker lock is normally
+# held for well under a millisecond per cycle, so an untimed signal reproduces
+# this in roughly one run in ten. Widen exactly that window and nothing else - a
+# PATH shim slows only the readback the marker lock performs against its own
+# owner file, which happens once after the lock link exists and again as it is
+# released - so the single signal lands while the watcher provably holds it.
+test_single_term_stands_down_a_watcher_holding_the_marker_lock() {
+  local dir state fakebin out real_cat pid i saw status token
+  dir=$(make_case single-term-marker-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  real_cat=$(command -v cat) || fail "could not locate cat for the marker-lock window fixture"
+  cat > "$fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  */.watcher-down.lock*/pid) sleep 0.4 ;;
+esac
+exec "$FM_TEST_REAL_CAT" "$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_CAT="$real_cat" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=0.1 FM_SIGNAL_GRACE=0.1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  pid=$!
+
+  # The watcher takes this same lock during startup, before its signal traps
+  # exist, where a TERM dies at the default disposition and proves nothing. The
+  # beacon is touched only inside the trapped supervision loop.
+  i=0
+  while [ "$i" -lt 300 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] \
+    || fail "watcher never entered its trapped supervision loop: $(cat "$out")"
+
+  saw=0
+  i=0
+  while [ "$i" -lt 500 ]; do
+    if [ -e "$state/.watcher-down.lock" ]; then saw=1; break; fi
+    is_live_non_zombie "$pid" || break
+    sleep 0.02
+    i=$((i + 1))
+  done
+  [ "$saw" -eq 1 ] \
+    || fail "never observed the watcher holding its downtime-marker lock, so nothing was tested"
+
+  kill -TERM "$pid" 2>/dev/null || fail "could not signal the watcher"
+  wait_for_exit "$pid" 200
+  status=$?
+  [ "$status" -ne 124 ] \
+    || fail "one TERM did not stand down a watcher holding its downtime-marker lock"
+  [ ! -e "$state/.watch.lock" ] && [ ! -L "$state/.watch.lock" ] \
+    || fail "signalled watcher exited without releasing the singleton lock"
+  token=$(cat "$state/.watcher-down" 2>/dev/null || true)
+  case "$token" in
+    pending:downtime:*) ;;
+    *) fail "signalled watcher left no durable downtime evidence ('$token')" ;;
+  esac
+  pass "one TERM stands down a watcher holding its downtime-marker lock"
+}
+
 test_msys_pid_identity_uses_proc() {
   local live identity
   case "$(uname)" in
@@ -1108,6 +1210,8 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
+test_stand_down_completes_from_a_self_held_critical_section
+test_single_term_stands_down_a_watcher_holding_the_marker_lock
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency
