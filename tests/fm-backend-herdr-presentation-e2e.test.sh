@@ -264,6 +264,10 @@ herdr_forget_inherited_pane
 HERDR_LAB_SESSION=$(PATH="$HERDR_ORIGINAL_PATH" \
   "$HERDR_LAB_HELPER" name fm-herdr-presentation-projection)
 export HERDR_SESSION="$HERDR_LAB_SESSION" HERDR_LAB_SESSION
+# This suite spawns secondmates, which are placed in the reserved
+# orchestrator session rather than from the project registry.
+herdr_reserve_orchestrator_session "$HERDR_LAB_SESSION" \
+  || { echo "not ok - could not reserve the lab orchestrator session" >&2; exit 1; }
 LAB_READY=0
 RECORDED_WORKTREES=""
 LOCK_CONTENTION_OWNER_PID=
@@ -495,6 +499,11 @@ printf 'Projection abort fixture B.\n' > "$HOME_DIR/data/abort-b/brief.md"
 printf 'Projection lock contention fixture.\n' > "$HOME_DIR/data/lock-contended/brief.md"
 printf 'Projection default-on fixture.\n' > "$HOME_DIR/data/default-on/brief.md"
 make_project "$PROJECT_DIR"
+# Worker placement is registry-selected, so this home registers the scratch
+# project against the suite's isolated lab session. Projection SHAPE is what
+# this suite tests; placement has its own suite.
+printf -- '- %s [no-mistakes session=%s] - projection fixture (added 2026-01-01)\n' \
+  "$(basename "$PROJECT_DIR")" "$HERDR_LAB_SESSION" > "$HOME_DIR/data/projects.md"
 
 # Keep one ordinary primary task live so the durable firstmate workspace is
 # first and remains present while disposable workers are projected around it.
@@ -946,6 +955,12 @@ SECOND_HOME_B="$TMP_ROOT/home-2ndmate-bravo"
 mkdir -p "$SECOND_HOME_A/state" "$SECOND_HOME_A/config" "$SECOND_HOME_A/data" \
   "$SECOND_HOME_B/state" "$SECOND_HOME_B/config" "$SECOND_HOME_B/data"
 printf 'alpha\n' > "$SECOND_HOME_A/.fm-secondmate-home"
+# Each secondmate home selects worker placement from its OWN registry, so
+# both register the shared scratch project against this suite's lab session.
+printf -- '- %s [no-mistakes session=%s] - projection fixture (added 2026-01-01)\n' \
+  "$(basename "$PROJECT_DIR")" "$HERDR_LAB_SESSION" > "$SECOND_HOME_A/data/projects.md"
+printf -- '- %s [no-mistakes session=%s] - projection fixture (added 2026-01-01)\n' \
+  "$(basename "$PROJECT_DIR")" "$HERDR_LAB_SESSION" > "$SECOND_HOME_B/data/projects.md"
 printf 'bravo\n' > "$SECOND_HOME_B/.fm-secondmate-home"
 touch "$SECOND_HOME_A/state/.last-watcher-beat" "$SECOND_HOME_B/state/.last-watcher-beat"
 # Ensure the secondmate homes look like gitignored firstmate homes so inheritance
