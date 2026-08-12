@@ -81,6 +81,24 @@ Literal `sh`, `bash`, or `zsh` `-c` payloads and literal `eval` payloads are rec
 A literal nested payload that only runs a data-bearing command is allowed.
 A literal nested payload that executes a protected command is denied as `watcher-nested`, even when that inner protected call would be allowed at top level.
 
+A shell invoked in noexec mode is not an execution sink.
+`-n` and `-o noexec` make the shell parse its input and run none of it, so its script operand, `-c` payload, heredoc, and here-string are data and `bash -n bin/fm-watch.sh` is a read-only syntax check.
+`-i` withdraws that proof, because the shells document `-n` as ignored for an interactive shell.
+Substitutions in the surrounding words still execute and are classified independently of the noexec shell.
+Shell options that take a separate argument (`-o`, `+o`, `-O`, `+O`, `--rcfile`, `--init-file`) consume it, so the operand after them is still recognized as the script.
+
+Compound grammar is modelled rather than treated as opaque text.
+A shell program is cut at its control operators, so `if`, `then`, `elif`, `else`, `fi`, `while`, `until`, `do`, `done`, and `!` arrive as leading words of separate nodes.
+Each is recognized as a reserved word that introduces or closes a command position but is never itself the executed command, so the real command in a loop or conditional body is classified normally.
+Quoting removes a word's keyword property exactly as the shell does, so `"do" <script>` runs a command named `do` and is not a construct.
+A reserved word is never a blessed prefix: a protected execution anywhere inside a loop or conditional denies with `watcher-nested`.
+
+A `for NAME in <words>` header executes nothing but binds `NAME`, so it is a dataflow edge like an assignment.
+`for f in bin/fm-watch-arm.sh; do "$f"; done` therefore keeps the protected identity, and `for p in fm-watch; do pkill -f "$p"; done` keeps the watcher-kill target.
+The same words in a header the loop body never executes are ordinary data, so a read-only sweep over a list that merely names a protected script is allowed.
+
+`case` and `select` bodies, `function`, `time`, `coproc`, and an arithmetic `for ((...))` header remain unmodelled and keep failing closed through the raw-byte backstop below.
+
 Dynamic payloads such as `bash -lc "$WATCHER_COMMAND"` cannot be proven statically and remain the post-arm guard's responsibility.
 If the submitted command first constructs a protected literal assignment and then feeds a dynamic value to a recognized shell or `eval` sink, the classifier denies conservatively as `watcher-nested`.
 
@@ -109,7 +127,12 @@ The final protected node may have one immediate `exec` wrapper.
 Its arguments are ordinary shell words and may contain quoted semicolons or watcher names.
 No other wrapper is approved.
 
-Inline environment assignments, `env`, `sudo`, `nohup`, nested shells, `eval`, subshell groups, substitutions, redirections, pipelines, asynchronous lists, `disown`, unrelated list nodes, and unsupported compound syntax are not blessed.
+The final protected node may also carry inline environment assignments, as in `FM_POLL=1 bin/fm-watch-arm.sh`.
+These are the approved `export NAME=<word>` setup node with a narrower scope: the shell performs them itself after expanding the command word, so they cannot redirect, background, or change which file runs, and they grant no capability that the already-approved `export` node does not.
+An assignment carrying a command or process substitution is still a substitution and is denied.
+`env` is not the same case and stays unapproved, because it is an external program whose own options (`-S`, `--split-string`, `-i`) can restructure the command line.
+
+`env`, `sudo`, `nohup`, nested shells, `eval`, subshell groups, substitutions, redirections, pipelines, asynchronous lists, `disown`, unrelated list nodes, reserved-word prefixes, and unsupported compound syntax are not blessed.
 
 ## Broad watcher kills
 
@@ -120,10 +143,13 @@ Path-qualified `pkill`, `command pkill`, and `sudo pkill` are recognized.
 A standalone read-only `pgrep` is allowed.
 Quoted text such as `echo 'pkill -f fm-watch'` is data and is allowed.
 
-Unsupported compound grammar - a loop, `case`, `if`, or other construct the classifier does not model - is failed closed for broad kills the same way it is for protected executions.
+Unsupported compound grammar - `case`, `select`, `function`, `time`, `coproc`, an arithmetic `for ((...))` header, or syntax that does not tokenize - is failed closed for broad kills the same way it is for protected executions.
 When the command carries such grammar and its raw bytes reference both a `fm-watch` target and a `pkill` or `kill` verb, the classifier cannot prove which command position the kill occupies, so it denies with `broad-watcher-kill` rather than allowing.
-This backstop mirrors the protected-execution fail-closed rule and covers forms like `while true; do pkill -f fm-watch; done`, `for x in 1; do pkill -f fm-watch; done`, `case x in x) pkill -f fm-watch ;; esac`, and `until false; do kill $(pgrep -f fm-watch); done`.
-It is gated on the grammar being unsupported: in grammar the classifier does model, command-position analysis is authoritative, so data mentions such as `echo 'pkill -f fm-watch'` and a loop that only names the watcher without a kill verb such as `for f in 1; do echo fm-watch; done` remain allowed.
+This backstop mirrors the protected-execution fail-closed rule and covers forms like `case x in x) pkill -f fm-watch ;; esac`.
+
+It is gated on the grammar being unsupported, and that gate is deliberately narrow, because the backstop reads raw bytes and cannot tell a command position from a data position.
+Loops and conditionals are modelled, so command-position analysis stays authoritative through them: `while true; do pkill -f fm-watch; done` and `until false; do kill $(pgrep -f fm-watch); done` deny on their parsed `pkill` and `kill`, while a read-only sweep that merely names a protected script, quotes one in prose, or carries `fm-watch` inside a longer identifier such as a task id is allowed.
+Widening the backstop's reach is a false economy: the recorded false denials of loops and conditionals all came from raw-byte matching applied to grammar that could have been parsed, and the cost landed on read-only diagnosis while supervision was already down.
 
 ## Stable reason codes
 
@@ -235,6 +261,8 @@ Every native-path automatic marker was present and every deny sentinel remained 
 `tests/fm-arm-pretool-check.test.sh` owns the adversarial acceptance matrix.
 Every row runs through Codex-shaped stdin, Claude-shaped stdin, Grok-shaped stdin, OpenCode-shaped CLI, and Pi-shaped CLI entry forms.
 The suite also verifies real newline bytes, direct classifier reason codes, comments, heredoc data, malformed and unsupported protected syntax, constructed dynamic payloads, malformed transport fail-open behavior, missing runtime fail-open behavior, output shapes, and exact adapter field forwarding plus exit-2 mapping.
+It pairs every modelled-grammar, noexec, and inline-assignment allow with the deny that proves the model did not buy it back by weakening an actual arm.
+It also classifies every command in `CONTRIBUTING.md`'s pre-push block and fails if the seatbelt denies one, because a documented contributor command that this guard rejects is the defect class those cases exist to prevent.
 
 Run:
 
