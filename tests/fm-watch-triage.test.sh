@@ -286,10 +286,12 @@ test_status_is_paused_classifier() {
   pass "status_is_paused: only the leading paused verb matches, and paused is not captain-relevant"
 }
 
-# crew_absorb_class: the single fm-crew-state.sh read that returns BOTH absorb
-# reasons - working (active run/busy pane), paused (declared external wait), or none
-# (surface it) - so the watcher's stale path gets both for one bounded call.
-# crew_is_paused delegates to it exactly as crew_is_provably_working does.
+# crew_absorb_class: the single fm-crew-state.sh read that returns EVERY absorb
+# reason - working (active run/busy pane), paused (declared wait), terminal (a
+# finish the crew's own log already reports), unknown (no current-state source
+# answered at all), or none (surface it) - so the watcher's stale path gets them
+# all from one bounded call. crew_is_paused delegates to it exactly as
+# crew_is_provably_working does.
 test_crew_absorb_class_classifier() {
   local dir fakebin
   dir=$(make_case absorb-class); fakebin="$dir/fakebin"
@@ -305,12 +307,42 @@ test_crew_absorb_class_classifier() {
   ! crew_is_provably_working a || fail "a paused crew was treated as provably working"
   FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling'
   [ "$(crew_absorb_class a)" = none ] || fail "stale working: status-log classed absorbable"
-  FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
-  [ "$(crew_absorb_class a)" = none ] || fail "unknown crew classed absorbable"
+
+  # A finish the crew reported itself: the same line already reached firstmate
+  # through the captain-relevant signal path, so a stale wake repeating it is
+  # pure duplication for as long as the merge approval stays outstanding.
+  FM_FAKE_CREW_STATE='state: done · source: status-log · ready in branch fm/x'
+  [ "$(crew_absorb_class a)" = terminal ] || fail "a self-reported finish not classed terminal"
+  FM_FAKE_CREW_STATE='state: failed · source: status-log · could not build'
+  [ "$(crew_absorb_class a)" = terminal ] || fail "a self-reported failure not classed terminal"
+  ! crew_is_provably_working a || fail "a terminal crew was treated as provably working"
+  ! crew_is_paused a || fail "a terminal crew was classed paused"
+  # The other direction, and the PR #252 safety property: a finish learned from
+  # the PIPELINE is news the crew's own log has not carried to firstmate, so it
+  # must NOT be absorbed - that is how a green PR stops going unnoticed.
+  FM_FAKE_CREW_STATE='state: done · source: run-step · checks green: PR ready for review'
+  [ "$(crew_absorb_class a)" = none ] || fail "a pipeline-reported finish was absorbed instead of surfaced"
+  FM_FAKE_CREW_STATE='state: failed · source: run-step · run failed'
+  [ "$(crew_absorb_class a)" = none ] || fail "a pipeline-reported failure was absorbed instead of surfaced"
+
+  # No source could answer: absent evidence, not evidence of a stop.
+  FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  [ "$(crew_absorb_class a)" = unknown ] || fail "an unreadable current state not classed unknown"
   ! crew_is_paused a || fail "unknown crew classed paused"
+  ! crew_is_provably_working a || fail "unknown crew treated as provably working"
+  # A source that DID answer, with something other than work in progress, keeps
+  # its own verdict and surfaces.
+  FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown missing)'
+  [ "$(crew_absorb_class a)" = none ] || fail "an answered-but-unusable pane verdict classed unknown"
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review'
+  [ "$(crew_absorb_class a)" = none ] || fail "a parked run classed absorbable"
+  FM_FAKE_CREW_STATE='state: blocked · source: status-log · needs a credential'
+  [ "$(crew_absorb_class a)" = none ] || fail "a blocked crew classed absorbable"
+  FM_FAKE_CREW_STATE='unparseable verdict'
+  [ "$(crew_absorb_class a)" = none ] || fail "an unparseable verdict not classed none"
   [ "$(crew_absorb_class "")" = none ] || fail "empty id not classed none"
   unset FM_FAKE_CREW_STATE
-  pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
+  pass "crew_absorb_class: working/paused/terminal/unknown/none from one read, with pipeline-only finishes still surfacing"
 }
 
 # signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
@@ -596,6 +628,170 @@ test_stale_terminal_status_overridden_by_active_run() {
   pass "a stale terminal-looking status is overridden and absorbed while a run is actively working, then wedge-escalated"
 }
 
+# --- terminal stale, the crew reported its OWN finish: absorbed outright ------
+# First facet of the 2026-08-12 false-escalation defect. A local-only or
+# direct-PR crew appends its terminal done: line and correctly stops: there is
+# nothing left for it to do until the captain approves the merge. That line has
+# ALREADY woken firstmate through the captain-relevant signal path, so surfacing
+# the quiet pane on top of it carries no new information - and it repeats for as
+# long as the approval is outstanding, which is worst exactly when the captain is
+# away and a real stale signal is hardest to pick out. fm-crew-state.sh reports
+# `done` from `status-log` at that moment, so the stale path absorbs it.
+test_terminal_stale_self_reported_finish_absorbed() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case terminal-stale-self-reported); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-ready"
+  printf 'idle prompt, awaiting merge approval' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/ready.meta"
+  printf 'done: ready in branch fm/ready\n' > "$state/ready.status"
+  sig=$(seen_sig "$state/ready.status"); printf '%s' "$sig" > "$state/.seen-ready_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle prompt, awaiting merge approval")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: done · source: status-log · ready in branch fm/ready'
+
+  # Phase A: absorbed with the wedge threshold pinned at 1s, so this is a real
+  # absorb rather than a delay - a finished crew has nothing left to wedge on.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    reap "$pid"; fail "a crew awaiting merge approval on its own done: line was escalated as stale: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a self-reported finish printed a stale wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a self-reported finish enqueued a durable stale wake"; }
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || { reap "$pid"; fail "stale suppressor not advanced on a terminal absorb"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a finished crew was given a wedge timer"; }
+  [ ! -e "$state/.hb-surfaced-ready" ] || { reap "$pid"; fail "an absorbed stale marked the status line surfaced, disarming the heartbeat backstop"; }
+
+  # Phase B: the pane churns (a clock, a token counter), producing a NEW stale
+  # hash and a fresh classification. This is what made the defect recur per task
+  # instead of self-clearing, so the second hash must be absorbed too.
+  printf 'idle prompt, awaiting merge approval (tick 2)' > "$capture_file"
+  if ! wait_live "$pid" 60; then
+    reap "$pid"; fail "a churning pane on a self-reported finish escalated on its next stale hash: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a second stale hash on a finished crew printed a wake: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a second stale hash on a finished crew enqueued a wake"; }
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$(hash_text "idle prompt, awaiting merge approval (tick 2)")" ] \
+    || { reap "$pid"; fail "the second stale hash was never classified"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a crew whose own status log reports its finish is absorbed while it awaits cleanup, on every stale hash"
+}
+
+# The other direction, and the property the PR #252 incident bought: a finish the
+# PIPELINE reported is news the crew's own log has not carried to firstmate (the
+# crew appends nothing once firstmate hands it to validation), so it must still
+# surface. Same terminal-looking log line, different source, opposite verdict.
+test_terminal_stale_pipeline_reported_finish_surfaced() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  dir=$(make_case terminal-stale-pipeline-finish); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-green"
+  printf 'idle while the pipeline monitors CI' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/green.meta"
+  printf 'done: implementation complete, ready to validate\n' > "$state/green.status"
+  sig=$(seen_sig "$state/green.status"); printf '%s' "$sig" > "$state/.seen-green_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle while the pipeline monitors CI")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: done · source: run-step · checks green: PR ready for review'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a pipeline-reported green PR was absorbed instead of surfaced"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "the pipeline-reported finish did not print its stale wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the pipeline-reported finish failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the pipeline-reported finish was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a finish only the pipeline knows about still surfaces, so a green PR is never swallowed"
+}
+
+# --- a declared wait is consulted BEFORE the wake, not after -----------------
+# Third facet of the 2026-08-12 false-escalation defect, and the one that made
+# the sanctioned mechanism useless: the pause check ran AFTER the wake had been
+# appended, so declaring a pause could only throttle the NEXT determination, never
+# the one it exists to prevent. A churning idle pane makes a fresh determination
+# per new hash, so a crew doing exactly what its brief told it to do still cost a
+# supervision turn each time. The bare unannotated wake is the distinguishing
+# evidence: the bounded pause cadence emits its own annotated reason instead.
+test_declared_pause_queues_no_bare_stale_wake() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid back bare
+  dir=$(make_case declared-pause-no-bare-wake); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/lane.status"
+  window="test:fm-lane"
+  printf 'idle, background test lane running' > "$capture_file"
+  # A LIVE agent (pane_current_command matches the harness): the shape that
+  # reproduced, and the one the ordering bug surfaced bare on every fresh hash.
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/lane.meta"
+  printf 'paused: waiting on the portable-serial test lane\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-lane_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, background test lane running")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting on the portable-serial test lane'
+
+  # Phase A: a freshly declared wait queues nothing at all, and keeps its
+  # absorption markers.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    reap "$pid"; fail "a declared wait still escalated the pane it exists to keep quiet: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a declared wait printed a stale wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a declared wait enqueued a wake: $(cat "$state/.wake-queue")"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "the pause absorption marker was not recorded"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a declared wait was given a wedge timer"; }
+  # The re-surface throttle must be untouched by an absorb. The old ordering
+  # burned a full window here by stamping it alongside the bare wake, which is
+  # why the wake it should have prevented still went out.
+  [ ! -e "$state/.paused-resurfaced-$key" ] \
+    || { reap "$pid"; fail "an absorbed declared wait consumed its re-surface window"; }
+
+  # Phase B: the pane churns into a fresh stale hash, which is exactly what the
+  # old ordering re-surfaced bare. It must stay absorbed.
+  printf 'idle, background test lane running (tick 2)' > "$capture_file"
+  if ! wait_live "$pid" 60; then
+    reap "$pid"; fail "a declared wait escalated on its next stale hash: $(cat "$out")"
+  fi
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a second stale hash under a declared wait enqueued a wake"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional declared-wait watcher stop"
+
+  # Phase C, the other direction: a wait that has genuinely gone on past the
+  # cadence still re-surfaces, through the ANNOTATED paused reason so a
+  # supervisor can tell a declared wait from a suspected wedge - and never as the
+  # bare wake this defect was filed against.
+  back=$(( $(date +%s) - 5000 ))
+  fm_test_set_mtime "$back" "$statusf" || fail "could not backdate the declared wait"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-lane_status"
+  : > "$out"
+  printf 'idle, background test lane running (tick 3)' > "$capture_file"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 60 || fail "an overdue declared wait never re-surfaced for its recheck"
+  grep -F "awaiting external" "$out" >/dev/null || fail "the overdue recheck was not the annotated paused reason"
+  grep -F "possible wedge" "$out" >/dev/null && fail "an overdue declared wait was mislabeled a possible wedge"
+  bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
+  [ "$bare" -eq 0 ] || fail "a declared wait queued $bare bare stale wakes"
+  unset FM_FAKE_CREW_STATE
+  pass "a declared wait queues no bare stale wake at all and re-surfaces only through its annotated cadence"
+}
+
 # --- non-terminal stale, crew provably working: absorbed, then wedge-escalated ---
 # A provably-working crew (an actively-running pipeline) legitimately sits on a
 # static pane (e.g. waiting on CI), so a non-terminal stale is absorbed and only
@@ -651,11 +847,14 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   pass "provably-working non-terminal stale is absorbed on first sight, then wedge-escalated past the threshold"
 }
 
-# --- non-terminal stale, crew NOT provably working: surfaced immediately ------
-# The key requirement: a crew with no running pipeline that has gone quiet (and is
-# not busy) has stopped - it may be done via interactive menus, waiting, or wedged.
-# It must surface at once, never wait out the wedge timer, so these users (a
-# non-no-mistakes crew, or any crew with no running pipeline) are never left hanging.
+# --- non-terminal stale, a source answered but not with work: surfaced at once ---
+# The key requirement: a crew whose current-state read came back with something
+# other than work in progress has stopped - it may be done via interactive menus,
+# waiting, or wedged. It must surface at once, never wait out the wedge timer, so
+# these users (a non-no-mistakes crew, or any crew with no running pipeline) are
+# never left hanging. Here the read answers from the crew's own stale working:
+# log line, which is an answer and not an absence: contrast the no-source case
+# immediately below, which must NOT be read as a stop.
 
 test_nonterminal_stale_not_working_surfaced() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid
@@ -672,8 +871,9 @@ test_nonterminal_stale_not_working_surfaced() {
   pane_hash=$(hash_text "idle prompt, finished")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
-  # No running pipeline; the pane is idle. NOT provably working.
-  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  # No running pipeline; the pane is idle, so fm-crew-state falls back to the
+  # stale working: line. That is an answer, and NOT provable work.
+  export FM_FAKE_CREW_STATE='state: working · source: status-log · working: implementing'
 
   # Even with a high wedge threshold, a not-provably-working stale surfaces at once.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -687,7 +887,61 @@ test_nonterminal_stale_not_working_surfaced() {
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer should not be set when surfacing immediately"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the immediate stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "immediate stale wake was not queued"
-  pass "a not-provably-working non-terminal stale is surfaced immediately (never left to wait out the timer)"
+  pass "a non-terminal stale whose source answered without work in progress is surfaced immediately"
+}
+
+# --- non-terminal stale, NO current-state source answered: timed, not surfaced ---
+# Second facet of the 2026-08-12 false-escalation defect. A crew that commits its
+# work, starts a long command in the background, ends its turn and waits blinds
+# BOTH current-state sources at once: the turn-end hook records idle, and the
+# sparse status log legitimately has nothing supervisor-actionable to add, so
+# fm-crew-state.sh reports "unknown · none · no current-state source available".
+# Reporting that as a stopped crew states a wedge the reader has no evidence for,
+# and repeats it for as long as the background work runs. An absent source is the
+# absence of evidence, so the pane is timed toward the ordinary wedge threshold
+# instead - which is also what keeps a crew that really IS frozen escalating.
+test_nonterminal_stale_no_state_source_times_instead_of_surfacing() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  dir=$(make_case nonterminal-stale-no-source); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-blind"
+  printf 'idle prompt, background lane running' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/blind.meta"
+  # The status log is legitimately EMPTY: nothing supervisor-actionable happened.
+  : > "$state/blind.status"
+  sig=$(seen_sig "$state/blind.status"); printf '%s' "$sig" > "$state/.seen-blind_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle prompt, background lane running")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+
+  # Phase A: no source could answer, so nothing is surfaced yet - the wedge timer
+  # starts instead. Under the old behavior this exited at once with a bare wake.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "an absent current-state source was reported as a stopped crew: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "an absent current-state source printed a wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "an absent current-state source enqueued a durable wake"; }
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || { reap "$pid"; fail "stale suppressor not advanced"; }
+  [ -s "$state/.stale-since-$key" ] || { reap "$pid"; fail "the wedge timer was not started for a blind read"; }
+
+  # Phase B, the other direction: the real signal is preserved. A crew that is
+  # genuinely frozen - same blind read, no background work coming back - still
+  # escalates once the existing threshold passes. The SAME watcher carries on, so
+  # only the elapsed idle time differs between the two verdicts.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  wait_for_exit "$pid" 60 || fail "a blind read never escalated, so the wedge signal was traded away for quiet"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the blind-read escalation did not print a stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the blind-read escalation did not flag a possible wedge"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the blind-read escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the blind-read escalation was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a stale pane with no current-state source is timed toward the wedge threshold, not reported as a stop, and still escalates when it really is frozen"
 }
 
 # --- non-terminal stale, crew DECLARED a pause: absorbed, re-surfaced on a long
@@ -763,10 +1017,13 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
 # fm-crew-state then authoritatively reports stopped rather than paused, but the
 # confirmed-dead agent plus the declared wait or captain-held transfer must retain
 # bounded pause handling.
-# A still-live agent at an external-decision gate is the disconfirming case: it
-# must surface once, while the unchanged hash must not append the same wake on
-# every watcher re-arm.
-test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
+# A still-live agent behind the same declaration gets that bounded cadence too:
+# the declaration is the sanctioned way to say an idle pane is expected, and a
+# live crew that genuinely needs firstmate has captain-relevant verbs that reach
+# it through the signal path without waiting on this cadence at all. What must
+# never happen either way is a bare stale wake, or a second wake per watcher
+# re-arm on an unchanged hash.
+test_declared_pause_and_captain_held_use_the_bounded_cadence() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare
   dir=$(make_case exited-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
@@ -833,20 +1090,25 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
 
-  # First sight must surface promptly so a live external-decision gate is not
-  # hidden behind the pause cadence.
+  # First sight is absorbed on the pause cadence rather than surfaced bare: the
+  # crew said it is waiting, and the pause is consulted before anything is queued.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting at an active external-decision gate' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "live external-decision gate did not surface immediately"
-  ack_stopped_cycle "$state" || fail "could not acknowledge the immediate external-decision surface"
+  if ! wait_live "$pid" 40; then
+    reap "$pid"; fail "a live agent behind a declared wait was surfaced bare instead of absorbed: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a live agent behind a declared wait printed a wake reason: $(cat "$out")"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a live agent behind a declared wait did not take the pause cadence"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional live-agent declared-wait stop"
 
   # Re-arm with the stale timer already beyond the wedge threshold. This is the
-  # exact unchanged-hash fallback after the immediate surface: it must retain
-  # the pause cadence and discard any residual wedge timer instead of emitting
-  # a second possible-wedge wake.
+  # exact unchanged-hash fallback after the first absorb: it must retain the
+  # pause cadence and discard any residual wedge timer instead of emitting a
+  # possible-wedge wake.
   printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting at an active external-decision gate' \
@@ -855,16 +1117,16 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   pid=$!
   if ! wait_live "$pid" 30; then
     reap "$pid"
-    fail "live external-decision gate escalated on the wedge timer after its immediate surface: $(cat "$out")"
+    fail "a live agent behind a declared wait escalated on the wedge timer: $(cat "$out")"
   fi
-  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "live external-decision gate lost its pause cadence marker"; }
-  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "live external-decision gate retained the wedge timer"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a live agent behind a declared wait lost its pause cadence marker"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a live agent behind a declared wait retained the wedge timer"; }
   reap "$pid"
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
   bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
-  [ "$wakes" -eq 0 ] || fail "acknowledged external-decision surface replayed $wakes wakes"
-  [ "$bare" -eq 0 ] || fail "acknowledged external-decision bare stale remained queued"
-  pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
+  [ "$wakes" -eq 0 ] || fail "a live agent behind a declared wait queued $wakes stale wakes"
+  [ "$bare" -eq 0 ] || fail "a live agent behind a declared wait queued $bare bare stale wakes"
+  pass "exited and live declared-pause and captain-held panes all use the bounded pause cadence, never a bare stale wake"
 }
 
 test_secondmate_paused_resurfaces_in_normal_mode() {
@@ -1938,8 +2200,12 @@ test_busy_pane_turn_end_touch_resets_age
 test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
 test_busy_pane_default_turn_age_bound_is_3600s
 test_nonterminal_stale_not_working_surfaced
+test_nonterminal_stale_no_state_source_times_instead_of_surfacing
+test_terminal_stale_self_reported_finish_absorbed
+test_terminal_stale_pipeline_reported_finish_surfaced
+test_declared_pause_queues_no_bare_stale_wake
 test_nonterminal_stale_paused_absorbed_then_resurfaced
-test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+test_declared_pause_and_captain_held_use_the_bounded_cadence
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking
