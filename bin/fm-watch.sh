@@ -26,8 +26,8 @@
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
 #                          line, since the crew's own log gets no new entry once
-#                          firstmate hands it to a no-mistakes validation. A declared
-#                          wait is absorbed instead with its own long
+#                          firstmate hands it to a no-mistakes validation. A
+#                          declared wait is absorbed instead with its own long
 #                          re-surface cadence, never as a wedge, and is consulted
 #                          BEFORE any wake is queued so the declaration prevents
 #                          the escalation rather than only throttling the next
@@ -345,12 +345,11 @@ busy_turn_over_age() {  # <task>
 }
 
 # Absorb a stale pane under a declared pause (paused:) or a captain-held
-# transfer, and re-surface it once every
-# PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
-# stale poll once the declaration or pause_state_class permits the bounded
-# cadence - including from surface_nonterminal_stale, which routes a declared
-# pane here instead of queueing a bare wake - so it must be
-# cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
+# transfer, and re-surface it once every PAUSE_RESURFACE_SECS for a recheck so it
+# cannot rot invisibly. Called on any stale poll once the declaration or
+# pause_state_class permits the bounded cadence - including from
+# surface_nonterminal_stale, which routes a declared pane here instead of
+# queueing a bare wake - so it must be cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
 # status file mtime, not a per-hash marker, so a churny idle pane (a ticking
 # clock, a token counter) cannot keep resetting the cadence the way a hash-tied
 # timer would. A .paused-resurfaced-<key> throttle marker records the last
