@@ -149,6 +149,18 @@ FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=".herdr-presentation"
 # projection.
 FM_BACKEND_HERDR_PRESENTATION_CONFIG="herdr-presentation-spaces"
 
+# Herdr's own unnamed session, which firstmate reserves for ORCHESTRATORS: the
+# primary firstmate and every local secondmate the captain talks to directly.
+# Workers are partitioned one session per project instead and never land here
+# (docs/herdr-backend.md "Session selection"), so the captain can watch one
+# project's workers without the orchestrators' own panes in the same window.
+# The override exists so an isolated test can stand its whole fleet up in a lab
+# session rather than in the captain's live one; production never sets it, and
+# it can never place a WORKER here, because bin/fm-project-mode.sh --session
+# refuses a project that records "default" whatever this holds.
+# shellcheck disable=SC2034  # bin/fm-spawn.sh reads this after sourcing the adapter
+FM_BACKEND_HERDR_ORCHESTRATOR_SESSION="${FM_BACKEND_HERDR_ORCHESTRATOR_SESSION:-default}"
+
 # fm_backend_herdr_presentation_preference <config-dir>: the single owner of
 # config/herdr-presentation-spaces parsing. Echoes exactly one of "off", "on"
 # (a deliberate opt-in, honored even below the version floor), or "default"
@@ -231,13 +243,13 @@ fm_backend_herdr_release_floor_verdict() {  # <protocol> <version>
 # FM_BACKEND_HERDR_PRESENTATION_RELEASE to the identifier a caller's warning
 # names. An unreadable server-running state is indeterminate rather than
 # permission to substitute the client release.
-fm_backend_herdr_presentation_release_supported() {  # [<session>]
-  local session=${1:-} status running client_protocol client_version client_verdict=0
+fm_backend_herdr_presentation_release_supported() {  # <session>
+  local session=$1 status running client_protocol client_version client_verdict=0
   local server_protocol server_version server_verdict=0
   FM_BACKEND_HERDR_PRESENTATION_RELEASE="an unreadable release"
   command -v herdr >/dev/null 2>&1 || return 2
   command -v jq >/dev/null 2>&1 || return 2
-  [ -n "$session" ] || session=$(fm_backend_herdr_session)
+  [ -n "$session" ] || return 2
   status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || return 2
   client_protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty' 2>/dev/null) || return 2
   client_version=$(printf '%s' "$status" | jq -r '.client.version // empty' 2>/dev/null) || return 2
@@ -308,27 +320,30 @@ fm_backend_herdr_presentation_floor_warn() {  # <state-dir> <verdict>
   return 0
 }
 
-# fm_backend_herdr_presentation_default_supported <state-dir> [<session>]:
+# fm_backend_herdr_presentation_default_supported <state-dir> <session>:
 # compose the applicable release verdict and the shared warning contract for
 # one unconfigured home.
-fm_backend_herdr_presentation_default_supported() {  # <state-dir> [<session>]
-  local state_dir=${1:-} session=${2:-} verdict=0
+fm_backend_herdr_presentation_default_supported() {  # <state-dir> <session>
+  local state_dir=${1:-} session=$2 verdict=0
   fm_backend_herdr_presentation_release_supported "$session" || verdict=$?
   [ "$verdict" -eq 0 ] && return 0
   fm_backend_herdr_presentation_floor_warn "$state_dir" "$verdict"
   return 1
 }
 
-# fm_backend_herdr_presentation_enabled <config-dir> [<state-dir>]: the one gate
-# bin/fm-spawn.sh consults before projecting this home's children into
+# fm_backend_herdr_presentation_enabled <config-dir> <state-dir> <session>: the
+# one gate bin/fm-spawn.sh consults before projecting this home's children into
 # disposable one-task workspaces (docs/herdr-backend.md "Presentation spaces"
 # owns the full contract). An explicit "off" or "on" is obeyed as written; a
 # home that configured nothing is projected only at or above the version floor,
 # and otherwise falls back to the flat layout with one warning. Sets
 # FM_BACKEND_HERDR_PRESENTATION_PREFERENCE for the new-projection boundary to
 # distinguish an unconfigured default from an explicit opt-in.
-fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
-  local config_dir=${1:-} state_dir=${2:-} preference
+# <session> is the spawn's already-selected target session: the floor is a
+# property of the server that will host the projection, so reading it from any
+# other session would gate on a release this spawn never touches.
+fm_backend_herdr_presentation_enabled() {  # <config-dir> <state-dir> <session>
+  local config_dir=${1:-} state_dir=${2:-} session=$3 preference
   preference=$(fm_backend_herdr_presentation_preference "$config_dir")
   # bin/fm-spawn.sh reads this out-parameter after sourcing this adapter.
   # shellcheck disable=SC2034
@@ -337,7 +352,7 @@ fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
     off) return 1 ;;
     on) return 0 ;;
   esac
-  fm_backend_herdr_presentation_default_supported "$state_dir"
+  fm_backend_herdr_presentation_default_supported "$state_dir" "$session"
 }
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
@@ -415,14 +430,103 @@ fm_backend_herdr_version_check() {
   return 0
 }
 
-# fm_backend_herdr_session: resolve which named herdr session this normal
-# spawn/op uses. HERDR_SESSION mirrors tmux's $TMUX ambient-selection for
-# adapter workspace/tab/pane operations: an operator (or firstmate's own
-# isolated test harness) sets it explicitly; absent means herdr's own
-# "default" session. Do not use HERDR_SESSION alone for destructive test
+# fm_backend_herdr_ambient_claimed_session: the session this process's
+# environment CLAIMS it is running in. NEVER a placement selector.
+#
+# Herdr injects HERDR_SESSION once, when the pane's process starts, and can
+# never rewrite a running process's environment afterwards. A daemon-launched
+# firstmate therefore inherits the value fixed at the LAUNCHING process's
+# creation, which describes where that daemon was started rather than where
+# this session lives. The error is self-confirming, because a bare `herdr`
+# call resolves through the same environment (herdr 0.8.0 src/session.rs:
+# HERDR_SOCKET_PATH wins over HERDR_SESSION when no explicit --session is
+# given), so even `herdr status` reports the claimed session rather than the
+# true one. Only fm_backend_herdr_ambient_claim_verdict below can tell the two
+# apart.
+#
+# Worker placement is selected from the project registry
+# (bin/fm-project-mode.sh --session, docs/herdr-backend.md "Session
+# selection"), never from this claim. The remaining legitimate readers are the
+# claim verdict itself and home-local sweeps that address the operator's own
+# current session. Do not use HERDR_SESSION alone for destructive test
 # cleanup; tests/herdr-test-safety.sh documents and guards that path.
-fm_backend_herdr_session() {
+fm_backend_herdr_ambient_claimed_session() {
   printf '%s' "${HERDR_SESSION:-default}"
+}
+
+# fm_backend_herdr_self_pid_chain: this process's own ancestor pids, innermost
+# first, one per line. The bound stops a pid-namespace or ps oddity from
+# looping; a real chain is a handful of entries deep.
+fm_backend_herdr_self_pid_chain() {
+  local pid=$$ depth=0
+  while [ "$pid" -gt 1 ] && [ "$depth" -lt 64 ]; do
+    printf '%s\n' "$pid"
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    case "$pid" in
+      ''|*[!0-9]*) return 0 ;;
+    esac
+    depth=$((depth + 1))
+  done
+}
+
+# fm_backend_herdr_pane_shell_pid: the pid of the shell herdr started for
+# <pane_id>, or empty when it cannot be read. Verified against herdr 0.8.0:
+# `pane process-info` reports `.result.process_info.shell_pid`, and that pid is
+# stable while the pane's FOREGROUND process changes underneath it, which is
+# what makes it usable as the pane's identity rather than a snapshot of what it
+# happens to be running.
+fm_backend_herdr_pane_shell_pid() {  # <session> <pane_id>
+  local session=$1 pane=$2 out pid
+  out=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 0
+  pid=$(printf '%s' "$out" | jq -r --arg pane "$pane" '
+    select(.result.process_info.pane_id == $pane)
+    | select((.result.process_info.shell_pid | type) == "number")
+    | .result.process_info.shell_pid
+  ' 2>/dev/null)
+  case "$pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  printf '%s' "$pid"
+}
+
+# fm_backend_herdr_ambient_claim_verdict: decide whether the pane this
+# process's environment claims is really the pane this process runs in.
+# Prints exactly one of:
+#   mine     - proven: the claimed pane's shell is one of this process's own
+#              ancestors, so the injected identity describes this process.
+#   not-mine - proven false: the claimed pane exists and reports a shell pid,
+#              and that pid is NOT an ancestor of this process. The environment
+#              is stale (see fm_backend_herdr_ambient_claimed_session).
+#   unknown  - no claim, or the evidence needed to decide could not be read.
+#
+# Proof is the process tree, a kernel fact, rather than the pane's rendered
+# cwd or terminal title. Both of those follow whatever the pane is running at
+# the moment - verified on herdr 0.8.0, where a freshly created pane reports a
+# null terminal_title and foreground_cwd tracks each command's own directory -
+# so neither can carry a verdict on its own.
+#
+# This is a DETECTOR, never a selector: a "not-mine" verdict says the claim is
+# false, and says nothing about which session a worker belongs in.
+fm_backend_herdr_ambient_claim_verdict() {  # <claimed-session> <claimed-pane>
+  local session=$1 pane=$2 shell_pid ancestor
+  if [ -z "$pane" ] || [ -z "$session" ]; then
+    printf 'unknown'
+    return 0
+  fi
+  shell_pid=$(fm_backend_herdr_pane_shell_pid "$session" "$pane")
+  if [ -z "$shell_pid" ]; then
+    printf 'unknown'
+    return 0
+  fi
+  while IFS= read -r ancestor; do
+    if [ "$ancestor" = "$shell_pid" ]; then
+      printf 'mine'
+      return 0
+    fi
+  done <<EOF
+$(fm_backend_herdr_self_pid_chain)
+EOF
+  printf 'not-mine'
 }
 
 # fm_backend_herdr_projection_id: generate a compact 128-bit base64url token.
@@ -1527,15 +1631,24 @@ fm_backend_herdr_workspace_find() {  # <session>
 #
 # Returns:
 #   0 - one exact, self-consistent launcher pane/tab/workspace in <session>.
-#   2 - this process is NOT running in a herdr pane (no HERDR_PANE_ID at all),
-#       so there is no launcher workspace to inherit and the caller falls back
-#       to its per-home container. HERDR_ENV=1 on its own is only a backend
-#       SELECTION marker (bin/fm-backend.sh's fm_backend_detect), never a
-#       parent binding - herdr always injects the pane id alongside it.
-#   1 - a launcher pane IS claimed but its binding is missing, stale,
-#       contradictory, or belongs to another herdr session. The caller must
-#       refuse before creating or publishing any worker endpoint rather than
-#       degrading to a label search.
+#   2 - there is no launcher workspace in <session> to inherit, so the caller
+#       falls back to its per-home container. Either this process is not
+#       running in a herdr pane at all (no HERDR_PANE_ID; HERDR_ENV=1 on its
+#       own is only a backend SELECTION marker - bin/fm-backend.sh's
+#       fm_backend_detect - never a parent binding, because herdr always
+#       injects the pane id alongside it), or the launcher is running in a
+#       DIFFERENT session than the one this spawn targets.
+#   1 - a launcher pane IS claimed IN THIS SESSION but its binding is missing,
+#       stale, or contradictory. The caller must refuse before creating or
+#       publishing any worker endpoint rather than degrading to a label search.
+#
+# A cross-session launcher is 2 rather than 1 because it is an inapplicable
+# identity, not a corrupt one: since worker placement became registry-selected
+# (docs/herdr-backend.md "Session selection"), an orchestrator in `default`
+# spawning into a project's own session is the ORDINARY case, and its workspace
+# in `default` is not a parent any worker could be placed under. Refusing there
+# would refuse every dispatch in the fleet. The per-home container this falls
+# back to still refuses an ambiguous placement of its own.
 fm_backend_herdr_launcher_identity() {  # <session>
   local session=$1 pane=${HERDR_PANE_ID:-} claimed_session claimed_socket session_socket
   local pane_out tab_out list tab workspace
@@ -1549,10 +1662,9 @@ fm_backend_herdr_launcher_identity() {  # <session>
   # borrowed from another session can silently resolve to a real but unrelated
   # workspace here. The injected socket path is the server identity herdr
   # exposes, and the session name independently binds the named session.
-  claimed_session=$(fm_backend_herdr_session)
+  claimed_session=$(fm_backend_herdr_ambient_claimed_session)
   if [ "$claimed_session" != "$session" ]; then
-    echo "error: herdr launcher pane '$pane' reports session '$claimed_session' but this spawn targets session '$session'; refusing to place a worker from a cross-session parent identity" >&2
-    return 1
+    return 2
   fi
   claimed_socket=${HERDR_SOCKET_PATH:-}
   if [ -z "$claimed_socket" ]; then
@@ -1568,7 +1680,7 @@ fm_backend_herdr_launcher_identity() {  # <session>
     return 1
   }
   if [ "$claimed_socket" != "$session_socket" ]; then
-    echo "error: herdr launcher pane '$pane' belongs to the server at '$claimed_socket', not session '$session' at '$session_socket'; refusing to place a worker from a cross-session parent identity" >&2
+    echo "error: herdr launcher pane '$pane' names session '$session' but belongs to the server at '$claimed_socket' rather than that session's own '$session_socket'; refusing to place a worker from a self-contradictory parent identity" >&2
     return 1
   fi
 
@@ -1804,10 +1916,14 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd> [<launcher-relationship
 # function allowed to prune it (fm_backend_herdr_workspace_prune_seeded_default_tab).
 # <launcher-relationship> is passed straight through to
 # fm_backend_herdr_workspace_ensure, which owns its meaning.
-fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace> [<launcher-relationship>]
-  local cwd=${1:-$PWD} relationship=${2:-launcher-home} session label status
+# <session> is required and comes from the caller's own placement decision
+# (bin/fm-spawn.sh resolves it from the project registry - docs/herdr-backend.md
+# "Session selection"). It is deliberately not defaulted: an ambient default
+# here is what silently placed workers in the orchestrator's stale session.
+fm_backend_herdr_container_ensure() {  # <session> <cwd-for-a-fresh-workspace> [<launcher-relationship>]
+  local session=$1 cwd=${2:-$PWD} relationship=${3:-launcher-home} label status
+  [ -n "$session" ] || { echo "error: herdr container ensure requires an explicit target session" >&2; return 1; }
   fm_backend_herdr_version_check || return 1
-  session=$(fm_backend_herdr_session)
   fm_backend_herdr_server_ensure "$session" || return 1
   fm_backend_herdr_workspace_ensure "$session" "$cwd" "$relationship" >/dev/null && status=0 || status=$?
   # A 3 already reported the exact placement it refused to guess at; adding the
@@ -2065,8 +2181,10 @@ EOF
 # CLEANUP_SAFE becomes 1 only after both creates returned complete exact IDs.
 # A missing, failed, or malformed create response stays ambiguous and grants no
 # cleanup authority.
-fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
-  local cwd=$1 workspace_label=$2 task_label=$3 session out tabs panes tab_count pane_count focus_before
+# <session> is required and carries the caller's already-selected placement,
+# for the same reason fm_backend_herdr_container_ensure requires it.
+fm_backend_herdr_projection_create_task() {  # <session> <cwd> <workspace-label> <task-label>
+  local session=$1 cwd=$2 workspace_label=$3 task_label=$4 out tabs panes tab_count pane_count focus_before
   FM_BACKEND_HERDR_PROJECTION_SESSION=""
   FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID=""
   FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID=""
@@ -2075,8 +2193,8 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
   FM_BACKEND_HERDR_PROJECTION_PANE_ID=""
   FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE=0
 
+  [ -n "$session" ] || { echo "error: herdr presentation workspace create requires an explicit target session" >&2; return 1; }
   fm_backend_herdr_version_check || return 1
-  session=$(fm_backend_herdr_session)
   fm_backend_herdr_server_ensure "$session" || return 1
   focus_before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
     echo "error: herdr presentation workspace create could not capture exact active workspace and tab; refusing a focus-unsafe projection" >&2

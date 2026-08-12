@@ -382,8 +382,8 @@ mkdir -p "$FLOOR_CONFIG" "$FLOOR_STATE"
 gate_verdict() {  # <config-dir> -> on|off, warnings on stderr
   PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" HERDR_SESSION="$HERDR_LAB_SESSION" bash -c '
     . "$0/bin/backends/herdr.sh"
-    if fm_backend_herdr_presentation_enabled "$1" "$2"; then printf "on\n"; else printf "off\n"; fi
-  ' "$ROOT" "$1" "$FLOOR_STATE"
+    if fm_backend_herdr_presentation_enabled "$1" "$2" "$3"; then printf "on\n"; else printf "off\n"; fi
+  ' "$ROOT" "$1" "$FLOOR_STATE" "$HERDR_LAB_SESSION"
 }
 GATE_ERR="$TMP_ROOT/gate.err"
 GATE_DEFAULT=$(gate_verdict "$FLOOR_CONFIG" 2>"$GATE_ERR")

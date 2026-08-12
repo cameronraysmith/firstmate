@@ -57,7 +57,7 @@ pass "real herdr: version_check accepts the installed binary's protocol"
 # one - docs/herdr-backend.md "Default-tab prune"). Split on the guaranteed
 # single tab character; only fm_backend_herdr_create_task is ever allowed to
 # act on the seeded tab id, and only for the container that just created it.
-CONTAINER_RAW=$(fm_backend_herdr_container_ensure /tmp) || fail "container_ensure failed"
+CONTAINER_RAW=$(fm_backend_herdr_container_ensure "$SESSION" /tmp) || fail "container_ensure failed"
 CONTAINER=${CONTAINER_RAW%%$'\t'*}
 SEEDED_TAB_ID=${CONTAINER_RAW#*$'\t'}
 case "$CONTAINER" in
@@ -72,7 +72,7 @@ pass "real herdr: container_ensure starts the isolated session's server, creates
 # the 2026-07-02 self-kill incident (docs/herdr-backend.md "Default-tab
 # prune"): only the call that actually just created a workspace may identify
 # a tab as prunable.
-CONTAINER2_RAW=$(fm_backend_herdr_container_ensure /tmp) || fail "second container_ensure failed"
+CONTAINER2_RAW=$(fm_backend_herdr_container_ensure "$SESSION" /tmp) || fail "second container_ensure failed"
 CONTAINER2=${CONTAINER2_RAW%%$'\t'*}
 SEEDED_TAB_ID2=${CONTAINER2_RAW#*$'\t'}
 [ "$CONTAINER2" = "$CONTAINER" ] || fail "container_ensure is not idempotent: '$CONTAINER' vs '$CONTAINER2'"
@@ -182,7 +182,7 @@ SM_HOME="$SM_SCRATCH/secondmate-home"
 mkdir -p "$SM_HOME"
 printf 'smoketest-sm1\n' > "$SM_HOME/.fm-secondmate-home"
 
-SM_CONTAINER_RAW=$(FM_HOME="$SM_HOME" fm_backend_herdr_container_ensure /tmp) || fail "secondmate-shaped container_ensure failed"
+SM_CONTAINER_RAW=$(FM_HOME="$SM_HOME" fm_backend_herdr_container_ensure "$SESSION" /tmp) || fail "secondmate-shaped container_ensure failed"
 SM_CONTAINER=${SM_CONTAINER_RAW%%$'\t'*}
 SM_SEEDED_TAB_ID=${SM_CONTAINER_RAW#*$'\t'}
 case "$SM_CONTAINER" in
@@ -335,7 +335,7 @@ pass "real herdr: kill removes the pane and is idempotent/best-effort"
 # deletes the workspace itself (verified real-herdr behavior), so the stale
 # $CONTAINER from container_ensure at test start no longer names a live
 # workspace.
-CONTAINER_RAW=$(fm_backend_herdr_container_ensure /tmp) || fail "container_ensure for the second task failed"
+CONTAINER_RAW=$(fm_backend_herdr_container_ensure "$SESSION" /tmp) || fail "container_ensure for the second task failed"
 CONTAINER=${CONTAINER_RAW%%$'\t'*}
 SEEDED_TAB_ID=${CONTAINER_RAW#*$'\t'}
 [ -n "$SEEDED_TAB_ID" ] || fail "the workspace was deleted when its last tab was killed, so this container_ensure must CREATE a fresh one and report its seeded default tab id"
