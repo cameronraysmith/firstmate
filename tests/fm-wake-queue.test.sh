@@ -139,9 +139,13 @@ test_not_working_stale_enqueue_before_suppressor() {
   pane_hash=$(hash_text "idle prompt, finished")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
-  # NOT provably working: no running pipeline, idle pane. (make_case installed the
-  # fake fm-crew-state.sh the watcher reads via FM_CREW_STATE_BIN.)
-  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  # NOT provably working: no running pipeline, idle pane, so the reconciler falls
+  # back to this fixture's own stale working: line. That is a source ANSWERING
+  # without work in progress, which is what surfaces immediately - as opposed to a
+  # read that found no source at all, which is timed toward the wedge threshold
+  # instead (see fm-watch-triage.test.sh). (make_case installed the fake
+  # fm-crew-state.sh the watcher reads via FM_CREW_STATE_BIN.)
+  export FM_FAKE_CREW_STATE='state: working · source: status-log · working: implementing'
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
