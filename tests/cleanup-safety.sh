@@ -83,6 +83,29 @@ fm_test_reap_bounded() {  # <pid> [ticks]
   wait "$pid" 2>/dev/null
 }
 
+FM_TEST_WAIT_TICKS=${FM_TEST_WAIT_TICKS:-300}
+
+# fm_test_wait_bounded <pid> [ticks]: wait for a child expected to exit ON ITS
+# OWN, within a bound. Unlike fm_test_reap_bounded this signals nothing while the
+# bound runs, so the child's real exit status still reaches the caller and can
+# keep driving an assertion. On timeout the child is reaped and 124 is returned,
+# which fails that assertion loudly instead of blocking the script - and a script
+# blocked here never reaches its own EXIT trap, so the teardown in that trap
+# would never run either.
+fm_test_wait_bounded() {  # <pid> [ticks]
+  local pid=${1:-} ticks=${2:-$FM_TEST_WAIT_TICKS} i=0
+  [ -n "$pid" ] || return 0
+  while [ "$i" -lt "$ticks" ] && fm_test_pid_live "$pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if fm_test_pid_live "$pid"; then
+    fm_test_reap_bounded "$pid" >/dev/null 2>&1 || true
+    return 124
+  fi
+  wait "$pid" 2>/dev/null
+}
+
 # --- treehouse pool release -------------------------------------------------
 #
 # Registration is keyed on the fixture PROJECT path, not on an acquired worktree
@@ -120,37 +143,28 @@ fm_test_pool_worktrees() {  # <project-path>
     | sed -e 's/^"path":"//' -e 's/"$//'
 }
 
-# A pool that never handed out a worktree still leaves its directory behind -
-# `treehouse status` alone creates it - and an empty pool reports no path for the
-# authoritative derivation above to use. These two resolve that one case.
+# A pool that never handed out a worktree still leaves its directory behind, and
+# an empty pool reports no worktree path for the authoritative derivation above
+# to work from. Nothing in the CLI prints an empty pool's path, and the directory
+# name cannot be computed: it is a digest of the repository's identity, which for
+# a repository with an origin remote is not its local path.
 #
-# The layout is an observed treehouse detail (v2.1.1: <root>/<repo-basename>-<first
-# 6 hex of sha256 of the repository's physical path>/<slot>/<repo-basename>),
-# not a documented contract, so it is used ONLY as this fallback and never for
-# the orphan guarantee. If a later treehouse changes the scheme, the derived path
-# simply will not exist and this degrades to doing nothing.
-#
-# A wrong guess is harmless rather than merely unlikely: the only directory this
-# can remove is one holding no worktree slots at all, which is inert state
-# treehouse recreates on demand the next time that pool is touched.
+# So observe it instead of deriving it. Reading a pool's status CREATES its
+# directory, so the release's own read below is what brings an untouched pool
+# into existence - which makes it attributable: a directory that appears under
+# the pool root across a read scoped to this one project is that project's pool.
+# Only a directory holding no worktree slots is ever removed, and that is inert
+# state treehouse recreates on demand, so a misattribution under a concurrent
+# suite costs nothing.
 FM_TEST_TREEHOUSE_ROOT=${FM_TEST_TREEHOUSE_ROOT:-$HOME/.treehouse}
 
-fm_test_pool_path_digest() {  # <absolute-path>
-  if command -v shasum >/dev/null 2>&1; then
-    printf '%s' "$1" | shasum -a 256 | awk '{print substr($1, 1, 6)}'
-  elif command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 6)}'
-  else
-    printf '%s' "$1" | openssl dgst -sha256 | awk '{print substr($NF, 1, 6)}'
-  fi
-}
-
-fm_test_pool_dir_for() {  # <project-path>
-  local proj=$1 real digest
-  real=$(cd "$proj" 2>/dev/null && pwd -P) || return 1
-  digest=$(fm_test_pool_path_digest "$real") || return 1
-  [ -n "$digest" ] || return 1
-  printf '%s/%s-%s\n' "$FM_TEST_TREEHOUSE_ROOT" "${real##*/}" "$digest"
+fm_test_pool_root_entries() {
+  local entry
+  [ -d "$FM_TEST_TREEHOUSE_ROOT" ] || return 0
+  for entry in "$FM_TEST_TREEHOUSE_ROOT"/*; do
+    [ -d "$entry" ] || continue
+    printf '%s\n' "$entry"
+  done
 }
 
 # Remove a pool directory that holds no slots left. Only the two state files
@@ -178,13 +192,13 @@ fm_test_pool_rmdir_if_empty() {  # <pool-dir>
 # strand in place. --include-in-use terminates the slot's processes first, and
 # --include-unlanded covers fixture commits that were never merged anywhere.
 fm_test_pool_release() {  # <project-path>
-  local proj=${1:-} wt pool rc=0 pools='' derived=''
+  local proj=${1:-} wt pool rc=0 pools='' pools_before=''
   [ -n "$proj" ] || return 0
   command -v treehouse >/dev/null 2>&1 || return 0
   # Without the repository, treehouse cannot resolve its pool at all; that is
   # the strand this function exists to prevent, not a state it can repair.
   [ -d "$proj" ] || return 0
-  derived=$(fm_test_pool_dir_for "$proj") || derived=''
+  pools_before=$(fm_test_pool_root_entries)
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     pool=$(dirname "$(dirname "$wt")")
@@ -209,15 +223,22 @@ EOF
   done <<EOF
 $(fm_test_pool_worktrees "$proj")
 EOF
-  # Only now, because the status reads above CREATE the pool directory for a
-  # project that never had one: testing for it any earlier misses exactly the
-  # empty pool this fallback is here to remove.
-  if [ -n "$derived" ] && [ -d "$derived" ]; then
-    case "$pools" in
-      *"|$derived|"*) ;;
-      *) pools="$pools|$derived|" ;;
+  # Any pool directory that appeared across the reads above belongs to this
+  # project: those reads named no other repository.
+  while IFS= read -r pool; do
+    [ -n "$pool" ] || continue
+    case "
+$pools_before" in
+      *"
+$pool"*) continue ;;
     esac
-  fi
+    case "$pools" in
+      *"|$pool|"*) ;;
+      *) pools="$pools|$pool|" ;;
+    esac
+  done <<EOF
+$(fm_test_pool_root_entries)
+EOF
   while [ -n "$pools" ]; do
     pool=${pools#|}
     pool=${pool%%|*}
