@@ -30,7 +30,9 @@ FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 #   3. $HERDR_ENV=1 + $HERDR_PANE_ID - herdr injects both into every process it
 #      manages a pane for; compose the "<session>:<pane-id>" target from
 #      $HERDR_SESSION (defaulting to "default", mirroring bin/backends/herdr.sh's
-#      fm_backend_herdr_session) and $HERDR_PANE_ID. Checked after $TMUX_PANE so a
+#      fm_backend_herdr_ambient_claimed_session) and $HERDR_PANE_ID. This target
+#      addresses the supervisor's OWN pane, which is the one thing the injected
+#      environment is for; worker placement never reads it. Checked after $TMUX_PANE so a
 #      tmux pane nested inside herdr still resolves to tmux, matching
 #      fm_backend_detect's innermost-first rule.
 #   4. FM_SUPERVISOR_TARGET_DEFAULT - legacy tmux fallback (may not resolve if the

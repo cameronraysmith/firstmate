@@ -33,15 +33,42 @@ The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and
 Those script headers own release assets, checksums, download bounds, and post-install gates.
 Real harness credential tests remain opt-in rather than part of default CI.
 
+## Session selection
+
+A worker's Herdr session is chosen from the project registry and is never inherited from the orchestrator's environment.
+Sessions partition the fleet one per project, so each project's workers can be watched in their own window.
+`default` is reserved for orchestrators, meaning the primary Firstmate and every local secondmate; no worker is ever placed there.
+
+Each project records its session as a `session=<name>` token in its `data/projects.md` annotation bracket, alongside the delivery mode and the optional `+yolo` flag.
+The bracket's tokens are order-independent apart from the leading mode, and `bin/fm-project-mode.sh` is the single owner of that line format.
+`bin/fm-project-mode.sh --session <project>` is the selector, and it fails closed: a missing registry, an unregistered project, an absent token, a name Herdr itself would reject, or the reserved `default` all refuse and print the exact registry edit that fixes it.
+A refused spawn creates nothing at all, in any session.
+A secondmate is an orchestrator rather than a worker, so a `--secondmate` launch is placed in the reserved orchestrator session instead of consulting the registry.
+
+Selecting rather than inheriting is a correctness requirement, not a monitoring convenience.
+Herdr injects `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`, and `HERDR_WORKSPACE_ID` once, when a pane's process starts, and cannot rewrite a running process's environment afterwards.
+A daemon-launched agent therefore carries whatever was fixed at its launching process's creation, which describes where that daemon started rather than where the agent runs.
+The error is self-confirming, because every bare `herdr` call resolves through the same environment: on 0.8.0 an explicit `--session` wins, but without one `HERDR_SOCKET_PATH` decides, so even `herdr status` reports the claimed session rather than the true one.
+Measured on 2026-08-11: an orchestrator actually running in `default` carried `HERDR_SESSION=plan` and placed its worker in `plan`, invisible from where the captain was working.
+
+`bin/fm-herdr-whereami.sh` is the detector for that condition, and it is a diagnostic only, never a selector.
+It proves a process's real pane from the process tree, matching each candidate pane's `shell_pid` from `herdr pane process-info` against the process's own ancestry, because a pane's `foreground_cwd` and `terminal_title` both track whatever it is running at the moment and cannot carry a verdict alone.
+It scans every running session rather than starting from the claimed one, since the claim is the thing under suspicion, and it reports an unresolved location rather than guessing one.
+A spawn emits the same warning when, and only when, this process's injected identity is disproved that way; placement is unaffected, but a `herdr` command typed by hand in that shell will address the wrong session.
+
+Creating a session steals no focus.
+`herdr server --session <name>` starts a headless server (Herdr 0.8.0 `src/main.rs` routes it to `server::headless::run_server`) and creates the session directory when it binds its socket, so a spawn brings a project's session up without moving the captain's view.
+That is the only creation path Firstmate uses; `herdr session attach <name>` also creates a session but launches the terminal UI attached to it, which would take over the captain's terminal.
+
 ## Watching and task containers
 
-The ordinary topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
+Within the session chosen above, the ordinary topology puts one task tab per endpoint in the exact workspace of the Firstmate or secondmate that launches it.
 When the launcher has no Herdr workspace to inherit, the adapter maintains one durable home-labeled workspace instead.
 The primary home label is `firstmate`.
 A secondmate home label is `2ndmate-<secondmate-id>`, derived from its validated `.fm-secondmate-home` marker.
 A secondmate launched by the primary receives a narrowly scoped home override during container creation.
 
-Attach to the selected named Herdr session and switch to the relevant home workspace to watch its task tabs.
+Attach to the project's own Herdr session and switch to the relevant home workspace to watch its task tabs.
 Routine supervision uses `bin/fm-peek.sh <id>` and `FM_HOME=<home> bin/fm-send.sh <id> '<text>'` without attaching.
 
 Workspace and tab creation use `--no-focus`.
@@ -55,9 +82,12 @@ Duplicate labels elsewhere in the session are irrelevant, and the globally focus
 A `--secondmate` launch is the deliberate exception: it stands up that secondmate home's own workspace instead of joining the launcher's.
 
 A claimed parent identity that cannot be resolved exactly stops the spawn before any worker endpoint exists, rather than falling back to a label search.
-That covers a missing or unusable socket identity, a closed or unreadable launcher pane, a pane and tab that disagree about their workspace, a workspace missing from the session, and a pane belonging to another named session or Herdr server.
+That covers a missing or unusable socket identity, a closed or unreadable launcher pane, a pane and tab that disagree about their workspace, a workspace missing from the session, and an injected socket that contradicts the session name beside it.
 
-Firstmate running outside Herdr entirely has no launcher workspace to inherit, so its workers use this home's own labeled workspace, created on first use.
+A launcher running in a different session than the spawn targets is not one of those refusals.
+It is the ordinary case now that the session is selected per project, and it means only that the launcher has no workspace in the target session for a worker to sit under, so placement falls back to the per-home container below.
+
+Firstmate running outside Herdr entirely, or in another session, has no launcher workspace to inherit, so its workers use this home's own labeled workspace in the selected session, created on first use.
 That path needs the home label to identify exactly one workspace: two workspaces sharing it are an unresolvable placement and refuse rather than adopting either.
 Avoid naming a personal workspace `firstmate` or `2ndmate-<id>` for that reason, and because the adapter cannot distinguish that label collision from its own container.
 An older secondmate workspace using `firstmate-<id>` is not migrated automatically; rename it manually before expecting new tasks or recovery to use it.
@@ -140,6 +170,8 @@ A live or unknown recorded or token-matched endpoint refuses duplicate launch.
 
 Locked session start has one narrower cleanup for a restored projected child that is no longer current task state.
 It runs only when the current home has at least one ordinary presentation journal and considers only that home; a primary never recursively sweeps a secondmate home.
+If those journals and task endpoints name no usable session, cleanup warns with every affected task ID and directs the operator to inspect those tasks in Herdr and retire only journals whose panes are confirmed gone.
+It never falls back to an ambient session that might belong to another home.
 Discovery starts from the exact current `└ <concise-task> · p:<22-character-token>` grammar, but a title or token alone is never mutation authority.
 The title must contain exactly one token occurrence across the named-session snapshot and must equal the title derived from exactly one valid presentation journal in this home's own `state/`; a version 2 journal additionally must bind this exact physical home, named session, workspace, tab, and pane.
 The task's ordinary metadata must be absent, and the candidate must have exactly one tab and exactly one pane.
@@ -313,7 +345,8 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Herdr remains experimental.
 - Presentation ordering needs protocol 16 and Python and is best-effort only.
 - Mutable labels can collide; they are never placement or destructive authority.
-- A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
+- A Firstmate outside Herdr, or in a different session than the spawn targets, cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
+- A project with no recorded Herdr session cannot dispatch at all; the registry entry is the only placement authority.
 - Ghost and placeholder recognition uses ANSI de-emphasis when available; an unstyled glyph row carrying trailing non-idle text fails safely to `unknown`.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
@@ -329,6 +362,7 @@ tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
 tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
+tests/fm-backend-herdr-session-per-project-e2e.test.sh
 tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh

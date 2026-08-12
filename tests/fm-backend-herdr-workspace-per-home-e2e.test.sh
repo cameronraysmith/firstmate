@@ -68,6 +68,10 @@ herdr_forget_inherited_pane
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-e2e.XXXXXX")
 SESSION="fm-lab-herdr-e2e-$$"
 export HERDR_SESSION="$SESSION"
+# This suite spawns a secondmate, which is placed in the reserved
+# orchestrator session rather than from the project registry.
+herdr_reserve_orchestrator_session "$SESSION" \
+  || { echo "not ok - could not reserve the lab orchestrator session" >&2; exit 1; }
 WT1=; WT2=
 cleanup_all() {
   [ -n "$WT1" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT1" >/dev/null 2>&1
@@ -112,6 +116,13 @@ make_scratch_project() {  # <dir>
 
 PROJ1="$TMP_ROOT/scratch-project-1"; make_scratch_project "$PROJ1"
 PROJ2="$TMP_ROOT/scratch-project-2"; make_scratch_project "$PROJ2"
+# Worker placement is registry-selected, so each home registers the project it
+# spawns against this suite's isolated lab session. Per-HOME workspace labeling
+# is what this suite tests; placement has its own suite.
+printf -- '- %s [no-mistakes session=%s] - scratch project (added 2026-01-01)\n' \
+  "$(basename "$PROJ1")" "$SESSION" > "$PRIMARY_HOME/data/projects.md"
+printf -- '- %s [no-mistakes session=%s] - scratch project (added 2026-01-01)\n' \
+  "$(basename "$PROJ2")" "$SESSION" > "$SM_HOME/data/projects.md"
 
 # --- 1. primary-shaped home: a crewmate spawns into the "firstmate" space ---
 
