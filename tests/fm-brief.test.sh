@@ -18,6 +18,30 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# The real open-decisions fold, so the keyed example the scaffold demonstrates is
+# checked against the classifier that actually reads it rather than as prose.
+# shellcheck source=bin/fm-classify-lib.sh
+. "$ROOT/bin/fm-classify-lib.sh"
+
+# First fully backticked "<verb> [key=<slug>]: <note>" example line in a generated
+# brief, with its indentation and enclosing backticks stripped. A backticked token
+# inside surrounding prose never matches: only a line that IS the example does.
+brief_keyed_example() {  # <brief> <verb>
+  local line
+  while IFS= read -r line; do
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    case "$line" in
+      '`'"$2"' [key='*']:'*'`')
+        line=${line#\`}
+        printf '%s' "${line%\`}"
+        return 0
+        ;;
+    esac
+  done < "$1"
+  return 0
+}
+
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
@@ -740,6 +764,55 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# The generated status protocol must SHOW where a decision key goes, in both the
+# opening and the closing example. Mentioning the token only in a parenthetical
+# left a worker following the brief verbatim nothing that fixes its position, and
+# a key written on the wrong side of the colon used to fold into the shared
+# "default" bucket that a --resolve-key answer cannot reach (issues #2109, #2202).
+# The demonstrated pair is driven through the REAL open-decisions fold rather than
+# matched as prose, so an example the classifier does not actually honor fails here.
+test_status_protocol_demonstrates_the_decision_key_position() {
+  local home kind brief opener closer key sf folded
+  home="$TMP_ROOT/decision-key-home"
+  mkdir -p "$home/data"
+  sf="$TMP_ROOT/decision-key-demo.status"
+  for kind in ship scout; do
+    case "$kind" in
+      ship) FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+        "$ROOT/bin/fm-brief.sh" "demo-key-$kind" sample --mode local-only >/dev/null 2>&1 ;;
+      scout) FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+        "$ROOT/bin/fm-brief.sh" "demo-key-$kind" sample --scout >/dev/null 2>&1 ;;
+    esac
+    brief="$home/data/demo-key-$kind/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    opener=$(brief_keyed_example "$brief" 'needs-decision')
+    closer=$(brief_keyed_example "$brief" 'resolved')
+    [ -n "$opener" ] \
+      || fail "$kind brief demonstrates no keyed needs-decision line"
+    [ -n "$closer" ] \
+      || fail "$kind brief demonstrates no keyed resolved line"
+    key=${opener#*[key=}; key=${key%%]*}
+    [ "$key" != default ] \
+      || fail "$kind brief's demonstrated key is the shared default bucket"
+    case "$closer" in
+      *"[key=$key]"*) ;;
+      *) fail "$kind brief opens with key '$key' but closes with a different one: $closer" ;;
+    esac
+
+    printf '%s\n' "$opener" > "$sf"
+    folded=$(status_open_decisions "$sf")
+    case "$folded" in
+      "$key"$'\t'needs-decision$'\t'?*) ;;
+      *) fail "$kind brief's demonstrated open did not fold to key '$key': got '$folded'" ;;
+    esac
+    printf '%s\n' "$closer" >> "$sf"
+    folded=$(status_open_decisions "$sf")
+    [ -z "$folded" ] \
+      || fail "$kind brief's demonstrated close left the decision open: got '$folded'"
+  done
+  pass "fm-brief.sh: ship and scout scaffolds demonstrate a keyed open/close pair the fold honors"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -782,4 +855,5 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_status_protocol_demonstrates_the_decision_key_position
 test_scout_and_secondmate_scaffold
