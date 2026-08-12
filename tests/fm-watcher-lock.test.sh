@@ -520,6 +520,71 @@ test_lock_non_numeric_stale_threshold_falls_back_to_the_minimum() {
   pass "a non-numeric stale threshold falls back to the minimum grace"
 }
 
+# fm_lock_try_acquire's steal path recurses into "$lockdir.steal" to break ONE
+# stale lock, and it terminates because creating that inner path normally
+# succeeds. It does not terminate when fm_lock_try_create fails for an
+# ENVIRONMENTAL reason instead of contention. A state directory that is gone or
+# unwritable, or a filesystem out of space or inodes, fails identically at every
+# level, so each level appends another ".steal" and another shell frame until
+# the process runs out of stack and dies of SIGSEGV. That kills a supervision
+# watcher outright, with no cleanup and no reason line, which is how this was
+# first seen: the arm reported its own child as "Segmentation fault: 11" from
+# the wait it was blocked in.
+#
+# The assertion is therefore the PROCESS exit status, not a message: a change
+# that printed a diagnostic and still died would not be a fix. Each trigger runs
+# one acquisition in its own shell that exits 0 whatever the lock verdict, so a
+# non-zero status here is the process dying rather than the lock being
+# unavailable, and the verdict itself is read back from the output. ENOSPC is
+# the same fm_lock_try_create failure as these triggers and is covered by them,
+# since there is no portable way to force a full filesystem here.
+test_environmental_lock_failure_never_recurses_until_the_stack_dies() {
+  local dir state trigger sub out pid status verdict
+  dir=$(make_case lock-environmental-failure)
+  state="$dir/state"
+  for trigger in absent-parent removed unwritable; do
+    sub="$state/$trigger"
+    out="$dir/$trigger.out"
+    mkdir -p "$sub"
+    if [ "$trigger" = unwritable ]; then
+      chmod 500 "$sub"
+      # A directory that stayed writable (running as root) would exercise
+      # nothing, so refuse the pass rather than report a case that never ran.
+      if : > "$sub/writable-probe" 2>/dev/null; then
+        chmod 700 "$sub"
+        fail "the unwritable trigger left $sub writable, so this case tested nothing"
+      fi
+    fi
+    FM_STATE_OVERRIDE="$sub" bash -c '
+      set -u
+      . "$1"
+      case "$2" in
+        absent-parent) target="$STATE/gone/x.lock" ;;
+        removed)       rm -rf "$STATE"; target="$STATE/x.lock" ;;
+        unwritable)    target="$STATE/x.lock" ;;
+      esac
+      fm_lock_try_acquire "$target"
+      printf "verdict=%s\n" "$?"
+      exit 0
+    ' _ "$LIB" "$trigger" > "$out" 2>&1 &
+    pid=$!
+    wait_for_exit "$pid" 300
+    status=$?
+    chmod 700 "$sub" 2>/dev/null || true
+    case "$status" in
+      139) fail "an environmental lock-create failure ($trigger) killed the shell with SIGSEGV: the steal path recursed until the stack was exhausted" ;;
+      124) fail "an environmental lock-create failure ($trigger) never returned" ;;
+    esac
+    expect_code 0 "$status" "an environmental lock-create failure ($trigger) must leave the shell alive"
+    verdict=$(sed -n 's/^verdict=//p' "$out")
+    [ -n "$verdict" ] \
+      || fail "no lock verdict was reported for $trigger: $(cat "$out")"
+    [ "$verdict" != 0 ] \
+      || fail "an environmental lock-create failure ($trigger) reported the lock as acquired"
+  done
+  pass "an environmental lock-create failure returns unavailable instead of recursing until the stack dies"
+}
+
 test_lock_late_claim_loses_after_recreate() {
   local dir state lockdir out
   dir=$(make_case lock-late-claim)
@@ -1398,6 +1463,7 @@ test_unusable_mtime_does_not_read_as_epoch_zero
 test_lock_with_unmeasurable_age_is_not_stolen
 test_absent_lock_path_stays_determinate_under_a_broken_stat
 test_lock_non_numeric_stale_threshold_falls_back_to_the_minimum
+test_environmental_lock_failure_never_recurses_until_the_stack_dies
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
