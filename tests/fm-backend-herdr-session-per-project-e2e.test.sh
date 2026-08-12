@@ -81,6 +81,11 @@ cleanup_all() {
   return "$status"
 }
 trap cleanup_all EXIT
+# A fatal signal otherwise skips the EXIT trap entirely, stranding this run's
+# lab session and treehouse pool; converting it to a normal exit runs the
+# cleanup above (tests/lib.sh uses the same pattern).
+trap 'exit 130' INT
+trap 'exit 143' TERM
 "$HERDR_LAB_HELPER" provision "$LAUNCHER_SESSION" || fail "could not provision the launcher lab session"
 LAUNCHER_PROVISIONED=1
 "$HERDR_LAB_HELPER" provision "$PROJECT_SESSION" || fail "could not provision the project lab session"
