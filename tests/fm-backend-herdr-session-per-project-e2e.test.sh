@@ -42,6 +42,8 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
 
 # Every placement below must come from an identity this suite states, never one
 # inherited from the terminal it was started in.
@@ -63,22 +65,18 @@ PROJECT_SESSION=$("$HERDR_LAB_HELPER" name fm-spp-project) || {
   exit 1
 }
 
-WORKTREES=()
 CLEANED=0
 LAUNCHER_PROVISIONED=0
 PROJECT_PROVISIONED=0
 # Idempotent for the same reason the launcher-workspace suite's is: fail()
 # cleans up before exiting and the EXIT trap fires after it.
 cleanup_all() {
-  local wt status=0
+  local status=0
   [ "$CLEANED" = 0 ] || return 0
   CLEANED=1
-  for wt in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
-    [ -n "$wt" ] && treehouse return --force "$wt" >/dev/null 2>&1
-  done
-  WORKTREES=()
   [ "$PROJECT_PROVISIONED" = 1 ] && { "$HERDR_LAB_HELPER" teardown "$PROJECT_SESSION" || status=$?; }
   [ "$LAUNCHER_PROVISIONED" = 1 ] && { "$HERDR_LAB_HELPER" teardown "$LAUNCHER_SESSION" || status=$?; }
+  fm_test_pool_release_all || status=1
   rm -rf "$TMP_ROOT"
   return "$status"
 }
@@ -95,6 +93,10 @@ project_lab() { "$HERDR_LAB_HELPER" run "$PROJECT_SESSION" "$@"; }
 
 make_scratch_project() {  # <dir>
   local dir=$1
+  # Registering here covers every fixture repo this suite creates, so the
+  # treehouse pool acquired against it is destroyed before the repo is deleted
+  # (tests/cleanup-safety.sh).
+  fm_test_pool_register "$dir"
   mkdir -p "$dir"
   git -C "$dir" init -q
   printf '# scratch\n' > "$dir/README.md"
@@ -114,13 +116,6 @@ session_has_pane() {  # <lab-fn> <pane-id>
 
 tab_labels_in() {  # <lab-fn> -> every tab label in that session, sorted
   "$1" tab list 2>/dev/null | jq -r '[.result.tabs[]?.label] | sort | join(",")' 2>/dev/null
-}
-
-record_worktree() {  # <meta>
-  local wt
-  wt=$(grep '^worktree=' "$1" 2>/dev/null | cut -d= -f2-)
-  [ -n "$wt" ] && WORKTREES+=("$wt")
-  return 0
 }
 
 LAUNCHER_SOCKET=$(launcher_lab session list --json 2>/dev/null \
@@ -205,7 +200,6 @@ SPAWN
 run_spawn_in_launcher_pane placed "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a registered project's spawn failed"$'\n'"$SPAWN_ERR"
 PLACED_META="$HOME_DIR/state/placed.meta"
-record_worktree "$PLACED_META"
 PLACED_TARGET=$(grep '^window=' "$PLACED_META" | cut -d= -f2-)
 PLACED_PANE=$(grep '^herdr_pane_id=' "$PLACED_META" | cut -d= -f2-)
 [ -n "$PLACED_PANE" ] || fail "the placed task recorded no herdr pane"
@@ -233,7 +227,6 @@ pass "real herdr E2E: neither same-labeled workspace in the launcher's own sessi
 run_spawn_in_launcher_pane scoutC "$PROJ" --scout
 [ "$SPAWN_RC" -eq 0 ] || fail "a scout spawn for a registered project failed"$'\n'"$SPAWN_ERR"
 SCOUT_META="$HOME_DIR/state/scoutC.meta"
-record_worktree "$SCOUT_META"
 SCOUT_PANE=$(grep '^herdr_pane_id=' "$SCOUT_META" | cut -d= -f2-)
 session_has_pane project_lab "$SCOUT_PANE" \
   || fail "a scout must be partitioned into its project's session too"
