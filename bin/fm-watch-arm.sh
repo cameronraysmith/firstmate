@@ -79,6 +79,11 @@ esac
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
+# How long to let the owned watcher child act on a stop before escalating. This
+# bounds reap_child only; the arm's ordinary wait on a running cycle stays
+# unbounded, because waiting out a live cycle is what an arm is for.
+CHILD_REAP_TICKS=${FM_ARM_CHILD_REAP_TICKS:-100}
+case "$CHILD_REAP_TICKS" in ''|*[!0-9]*|0) CHILD_REAP_TICKS=100 ;; esac
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
@@ -457,14 +462,45 @@ cleanup_child() {
   fi
 }
 
+# Stop the owned watcher child within a bound. A plain `kill; wait` is unbounded,
+# so a child that fails to act on the stop strands this arm - and, when the arm is
+# itself a harness-tracked task, the supervision cycle above it - with no way out
+# but a second signal. This is a backstop: bin/fm-watch.sh stands down on a single
+# signal on its own. CHILD_REAP_RC carries the child's status, or the KILL code
+# when it outlived even that and no real status exists to report.
+CHILD_REAP_RC=0
+reap_child() {
+  local i=0
+  CHILD_REAP_RC=0
+  [ -n "$child" ] || return 0
+  if fm_pid_alive "$child"; then
+    kill -TERM "$child" 2>/dev/null || true
+    while [ "$i" -lt "$CHILD_REAP_TICKS" ] && fm_pid_alive "$child"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    if fm_pid_alive "$child"; then
+      kill -KILL "$child" 2>/dev/null || true
+      i=0
+      while [ "$i" -lt 20 ] && fm_pid_alive "$child"; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+    fi
+  fi
+  if fm_pid_alive "$child"; then
+    CHILD_REAP_RC=137
+    return 0
+  fi
+  wait "$child" 2>/dev/null
+  CHILD_REAP_RC=$?
+}
+
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_arm_signal() {
   local signal=$1 rc=$2
   trap - HUP TERM INT
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
-    wait "$child" 2>/dev/null || true
-  fi
+  reap_child
   cycle_log_append "$rc" "$signal" arm-interrupted none
   cleanup_child
   exit "$rc"
@@ -551,8 +587,8 @@ while :; do
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then
+        reap_child
         cleanup_child
-        wait "$child" 2>/dev/null || true
         cycle_log_append 1 none handling-handoff-failed none
         echo "watcher: FAILED - established successor could not inspect handling state"
         exit 1
@@ -587,9 +623,9 @@ done
 
 trap - HUP TERM INT
 print_watch_output "$child_out"
+reap_child
+rc=$CHILD_REAP_RC
 cleanup_child
-wait "$child" 2>/dev/null
-rc=$?
 cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
 echo "watcher: FAILED - no live watcher with a fresh beacon"
 exit 1
