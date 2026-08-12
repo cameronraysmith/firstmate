@@ -2618,6 +2618,128 @@ fm_backend_herdr_projection_endpoint_matches_journal() {  # <session> <workspace
   [ "$matches" = "$workspace_id" ]
 }
 
+# A projection workspace normally disappears with its task: closing the sole
+# task pane empties the workspace, and Herdr removes it. A LEFTOVER is that
+# workspace when it outlives its task pane instead, holding one restored
+# agent-free shell where the task used to be. Herdr seeds that shell after the
+# task pane is gone, so cleanup that reads the workspace once, at the instant
+# it confirms its own pane closed, can see the leftover only if it waits for it.
+#
+# fm_backend_herdr_projection_leftover_endpoint: print "<tab-id><TAB><pane-id>"
+# only when <workspace-id> currently holds the exact retirable leftover
+# topology: the immutable expected label, exactly one occurrence of the
+# projection token across the named session, and exactly one tab holding
+# exactly one pane. Read-only, silent, and topology only. It grants no
+# mutation authority on its own: every caller still owns the agent, idle-shell,
+# and focus proofs before acting on the endpoint it returns.
+fm_backend_herdr_projection_leftover_endpoint() {  # <session> <workspace-id> <expected-label> <token>
+  local session=$1 workspace=$2 expected_label=$3 token=$4 list info tabs panes tab pane
+  [ -n "$session" ] && [ -n "$workspace" ] && [ -n "$expected_label" ] && [ -n "$token" ] || return 1
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  printf '%s' "$list" | jq -e --arg workspace "$workspace" --arg label "$expected_label" --arg token "$token" '
+    ([.result.workspaces[]? | select(.workspace_id == $workspace and .label == $label)] | length) == 1
+    and ([.result.workspaces[]?.label? // "" |
+          ((split("p:" + $token) | length) - 1)] | add // 0) == 1
+  ' >/dev/null 2>&1 || return 1
+  info=$(fm_backend_herdr_cli "$session" workspace get "$workspace" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg workspace "$workspace" --arg label "$expected_label" '
+    .result.workspace.workspace_id == $workspace
+    and .result.workspace.label == $label
+    and .result.workspace.tab_count == 1
+    and .result.workspace.pane_count == 1
+  ' >/dev/null 2>&1 || return 1
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 1
+  tab=$(printf '%s' "$tabs" | jq -er --arg workspace "$workspace" '
+    .result.tabs | select(type == "array") | select(length == 1) | .[0]
+    | select(.workspace_id == $workspace)
+    | .tab_id | select(type == "string" and length > 0)
+  ' 2>/dev/null) || return 1
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
+  pane=$(printf '%s' "$panes" | jq -er --arg workspace "$workspace" --arg tab "$tab" '
+    .result.panes | select(type == "array") | select(length == 1) | .[0]
+    | select(.workspace_id == $workspace and .tab_id == $tab)
+    | .pane_id | select(type == "string" and length > 0)
+  ' 2>/dev/null) || return 1
+  printf '%s\t%s' "$tab" "$pane"
+}
+
+# fm_backend_herdr_projection_retire_leftover: retire the projection workspace
+# of a task whose own pane is already confirmed gone.
+# The caller must hold the named-session presentation lock and must have
+# established that this workspace belongs to this home and that its task is no
+# longer live.
+#
+# Removal keeps the existing shape exactly: this never calls `workspace close`.
+# It closes the leftover's sole pane through the exact focus-preserving helper
+# and then requires the workspace itself to be absent, so the workspace is
+# removed by Herdr's own emptying path rather than by a new primitive.
+# A workspace that is already gone succeeds immediately, and the settle poll
+# covers the window where the task pane's removal and Herdr's restored shell
+# have not both landed yet.
+# Returns 0 only when the workspace is confirmed absent. Every refusal warns and
+# leaves the workspace untouched, for the caller to keep bound through
+# fm_backend_herdr_projection_rebind_leftover.
+fm_backend_herdr_projection_retire_leftover() {  # <session> <workspace-id> <expected-label> <token>
+  local session=$1 workspace=$2 expected_label=$3 token=$4
+  local presence endpoint pane attempt=0 max_attempts close_status=0
+  max_attempts=${FM_BACKEND_HERDR_PROJECTION_RETIRE_POLLS:-12}
+  while :; do
+    presence=$(fm_backend_herdr_workspace_presence_state "$session" "$workspace")
+    [ "$presence" = dead ] && return 0
+    if [ "$presence" = present ] \
+      && endpoint=$(fm_backend_herdr_projection_leftover_endpoint \
+        "$session" "$workspace" "$expected_label" "$token"); then
+      break
+    fi
+    endpoint=
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      echo "warning: herdr presentation workspace $workspace outlived its task pane without settling into one exact restorable shell; leaving it for inspection" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+  pane=${endpoint#*$'\t'}
+  if [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" != no-agent ] \
+    || ! fm_backend_herdr_pane_idle_shell_pid "$session" "$pane" >/dev/null; then
+    echo "warning: herdr presentation workspace $workspace outlived its task pane but its remaining pane is not a provably idle childless shell; leaving it for inspection" >&2
+    return 1
+  fi
+  fm_backend_herdr_projection_close_pane_focus_preserving \
+    "$session" "$pane" no-agent || close_status=$?
+  presence=$(fm_backend_herdr_workspace_presence_state "$session" "$workspace")
+  [ "$presence" = dead ] && return 0
+  if [ "$close_status" -ne 0 ]; then
+    echo "warning: herdr presentation workspace $workspace refused or could not confirm the exact focus-safe close of its remaining pane; leaving it for inspection" >&2
+  else
+    echo "warning: herdr presentation workspace $workspace survived the exact close of its remaining pane; leaving it for inspection" >&2
+  fi
+  return 1
+}
+
+# fm_backend_herdr_projection_rebind_leftover: keep a retained version 2 journal
+# bound to the leftover workspace's CURRENT exact endpoint after a refused
+# retirement, so the next locked session start can still bind it by its exact
+# recorded tab and pane instead of by the task pane that is already gone.
+# Version 1 journals carry no endpoint and are already bindable, so they are a
+# success with nothing to do. Any ambiguity leaves the journal untouched.
+fm_backend_herdr_projection_rebind_leftover() {  # <session> <workspace-id> <journal> <task-id> <expected-label> <token>
+  local session=$1 workspace=$2 journal=$3 id=$4 expected_label=$5 token=$6 endpoint tab pane
+  fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
+  [ "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID" = "$token" ] || return 1
+  [ "$FM_BACKEND_HERDR_JOURNAL_VERSION" = 2 ] || return 0
+  [ "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID" = "$workspace" ] || return 1
+  endpoint=$(fm_backend_herdr_projection_leftover_endpoint \
+    "$session" "$workspace" "$expected_label" "$token") || return 1
+  tab=${endpoint%%$'\t'*}
+  pane=${endpoint#*$'\t'}
+  [ "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" = "$tab" ] \
+    && [ "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" = "$pane" ] && return 0
+  fm_backend_herdr_projection_journal_replace_endpoint \
+    "$journal" "$id" "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" \
+    "$tab" "$pane"
+}
+
 # fm_backend_herdr_parse_target: split "<session>:<pane_id>" (pane_id itself
 # contains a colon, e.g. "w1:p2") on the FIRST colon only. Sets
 # FM_BACKEND_HERDR_SESSION and FM_BACKEND_HERDR_PANE for the caller.

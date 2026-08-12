@@ -1521,6 +1521,136 @@ test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
   pass "herdr flat teardown never erases records when pane presence is unparseable"
 }
 
+# Projected (presentation-space) Herdr endpoint: the task owns a whole disposable
+# workspace, so closing its pane normally empties and removes that workspace.
+# FM_FAKE_HERDR_WORKSPACE_SURVIVES reproduces the leak instead - Herdr keeps the
+# workspace and seeds a different restored shell in it once the task pane is gone.
+FM_FAKE_HERDR_PROJECTION_TOKEN=AbCdEfGhIjKlMnOpQrStUv
+configure_projected_herdr_teardown_case() {  # <case-dir>
+  local case_dir=$1 label="└ task-x1 · p:$FM_FAKE_HERDR_PROJECTION_TOKEN"
+  sed -i.bak 's/^window=.*/window=default:wG:pQ/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' \
+    'backend=herdr' \
+    'herdr_session=default' \
+    'herdr_workspace_id=wG' \
+    'herdr_tab_id=wG:tQ' \
+    'herdr_pane_id=wG:pQ' >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' \
+    'version=2' \
+    'task_id=task-x1' \
+    "projection_id=$FM_FAKE_HERDR_PROJECTION_TOKEN" \
+    "home=$case_dir" \
+    'session=default' \
+    'workspace_id=wG' \
+    'tab_id=wG:tQ' \
+    'pane_id=wG:pQ' \
+    'parent_workspace_id=wH' \
+    'parent_label=firstmate' \
+    "workspace_label=$label" \
+    'task_label=fm-task-x1' > "$case_dir/state/task-x1.herdr-presentation"
+  cat > "$case_dir/fakebin/herdr" <<SH
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "\$*" >> "\${FM_FAKE_HERDR_LOG:?}"
+gone=0
+[ -e "\${FM_FAKE_HERDR_CLOSED:?}" ] && gone=1
+survives=\${FM_FAKE_HERDR_WORKSPACE_SURVIVES:-0}
+case "\${1:-} \${2:-}" in
+  "workspace list")
+    if [ "\$gone" = 1 ] && [ "\$survives" != 1 ]; then
+      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH","label":"firstmate","active_tab_id":"wH:t1","focused":true,"tab_count":1,"pane_count":1}]}}'
+    else
+      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH","label":"firstmate","active_tab_id":"wH:t1","focused":true,"tab_count":1,"pane_count":1},{"workspace_id":"wG","label":"$label","active_tab_id":"wG:tQ","focused":false,"tab_count":1,"pane_count":1}]}}'
+    fi
+    ;;
+  "workspace get")
+    printf '%s\n' '{"result":{"workspace":{"workspace_id":"wG","label":"$label","active_tab_id":"wG:tQ","focused":false,"tab_count":1,"pane_count":1}}}'
+    ;;
+  "tab list")
+    case "\$*" in
+      *"--workspace wH"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"wH:t1","workspace_id":"wH","focused":true}]}}' ;;
+      *"--workspace wG"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"wG:tQ","workspace_id":"wG"}]}}' ;;
+      *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
+    esac
+    ;;
+  "pane list")
+    if [ "\$gone" = 1 ] && [ "\$survives" = 1 ]; then
+      printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pR","tab_id":"wG:tQ","workspace_id":"wG"}]}}'
+    else
+      printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG"}]}}'
+    fi
+    ;;
+  "status --json") printf '%s\n' '{"server":{"running":true}}' ;;
+  "session list")
+    printf '%s\n' '{"sessions":[{"name":"default","running":true,"socket_path":"$case_dir/herdr.sock"}]}'
+    ;;
+  "pane close") : > "\${FM_FAKE_HERDR_CLOSED:?}" ;;
+  "pane get")
+    if [ "\$gone" = 1 ] && [ "\$survives" = 1 ] && [ "\${3:-}" = wG:pR ]; then
+      printf '%s\n' '{"result":{"pane":{"pane_id":"wG:pR","tab_id":"wG:tQ","workspace_id":"wG"}}}'
+      exit 0
+    fi
+    if [ "\$gone" = 1 ]; then
+      printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
+      exit 1
+    fi
+    printf '%s\n' '{"result":{"pane":{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG"}}}'
+    ;;
+  "agent get")
+    printf '%s\n' '{"error":{"code":"agent_not_found"}}' >&2
+    exit 1
+    ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/herdr"
+}
+
+test_herdr_projected_teardown_retires_journal_when_workspace_is_gone() {
+  local case_dir
+  case_dir=$(make_case herdr-projected-clean)
+  write_meta "$case_dir" local-only ship
+  configure_projected_herdr_teardown_case "$case_dir"
+  : > "$case_dir/state/task-x1.status"
+  FM_FAKE_HERDR_LOG="$case_dir/herdr.log" FM_FAKE_HERDR_CLOSED="$case_dir/closed" \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-projected-clean: teardown failed: $(cat "$case_dir/stderr")"
+  [ ! -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "herdr-projected-clean: a workspace removed with its pane kept its journal"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-projected-clean: teardown left the endpoint metadata behind"
+  pass "projected teardown retires its journal once its workspace is confirmed gone"
+}
+
+# The leftover here can never be proved an idle childless shell, because the fake
+# server answers no process information at all. That is the "leave it alone"
+# direction: no workspace is closed, and the evidence that binds this workspace
+# to this home survives so a later locked session start can finish the job.
+test_herdr_projected_teardown_keeps_evidence_for_an_unprovable_leftover() {
+  local case_dir
+  case_dir=$(make_case herdr-projected-leftover)
+  write_meta "$case_dir" local-only ship
+  configure_projected_herdr_teardown_case "$case_dir"
+  : > "$case_dir/state/task-x1.status"
+  FM_FAKE_HERDR_LOG="$case_dir/herdr.log" FM_FAKE_HERDR_CLOSED="$case_dir/closed" \
+    FM_FAKE_HERDR_WORKSPACE_SURVIVES=1 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 FM_BACKEND_HERDR_PROJECTION_RETIRE_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-projected-leftover: teardown failed: $(cat "$case_dir/stderr")"
+  assert_grep "outlived its task pane" "$case_dir/stderr" \
+    "herdr-projected-leftover: the surviving workspace was not reported"
+  [ "$(grep -c 'pane close' "$case_dir/herdr.log")" = 1 ] \
+    || fail "herdr-projected-leftover: an unprovable leftover pane was closed anyway"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "herdr-projected-leftover: a surviving workspace lost the journal that binds it to this home"
+  grep -qx 'pane_id=wG:pR' "$case_dir/state/task-x1.herdr-presentation" \
+    || fail "herdr-projected-leftover: the retained journal was not rebound to the leftover's live pane"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-projected-leftover: an unretired workspace blocked ordinary record removal"
+  pass "a projection workspace outliving its task pane is left alone with a bindable journal, never leaked"
+}
+
 assert_herdr_teardown_preflight_refuses_before_changes() {
   local mode=$1 case_dir log closed rc thlog teardown_bin
   case_dir=$(make_case "herdr-preflight-$mode")
@@ -2603,6 +2733,8 @@ test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
+test_herdr_projected_teardown_retires_journal_when_workspace_is_gone
+test_herdr_projected_teardown_keeps_evidence_for_an_unprovable_leftover
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
 test_forced_secondmate_teardown_holds_descendant_lifecycle_locks
