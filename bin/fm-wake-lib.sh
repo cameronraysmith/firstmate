@@ -692,6 +692,16 @@ fm_lock_try_acquire() {
     return 0
   fi
 
+  # Only a lock path that EXISTS can be stolen, and the steal path below
+  # recurses into "$lockdir.steal". When creation failed for an environmental
+  # reason instead of contention - the parent directory is gone, unwritable, or
+  # out of space - every level of that chain fails identically, so the recursion
+  # never terminates: it exhausts the shell's stack and kills the process with
+  # SIGSEGV rather than reporting an unavailable lock.
+  if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
+    return 1
+  fi
+
   # Compare against ${BASHPID:-$$} inline, never via a command substitution:
   # $() forks a subshell whose BASHPID is not this frame's pid.
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
