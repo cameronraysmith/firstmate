@@ -52,10 +52,16 @@ FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 # "working: rebased onto merged #76").
 FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
 
-# The deliberate-external-wait verb. A crew (or firstmate steering it) appends
+# The deliberate-wait verb. A crew (or firstmate steering it) appends
 #   paused: <reason>
-# to declare it is intentionally idling on a KNOWN external dependency - an
-# upstream release, a vendor rate-limit reset, a scheduled window. Unlike
+# to declare it is intentionally idling on a KNOWN wait it expects to clear on
+# its own - an upstream release, a vendor rate-limit reset, a scheduled window,
+# or its OWN background work (a long test lane, build, or download it started and
+# will resume from). That last case is why the vocabulary is not restricted to
+# waits external to the crew: a crew idling on its own background work leaves
+# both current-state sources blind (its turn ended, so there is no busy record,
+# and a sparse status log has nothing supervisor-actionable to add), which is
+# indistinguishable from a wedge without the declaration. Unlike
 # `blocked:` (stuck, firstmate must help) an idle `paused:` pane is EXPECTED, so
 # the stale path absorbs it instead of escalating a possible wedge. It is
 # deliberately NOT in the captain-relevant set above: a pause is a "stop
@@ -706,30 +712,63 @@ signal_reason_is_actionable() {  # <file> ...
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
 # from bin/fm-crew-state.sh's one authoritative current-state line
 # ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
-#   working - an actively-running no-mistakes step (running/fixing/ci) or a busy
-#             pane; the crew is legitimately mid-work on a static-looking pane
-#             (e.g. waiting on CI);
-#   paused  - the crew's authoritative current state is a declared external-wait
-#             pause (paused:), which is EXPECTED to idle;
-#   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
-#             torn-down/unknown crew, or an unreadable verdict).
-# One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
+#   working  - an actively-running no-mistakes step (running/fixing/ci) or a busy
+#              pane; the crew is legitimately mid-work on a static-looking pane
+#              (e.g. waiting on CI);
+#   paused   - the crew's authoritative current state is a declared wait
+#              (paused:), which is EXPECTED to idle;
+#   terminal - the crew has FINISHED (done or failed) and the verdict comes from
+#              the crew's own status log, so a stale wake would carry nothing the
+#              signal path has not already delivered - see below;
+#   unknown  - no current-state source could answer at all (state unknown from
+#              source none): absent evidence, NOT evidence of a wedge - see below;
+#   none     - none of those, so the wake must surface (a parked/blocked crew, a
+#              stale working: log line with nothing running, a torn-down or
+#              unreadable endpoint, or an unparseable verdict).
+# One fm-crew-state.sh read serves EVERY absorb reason at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
+#
+# Why `terminal` is gated on source=status-log rather than on the state alone.
+# A finished verdict the reconciler learned from the PIPELINE (source run-step -
+# an outcome of passed/checks-passed, or a ci step whose log reads green) is NEWS
+# the crew's own log does not carry: the crew appended nothing once firstmate
+# handed it to validation, so suppressing that stale wake would recreate the PR
+# #252 blackout where a green PR sat unnoticed. A finished verdict read back from
+# the crew's OWN log (source status-log) is the opposite: that exact line already
+# woke firstmate through the captain-relevant signal path, and the heartbeat
+# backstop still re-surfaces it if it was ever absorbed by mistake. So the stale
+# wake is pure duplication, and it repeats for as long as the captain's merge
+# approval is outstanding - the cost scales with how long the captain is away,
+# which is exactly when a real stale signal is hardest to pick out.
+#
+# Why `unknown` is separated from `none`. A crew that ends its turn while its own
+# background work runs blinds BOTH current-state sources at once: the turn-end
+# hook records idle, and a sparse status log has nothing supervisor-actionable to
+# add, so the reconciler reports `unknown` from source `none`. That is the
+# absence of evidence, not evidence that the crew is stuck, so callers must not
+# treat it as a stopped crew. It still gets no free pass: the watcher times such
+# a pane toward the ordinary wedge threshold instead of surfacing it at once, so
+# a genuinely wedged crew with no background work still escalates.
+#
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
+  local id=$1 line state src=''
   [ -n "$id" ] || { printf 'none'; return; }
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
+  case "$line" in *"source: "*) src=${line#*source: }; src=${src%% *} ;; esac
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
-    src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
+  case "$state" in
+    done|failed) [ "$src" = status-log ] && { printf 'terminal'; return; } ;;
+    unknown)     [ "$src" = none ] && { printf 'unknown'; return; } ;;
+  esac
   printf 'none'
 }
 
