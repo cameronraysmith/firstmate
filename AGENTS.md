@@ -205,6 +205,9 @@ Do not add model-specific versions of that policy.
 Dispatch only on a backend that `fm-spawn` validates as spawn-capable; pass an explicit per-spawn `--backend` only under that exact task's own authority, never as later-task precedent (selection contract: [`docs/configuration.md`](docs/configuration.md) "Runtime backend").
 A missing dependency, authentication failure, unsupported backend, or version refusal is a blocker; never silently retry on another backend.
 
+On the Herdr backend a worker's session comes from the project registry and never from this session's environment, which can name a session this process is not in; `default` carries orchestrators only, so a project with no recorded session refuses the spawn rather than placing a worker anywhere ([`docs/herdr-backend.md`](docs/herdr-backend.md) "Session selection" owns the contract, the registry token, and `bin/fm-herdr-whereami.sh`).
+Register the missing session rather than working around that refusal.
+
 ## 5. Recovery
 
 After the one session-start digest, reconcile reality with durable records before taking new work.
