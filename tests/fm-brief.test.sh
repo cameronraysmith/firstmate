@@ -579,8 +579,8 @@ test_secondmate_marked_request_reporting_contract() {
     "secondmate charter lost terse result reporting"
   assert_grep 'append a status line that points to that doc' "$brief" \
     "secondmate charter lost detailed document pointers"
-  assert_grep 'Report only true captain-relevant outcomes or a declared external wait' "$brief" \
-    "secondmate charter lost declared external waits"
+  assert_grep 'Report only true captain-relevant outcomes or a declared wait' "$brief" \
+    "secondmate charter lost declared waits"
   assert_grep 'a captain decision, a real blocker, a failure, or work ready for review' "$brief" \
     "secondmate charter lost decisions, blockers, failures, or ready outcomes"
   assert_grep 'States: working, needs-decision, blocked, paused, done, failed.' "$brief" \
@@ -733,6 +733,36 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
 
+# A crewmate that ends a turn while a long command it started is still running
+# blinds every current-state source at once, so the declared-wait verb is the only
+# thing that tells firstmate that idle pane apart from a wedge. The scaffolds must
+# name that case rather than restricting the verb to causes outside the crew.
+test_crewmate_scaffolds_declare_own_background_work() {
+  local home kind id brief
+  home="$TMP_ROOT/own-background-work-home"
+  mkdir -p "$home/data"
+
+  for kind in ship scout; do
+    id="brief-own-background-$kind"
+    case "$kind" in
+      ship)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only >/dev/null 2>&1
+        ;;
+      scout)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_grep 'ending a turn while your OWN long background command is still running' "$brief" \
+      "$kind brief did not have the crewmate declare a wait on its own background work"
+    assert_grep 'clears the pause on its own' "$brief" \
+      "$kind brief did not say a normal report ends the declared wait"
+    assert_no_grep 'known external wait' "$brief" \
+      "$kind brief still restricts the declared wait to causes outside the crew"
+  done
+  pass "fm-brief.sh: crewmate scaffolds have the crew declare a wait on its own background work"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -840,6 +870,7 @@ test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
+test_crewmate_scaffolds_declare_own_background_work
 test_scout_and_secondmate_load_decision_hold_policy
 test_status_protocol_demonstrates_the_decision_key_position
 test_scout_and_secondmate_scaffold
