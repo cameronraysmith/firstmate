@@ -114,7 +114,7 @@ pass "repro setup: a live long-running process is running in the startup workspa
 # --- 2. run the real spawn-time path: container_ensure adopts the startup --
 # workspace by label match; create_task must NOT prune its tab.
 
-RAW=$(fm_backend_herdr_container_ensure "$LIVE_CWD") || fail "container_ensure failed"
+RAW=$(fm_backend_herdr_container_ensure "$SESSION" "$LIVE_CWD") || fail "container_ensure failed"
 CONTAINER=${RAW%%$'\t'*}
 SEEDED_TAB_ID=${RAW#*$'\t'}
 [ "$CONTAINER" = "$SESSION:$LIVE_WSID" ] || fail "container_ensure should have ADOPTED the pre-existing label-colliding workspace ($LIVE_WSID), got '$CONTAINER'"
@@ -154,7 +154,7 @@ fm_backend_herdr_kill "$SESSION:$LIVE_PANE_ID"
 
 HAPPY_CWD="$SCRATCH/happy-project"
 mkdir -p "$HAPPY_CWD"
-HAPPY_RAW=$(fm_backend_herdr_container_ensure "$HAPPY_CWD") || fail "happy-path container_ensure failed"
+HAPPY_RAW=$(fm_backend_herdr_container_ensure "$SESSION" "$HAPPY_CWD") || fail "happy-path container_ensure failed"
 HAPPY_CONTAINER=${HAPPY_RAW%%$'\t'*}
 HAPPY_SEEDED=${HAPPY_RAW#*$'\t'}
 [ -n "$HAPPY_SEEDED" ] || fail "happy path: expected a genuinely fresh workspace with a non-empty seeded default tab id"

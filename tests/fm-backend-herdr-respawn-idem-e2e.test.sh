@@ -76,7 +76,7 @@ fm_backend_herdr_version_check || fail "version_check failed against the real in
 PROJ_CWD="$SCRATCH/proj"
 mkdir -p "$PROJ_CWD"
 
-RAW=$(fm_backend_herdr_container_ensure "$PROJ_CWD") || fail "container_ensure failed"
+RAW=$(fm_backend_herdr_container_ensure "$SESSION" "$PROJ_CWD") || fail "container_ensure failed"
 CONTAINER=${RAW%%$'\t'*}
 SEEDED_TAB_ID=${RAW#*$'\t'}
 WSID=${CONTAINER#*:}
