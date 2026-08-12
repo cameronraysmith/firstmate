@@ -6,7 +6,8 @@
 #   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 #
 # It provides the boilerplate every test file used to re-roll: ok/not-ok
-# reporters, a self-cleaning temp root, fakebin/PATH-shim helpers, deterministic
+# reporters, a self-cleaning temp root whose teardown stops the test's live
+# children before removing it, fakebin/PATH-shim helpers, deterministic
 # git identity and fixture builders, state/<id>.meta writers, and the common
 # string/exit-code/file assertions. Shared fake-toolchain and spawn-world
 # builders live in tests/fixtures.sh; wake-queue mocks in wake-helpers.sh;
@@ -171,8 +172,119 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
   return 1
 }
 
+# --- stopping the test's live children --------------------------------------
+#
+# Removing a fixture root while processes the test started inside it are still
+# running is the "state directory becomes unusable underneath a live watcher"
+# condition, and teardown used to create it on every abort: a failing assertion
+# calls fail, fail calls exit, the EXIT trap fires while every arm, watcher and
+# daemon the test forked is still live, and rm -rf takes their state directory
+# away mid-poll. Only the failure path reaches it, so a green suite is a weak
+# probe and the crashes it produces read as one-offs. fm_test_cleanup therefore
+# stops the test's live descendants before it removes any root, which makes the
+# abort path order teardown the same way the normal path always did.
+#
+# Descent is the identifying relation because the root path is not one: a
+# process started under a fixture root carries that root in its environment or
+# its open state, neither of which any portable tool reports, while everything a
+# test starts is by construction a child - or a child's child - of the shell
+# that owns the fixture. The walk is anchored at $$ rather than at a process
+# group because bin/fm-test-run.sh --jobs runs concurrent suites as plain
+# background jobs of one runner, leaving every suite in the runner's group, so a
+# group-wide signal from inside one suite would take down its siblings and the
+# runner with them.
+#
+# ps is addressed absolutely, the way bin/fm-remote-job-lib.sh addresses it,
+# because teardown runs under whatever PATH the test last set and several suites
+# put a fakebin shim in front of the real tools.
+
+FM_TEST_STOP_POLL_INTERVAL=${FM_TEST_STOP_POLL_INTERVAL:-0.05}
+FM_TEST_STOP_TERM_POLLS=${FM_TEST_STOP_TERM_POLLS:-60}
+FM_TEST_STOP_KILL_POLLS=${FM_TEST_STOP_KILL_POLLS:-40}
+_FM_TEST_STOP_PIDS=()
+
+_fm_test_ps_bin() {
+  if [ -x /bin/ps ]; then
+    printf '/bin/ps\n'
+  elif [ -x /usr/bin/ps ]; then
+    printf '/usr/bin/ps\n'
+  else
+    return 1
+  fi
+}
+
+# _fm_test_collect_descendants <pid>: set _FM_TEST_STOP_PIDS to every live
+# descendant of <pid>, from a single snapshot of the process table. Empty when
+# there are none and when the table cannot be read; the caller reports the
+# latter, because a teardown that cannot see processes cannot order itself
+# against them.
+_fm_test_collect_descendants() {
+  local root=$1 ps_bin table pid ppid seen added
+  _FM_TEST_STOP_PIDS=()
+  ps_bin=$(_fm_test_ps_bin) || return 1
+  table=$("$ps_bin" -A -o pid=,ppid= 2>/dev/null) || return 1
+  seen=" $root "
+  added=1
+  while [ "$added" = 1 ]; do
+    added=0
+    while read -r pid ppid; do
+      case "$pid" in '' | *[!0-9]*) continue ;; esac
+      case "$seen" in *" $pid "*) continue ;; esac
+      case "$seen" in *" $ppid "*) ;; *) continue ;; esac
+      seen="$seen$pid "
+      _FM_TEST_STOP_PIDS+=("$pid")
+      added=1
+    done <<< "$table"
+  done
+}
+
+_fm_test_any_alive() {
+  local pid
+  for pid in "$@"; do
+    kill -0 "$pid" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+_fm_test_await_exit() {  # <polls> <pid>...
+  local polls=$1 i=0
+  shift
+  while [ "$i" -lt "$polls" ] && _fm_test_any_alive "$@"; do
+    sleep "$FM_TEST_STOP_POLL_INTERVAL"
+    i=$((i + 1))
+  done
+}
+
+# fm_test_stop_children [pid]: stop every live descendant of <pid> (this test
+# process by default) and return once they are gone. SIGTERM first, so a child
+# that has teardown of its own still runs it against a fixture root that is
+# still there, then SIGKILL for whatever outlasts the grace. The kill round
+# re-collects instead of reusing the first list, so a successor forked while the
+# first round was being signalled is caught too - the arm/watcher chains these
+# tests drive replace themselves exactly that way.
+fm_test_stop_children() {
+  local root=${1:-$$} pid
+  if ! _fm_test_collect_descendants "$root"; then
+    printf 'fm_test_stop_children: no readable process table; fixture roots may be removed under live children\n' >&2
+    return 1
+  fi
+  [ "${#_FM_TEST_STOP_PIDS[@]}" -gt 0 ] || return 0
+  for pid in "${_FM_TEST_STOP_PIDS[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || :
+  done
+  _fm_test_await_exit "$FM_TEST_STOP_TERM_POLLS" "${_FM_TEST_STOP_PIDS[@]}"
+
+  _fm_test_collect_descendants "$root" || return 1
+  [ "${#_FM_TEST_STOP_PIDS[@]}" -gt 0 ] || return 0
+  for pid in "${_FM_TEST_STOP_PIDS[@]}"; do
+    kill -KILL "$pid" 2>/dev/null || :
+  done
+  _fm_test_await_exit "$FM_TEST_STOP_KILL_POLLS" "${_FM_TEST_STOP_PIDS[@]}"
+}
+
 fm_test_cleanup() {
   local d
+  fm_test_stop_children || :
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
