@@ -301,8 +301,10 @@ HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 HERDR_SECTION=$(printf '%s\n' \
 '# Herdr isolation - HARD SAFETY CONTRACT' \
 'This brief was explicitly scaffolded with `--herdr-lab` because the task will drive Herdr lifecycle behavior.' \
-'On Herdr 0.7.3 the API socket is not relocatable by `HERDR_CONFIG_PATH`, `XDG_CONFIG_HOME`, or `HOME`.' \
-'A named non-`default` session plus a trailing `--session <name>` on every call is the only viable local isolation.' \
+'A named non-`default` session plus a trailing `--session <name>` on every call is the only isolation this contract accepts, on every Herdr version.' \
+'The helper appends that session to each individual call and verifies the live fleet afterward, so the isolation is re-established per call rather than inherited from the environment.' \
+'An inherited alternative carries no such per-call guarantee: one call that loses the variable reaches the live `default` session with nothing to catch it.' \
+'If a Herdr release appears to change what isolation requires, stop and report it; that is an escalation, not a judgement to make inside this contract.' \
 '' \
 '1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and generate the session name with `HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name '"$ID"')`.' \
 '   Install `trap '\''"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"'\'' EXIT` before provisioning, then provision only with `"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"`.' \
