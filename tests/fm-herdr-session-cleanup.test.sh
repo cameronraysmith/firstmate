@@ -67,7 +67,7 @@ CLOSE_LOG="$TMP_ROOT/closes.log"
 mkdir -p "$FIXTURE_DIR"
 
 fm_backend_name() { printf herdr; }
-fm_backend_herdr_session() { printf test; }
+fm_herdr_cleanup_sessions() { printf test; }
 fm_backend_herdr_presentation_session_lock_path() { printf '%s/presentation.lock' "$TMP_ROOT"; }
 fm_lock_try_acquire() {
   printf '%s\n' "$1" >> "$LOCK_LOG"
