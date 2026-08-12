@@ -220,8 +220,12 @@ status_is_paused_or_captain_held() {  # <status-line>
 # so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
 # A line with no token in either position uses the key "default", preserving
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default"). A stated key whose slug fails the charset below is rejected (the
-# folds skip the line), never rewritten to "default".
+# "default"). Only a COMPLETE token states a key at all: an unterminated
+# "[key=" is prose, and its line folds under "default" like any keyless line.
+# A stated key whose slug fails the charset below still NAMES a decision, so it
+# is derived into a reserved namespace instead of dropped - see
+# _fm_decision_key_derived for why neither dropping the line nor rewriting it to
+# "default" is available.
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
@@ -336,23 +340,58 @@ _fm_decision_slug_ok() {  # <slug>
     *) return 0 ;;
   esac
 }
+# The namespace a malformed stated key folds into, and the reason there is one.
+# A worker that raised a decision under an invalid slug is WAITING, so the fold
+# has exactly three places to put it and two of them lose it:
+#   - skipping the line opens nothing, so the OPEN DECISIONS listing, every wake,
+#     and the teardown completion gate all see an empty set while the worker's
+#     stop reads as an ordinary idle - the loss is silent at every step;
+#   - "default" is the bucket a bare "resolved:" closes, so an unrelated answer
+#     could close this decision and two malformed decisions would collapse into
+#     one (the issue #2109 hazard, restated for stated-but-invalid slugs).
+# This prefix is the third place: a stated key never reaches "default", and the
+# record stays visible and closable. No slug a worker can validly state lands
+# here unless it names this prefix itself, and a malformed slug can never derive
+# INTO a reserved namespace (FM_CLASSIFY_RESERVED_KEY_PREFIXES), whose transition
+# rule would reject the line straight back into invisibility.
+FM_CLASSIFY_MALFORMED_KEY_PREFIX='malformed-key.'
+# Derive a well-formed, closable key from a malformed stated slug. Replacing
+# every disallowed character is load-bearing rather than cosmetic: an open-set
+# record is TAB-separated "<key>\t<verb>\t<note>", so a raw slug carrying a TAB
+# would corrupt it for every consumer, and fm-send's --resolve-key validates this
+# same charset before it will close anything. The substitution and
+# _fm_decision_slug_ok read the identical character class, so a sanitized slug is
+# valid by construction; the fallback covers the empty slug ("[key=]") and holds
+# the guarantee whatever that class means in the running shell's locale.
+# Derivation is deterministic, so one malformed token always names one decision:
+# a worker's own "resolved [key=bad key]:" still closes what its
+# "needs-decision [key=bad key]:" opened.
+_fm_decision_key_derived() {  # <raw-slug> -> valid namespaced key
+  local s=${1//[!A-Za-z0-9._-]/-}
+  _fm_decision_slug_ok "$s" || s=unreadable
+  printf '%s%s' "$FM_CLASSIFY_MALFORMED_KEY_PREFIX" "$s"
+}
 status_line_note() {  # <status-line> -> text after the first colon, trimmed
   local n k
   case "$1" in
     *:*) n=${1#*:}; n=${n#"${n%%[![:space:]]*}"} ;;
     *) printf '%s' "$1"; return 0 ;;
   esac
-  # A note-head token that states this line's key (no before-colon token, valid
-  # slug) is key metadata, not note text: strip it so both stated-key positions
-  # yield the same note.
-  if ! _fm_key_before_colon "$1" && k=$(_fm_key_at_note_head "$1") \
-    && _fm_decision_slug_ok "$k"; then
+  # A note-head token that states this line's key (no before-colon token) is key
+  # metadata, not note text: strip it so both stated-key positions yield the same
+  # note. A malformed slug is stripped too, because it still names this line's
+  # decision - see _fm_decision_key.
+  if ! _fm_key_before_colon "$1" && k=$(_fm_key_at_note_head "$1"); then
     n=${n#"[key=$k]"}
     n=${n#"${n%%[![:space:]]*}"}
   fi
   printf '%s' "$n"
 }
-_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
+# Total: every line yields exactly one key ("default" when none is stated, a
+# derived namespaced key when the stated slug is malformed), so no caller has to
+# decide what to do with a line it cannot key - a choice whose only outcomes were
+# losing the record or misfiling it.
+_fm_decision_key() {  # <status-line> -> key slug
   local k
   if _fm_key_before_colon "$1"; then
     k=${1%%:*}
@@ -361,8 +400,11 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
   else
     k=$(_fm_key_at_note_head "$1") || { printf 'default'; return 0; }
   fi
-  _fm_decision_slug_ok "$k" || return 1
-  printf '%s' "$k"
+  if _fm_decision_slug_ok "$k"; then
+    printf '%s' "$k"
+  else
+    _fm_decision_key_derived "$k"
+  fi
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
@@ -434,7 +476,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
     *) printf '%s' "$open"; return 0 ;;
   esac
   verb=$(status_line_verb "$line")
-  key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
+  key=$(_fm_decision_key "$line")
   _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
     || { printf '%s' "$open"; return 0; }
   case "$verb" in
@@ -638,7 +680,13 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # Version 4 was already spent on the bracketed-tag parser change above, and a
 # cursor persisted under that reading predates this one, so it must still be
 # discarded and rebuilt from byte 0 under the new reading.
-FM_OPEN_DECISIONS_FOLD_VERSION=5
+# 6: a malformed stated key now derives a "malformed-key." namespaced key
+# instead of being rejected, so lines that previously folded as nothing become
+# opens and closes. Version 5 is spent upstream on the correlation-token
+# reading above, and this fork carries BOTH readings, so a cursor persisted
+# under either 4 or 5 predates this interpretation. The comparison at the read
+# sites is equality, not ordering, so 6 discards both and rebuilds from byte 0.
+FM_OPEN_DECISIONS_FOLD_VERSION=6
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
@@ -1387,7 +1435,7 @@ _fm_status_open_activities_stream() {
       *) continue ;;
     esac
     verb=$(status_line_verb "$line")
-    key=$(_fm_decision_key "$line") || continue
+    key=$(_fm_decision_key "$line")
     case "$verb" in
       working|"$pause")
         note=$(status_line_note "$line")
