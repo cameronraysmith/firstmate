@@ -595,6 +595,72 @@ export function commandPosition(tokens) {
   return { words, index, command, wrappers, prefixAssignments, unresolvedWrapperOption, wrapperPayloads };
 }
 
+// Shell reserved words the classifier models.
+//
+// splitProgram cuts a program at control operators, so a compound construct
+// reaches this analyzer as separate nodes whose first word is a reserved word.
+// Without modelling them the reserved word itself lands in command position,
+// the real command in `do <cmd>` is never inspected, and the whole construct
+// falls back to the raw-substring backstop - which denied any command that
+// merely NAMED a protected script in a data position.
+// A reserved word only introduces a command position; it is never itself the
+// executed command, so a node it prefixes can never be a blessed arm node.
+const RESERVED_COMMAND_PREFIX = new Set(["if", "then", "elif", "else", "while", "until", "do", "!"]);
+const RESERVED_STRUCTURE = new Set(["fi", "done"]);
+// Constructs whose command positions this analyzer still cannot locate. `case`
+// bodies do not even tokenize, because a pattern's `)` is not a word byte.
+// These keep failing closed through the raw-substring backstop.
+const RESERVED_UNMODELED = new Set(["case", "esac", "in", "select", "function", "time", "coproc"]);
+
+// Classify a node by its leading reserved words, returning the tokens that
+// actually carry its command position.
+function reservedShape(tokens) {
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token.type !== "word") break;
+    // Only a bare literal is a reserved word: 'do' and "$do" are command words.
+    if (token.quoted || !token.literal || token.subs.length > 0) break;
+    if (RESERVED_UNMODELED.has(token.value)) return { kind: "unmodeled", tokens, reservedPrefix: index > 0 };
+    // Slice so the header reader sees `for` first even when the header follows
+    // another reserved word, as an inner loop's `do for x in ...` does.
+    if (token.value === "for") return { kind: "for", tokens: tokens.slice(index), reservedPrefix: index > 0 };
+    if (RESERVED_COMMAND_PREFIX.has(token.value) || RESERVED_STRUCTURE.has(token.value)) {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return { kind: "command", tokens: index === 0 ? tokens : tokens.slice(index), reservedPrefix: index > 0 };
+}
+
+// A `for NAME in <words>` header executes nothing, but it BINDS NAME to those
+// words, so it is a dataflow edge exactly like an assignment. Without this,
+// `for f in bin/fm-watch-arm.sh; do "$f"; done` would lose the binding and the
+// loop body would read as an unrelated command.
+function forHeaderBinding(tokens) {
+  const words = tokens.filter((token) => token.type === "word");
+  const name = words[1];
+  if (!name || name.quoted || !name.literal || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name.value)) return null;
+  let start = 2;
+  if (words[start] && words[start].value === "in" && !words[start].quoted) start += 1;
+  return { name: name.value, items: words.slice(start) };
+}
+
+function contextWithLoopBinding(context, binding) {
+  const protectedVariables = new Set(context.protectedVariables);
+  const watcherPatterns = new Set(context.watcherPatterns);
+  const watcherPids = new Set(context.watcherPids);
+  const bindsProtected = binding.items.some((item) => rawMentionsProtected(item.value) || wordReferencesAny(item, protectedVariables));
+  const bindsWatcherPattern = binding.items.some((item) => /fm-watch/.test(item.value) || wordReferencesAny(item, watcherPatterns));
+  if (bindsProtected) protectedVariables.add(binding.name);
+  else protectedVariables.delete(binding.name);
+  if (bindsWatcherPattern) watcherPatterns.add(binding.name);
+  else watcherPatterns.delete(binding.name);
+  watcherPids.delete(binding.name);
+  return { ...context, protectedVariables, watcherPatterns, watcherPids };
+}
+
 const PROTECTED_SCRIPTS = [
   { relative: "bin/fm-watch-arm.sh", kind: "arm" },
   { relative: "bin/fm-watch-checkpoint.sh", kind: "checkpoint" },
@@ -614,26 +680,59 @@ function hasUnclassifiableProtectedExpansion(word, root) {
   return /(?:^|\/)fm-watch/.test(word.value);
 }
 
+// Shell invocation options that take a separate argument. Consuming them keeps
+// the operand scan honest: without this, `bash --rcfile x <script>` read `x` as
+// the script and never saw the real one.
+const SHELL_LONG_OPTIONS_WITH_ARGUMENT = new Set(["--rcfile", "--init-file"]);
+
 function shellInvocation(position) {
   if (!position.command) return null;
   const name = basename(position.command.value);
   if (!["sh", "bash", "zsh"].includes(name)) return null;
   const words = position.words;
+  // `-n` (noexec) makes the shell parse its input and exit without running any
+  // of it, which is what a `bash -n <script>` syntax check does. `-i` forces an
+  // interactive shell, where the shells document `-n` as ignored.
+  let noexec = false;
+  let interactive = false;
+  const observe = (value) => {
+    if (/^-[A-Za-z]*n[A-Za-z]*$/.test(value)) noexec = true;
+    if (/^-[A-Za-z]*i[A-Za-z]*$/.test(value)) interactive = true;
+  };
+  const finish = (result) => ({ ...result, noexec: noexec && !interactive });
   for (let i = position.index + 1; i < words.length; i += 1) {
     const option = words[i];
     if (/^-[A-Za-z]*c[A-Za-z]*$/.test(option.value)) {
+      observe(option.value);
       let payloadIndex = i + 1;
       if (words[payloadIndex]?.value === "--") payloadIndex += 1;
-      return { kind: "command", payload: words[payloadIndex] || null };
+      return finish({ kind: "command", payload: words[payloadIndex] || null });
     }
     if (/^[-+]O$/.test(option.value)) {
       i += 1;
       continue;
     }
-    if (option.value === "--" || /^[-+]/.test(option.value)) continue;
-    return { kind: "script", payload: option };
+    if (/^[-+]o$/.test(option.value)) {
+      if (words[i + 1]?.value === "noexec") noexec = option.value === "-o";
+      i += 1;
+      continue;
+    }
+    if (SHELL_LONG_OPTIONS_WITH_ARGUMENT.has(option.value)) {
+      i += 1;
+      continue;
+    }
+    if (option.value === "--") continue;
+    if (/^[-+]/.test(option.value)) {
+      observe(option.value);
+      continue;
+    }
+    return finish({ kind: "script", payload: option });
   }
-  return { kind: "stdin", payload: null };
+  // A bare `bash -n` with no script and no -c reads stdin, which may be a
+  // terminal and therefore interactive, so noexec is not proven there. It has
+  // no payload to classify anyway unless a heredoc or here-string supplies one,
+  // and both of those prove stdin is not a terminal.
+  return finish({ kind: "stdin", payload: null });
 }
 
 function shellHeredocPayloads(tokens, position) {
@@ -749,12 +848,17 @@ function analyzeProgram(command, context, depth = 0) {
   let unclassifiableProtected = false;
 
   for (const tokens of program.nodes) {
-    const position = commandPosition(tokens);
-    const nodeContext = contextWithAssignments(activeContext, position.words);
-    const firstName = basename(position.words[0]?.value || "");
-    if (["if", "then", "else", "elif", "fi", "for", "while", "until", "case", "esac", "do", "done", "function", "time", "coproc"].includes(firstName)) {
-      unsupported = true;
-    }
+    const shape = reservedShape(tokens);
+    if (shape.kind === "unmodeled") unsupported = true;
+    const forBinding = shape.kind === "for" ? forHeaderBinding(shape.tokens) : null;
+    // A `for` header the binding reader cannot resolve (an arithmetic
+    // `for ((...))`, say) leaves an unknown loop variable, so it fails closed.
+    if (shape.kind === "for" && !forBinding) unsupported = true;
+    // A resolved `for` header binds but never executes, so it carries no
+    // command position at all.
+    const position = commandPosition(shape.kind === "for" && forBinding ? [] : shape.tokens);
+    let nodeContext = contextWithAssignments(activeContext, position.words);
+    if (forBinding) nodeContext = contextWithLoopBinding(nodeContext, forBinding);
 
     let nodeNestedProtected = false;
     let nodePgrepWatcher = false;
@@ -787,12 +891,17 @@ function analyzeProgram(command, context, depth = 0) {
     }
 
     const shell = shellInvocation(position);
-    const shellPayload = shell?.kind === "command" ? shell.payload : null;
-    const shellScript = shell?.kind === "script" ? shell.payload : null;
+    // Under noexec the shell reads its script, -c payload, heredoc, or
+    // here-string and executes none of it, so none of them is an execution
+    // sink. Substitutions in the surrounding words still run and are analyzed
+    // above, independently of this.
+    const noexec = Boolean(shell?.noexec);
+    const shellPayload = !noexec && shell?.kind === "command" ? shell.payload : null;
+    const shellScript = !noexec && shell?.kind === "script" ? shell.payload : null;
     const sourceScript = sourcedScript(position);
     const literalEvalPayload = evalPayload(position);
-    const heredocPayloads = shellHeredocPayloads(tokens, position);
-    const hereStringPayloads = shellHereStringPayloads(tokens, position);
+    const heredocPayloads = noexec ? [] : shellHeredocPayloads(tokens, position);
+    const hereStringPayloads = noexec ? [] : shellHereStringPayloads(tokens, position);
     for (const script of [shellScript, sourceScript]) {
       if (!script) continue;
       nodeNestedProtected ||= Boolean(protectedIdentity(script.value, context.root)) || wordReferencesAny(script, nodeContext.protectedVariables);
@@ -824,11 +933,19 @@ function analyzeProgram(command, context, depth = 0) {
     if (commandName === "pkill" && args.some((word) => /fm-watch/.test(word.value) || wordReferencesAny(word, nodeContext.watcherPatterns))) broadKill = true;
     if (commandName === "kill" && (nodePgrepWatcher || args.some((word) => wordReferencesAny(word, nodeContext.watcherPids)))) broadKill = true;
     if (isWatcherPgrep(position, nodeContext)) pgrepWatcher = true;
-    if (hasDynamicExecutionPayload(position, nodeContext) || wordReferencesAny(position.command, nodeContext.protectedVariables)) nodeNestedProtected = true;
+    if ((!noexec && hasDynamicExecutionPayload(position, nodeContext)) || wordReferencesAny(position.command, nodeContext.protectedVariables)) nodeNestedProtected = true;
     for (const word of position.words) {
       const name = assignmentName(word);
       if (!name) continue;
       if (word.subs.some((substitution) => substitutionResults.get(substitution)?.pgrepWatcher)) nodeContext.watcherPids.add(name);
+    }
+    // `for p in $(pgrep -f fm-watch)` binds watcher pids exactly as an
+    // assignment from the same substitution does, so the loop body's kill is
+    // still a broad watcher kill.
+    if (forBinding) {
+      for (const item of forBinding.items) {
+        if (item.subs.some((substitution) => substitutionResults.get(substitution)?.pgrepWatcher)) nodeContext.watcherPids.add(forBinding.name);
+      }
     }
     pgrepWatcher ||= nodePgrepWatcher;
     nestedProtected ||= nodeNestedProtected;
@@ -838,6 +955,7 @@ function analyzeProgram(command, context, depth = 0) {
       tokens,
       position,
       protectedKind,
+      reservedPrefix: shape.reservedPrefix,
       nestedProtected: nodeNestedProtected,
       redirection: nodeHasRedirection(tokens),
       substitution: nodeHasUnsafeSubstitution(tokens),
@@ -866,6 +984,7 @@ function ordinaryWordsOnly(tokens) {
 
 function setupKind(info, context) {
   const { tokens, position } = info;
+  if (info.reservedPrefix) return "";
   if (!ordinaryWordsOnly(tokens) || position.prefixAssignments > 0 || position.wrappers.length > 0) return "";
   const values = position.words.map((word) => word.value);
   if (values[0] === "cd" && values.length === 2) return "cd";
@@ -877,7 +996,12 @@ function setupKind(info, context) {
 
 function finalProtectedAllowed(info) {
   if (!info.protectedKind || info.protectedKind === "watch" || info.redirection || info.substitution) return false;
-  if (!ordinaryWordsOnly(info.tokens) || info.position.prefixAssignments > 0) return false;
+  // Inline assignments are approved because they are exactly the already-blessed
+  // `export NAME=<word>` setup node with a narrower scope: the shell performs
+  // them itself after expanding the command word, so they cannot redirect,
+  // background, or change which file runs, and ordinaryWordsOnly has already
+  // excluded any substitution in them.
+  if (!ordinaryWordsOnly(info.tokens) || info.reservedPrefix) return false;
   const wrappers = info.position.wrappers;
   return wrappers.length === 0 || (wrappers.length === 1 && wrappers[0] === "exec");
 }
@@ -916,7 +1040,7 @@ function decision(command, root, home) {
   if (analysis.nodeInfos.some((info) => info.redirection)) return deny("watcher-redirection");
   if (analysis.nodeInfos.some((info) => info.substitution)) return deny("watcher-nested");
   if (blessedProgram(analysis, context)) return { decision: "allow" };
-  if (analysis.nodeInfos.some((info) => info.position.prefixAssignments > 0 || info.position.wrappers.some((wrapper) => wrapper !== "exec"))) {
+  if (analysis.nodeInfos.some((info) => info.reservedPrefix || info.position.wrappers.some((wrapper) => wrapper !== "exec"))) {
     return deny("watcher-nested");
   }
   return deny("watcher-bundled");
