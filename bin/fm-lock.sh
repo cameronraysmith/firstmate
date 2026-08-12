@@ -115,5 +115,12 @@ if [ ! -f "$LOCK" ] || [ -L "$LOCK" ] || [ "$written" != "$me" ]; then
   echo "error: session lock ownership verification failed; operate read-only until resolved" >&2
   exit 1
 fi
+# Verifying the pid round-tripped is not the same as verifying the home is ours:
+# the pid can be a harness ancestor shared with another session, which is exactly
+# what made the old equality test read as self-ownership. Ask the ownership owner.
+if ! fm_session_lock_owned_by_self "$STATE"; then
+  echo "error: session lock ownership verification failed; operate read-only until resolved" >&2
+  exit 1
+fi
 release_claim_lock
 echo "lock acquired: harness pid $me"
