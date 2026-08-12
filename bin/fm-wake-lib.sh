@@ -933,9 +933,19 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# A lock already recorded to THIS process is not contention, and waiting on it
+# can never end: a single-threaded shell cannot reach its own release while it is
+# blocked here. That state is reachable whenever a signal trap exits out of a
+# critical section into cleanup that re-enters the same lock, so treat the
+# caller's precondition - this process holds the lock - as already satisfied.
+# fm_lock_try_acquire is the non-blocking probe and keeps reporting a self-held
+# lock as unavailable.
 fm_lock_acquire_wait() {
   local lockdir=$1
   while ! fm_lock_try_acquire "$lockdir"; do
+    if [ -n "${FM_LOCK_HELD_PID:-}" ] && [ "$FM_LOCK_HELD_PID" = "${BASHPID:-$$}" ]; then
+      return 0
+    fi
     sleep 0.1
   done
 }
