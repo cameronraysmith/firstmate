@@ -4319,6 +4319,27 @@ test_ambient_claim_verdict_reports_unknown_without_evidence() {
   pass "fm_backend_herdr_ambient_claim_verdict: reports unknown rather than guessing when the evidence is missing"
 }
 
+test_whereami_locates_this_process_and_disproves_a_stale_claim() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/whereami-stale"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1: session list; 2: that session's pane list; 3: the pane's process info,
+  # whose shell is this test's own pid and therefore an ancestor of the script.
+  printf '{"sessions":[{"name":"ironstar","default":false,"running":true,"socket_path":"/tmp/fm-herdr-unit/i.sock"}]}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w3:p1","workspace_id":"w3"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"process_info":{"pane_id":"w3:p1","shell_pid":%s}}}\n' "$$" > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  # The claim deliberately disagrees with where the process really is.
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    HERDR_ENV=1 HERDR_PANE_ID=w9:p9 HERDR_SESSION=plan \
+    "$ROOT/bin/fm-herdr-whereami.sh" 2>&1 )
+  status=$?
+  expect_code 0 "$status" "a located process must exit 0 even when its claim is stale"
+  assert_contains "$out" "session=ironstar pane=w3:p1" "whereami did not report the pane that really owns this process"
+  assert_contains "$out" "STALE" "whereami did not disprove a claim contradicted by the process tree"
+  assert_contains "$out" "plan" "the stale verdict did not name the session a bare herdr command would address"
+  pass "bin/fm-herdr-whereami.sh: locates the real pane from process ancestry and reports the injected claim as stale"
+}
+
 test_whereami_reports_a_process_with_no_herdr_identity() {
   local dir log resp fb out status
   dir="$TMP_ROOT/whereami-none"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4347,6 +4368,7 @@ test_self_pid_chain_reports_this_process_and_its_parent
 test_ambient_claim_verdict_proves_an_accurate_identity
 test_ambient_claim_verdict_disproves_a_stale_identity
 test_ambient_claim_verdict_reports_unknown_without_evidence
+test_whereami_locates_this_process_and_disproves_a_stale_claim
 test_whereami_reports_a_process_with_no_herdr_identity
 test_version_check_accepts_current_protocol
 test_version_check_refuses_old_protocol
