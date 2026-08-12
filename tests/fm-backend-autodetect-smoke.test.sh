@@ -45,6 +45,8 @@ export FM_GATE_REFUSE_BYPASS=1
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
 # This suite asserts that HERDR_ENV=1 alone selects the backend, and it runs
 # against its own isolated lab session. A Herdr pane inherited from the terminal
 # it was launched in must not follow spawn into that session as a cross-session
@@ -66,11 +68,10 @@ HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-autodetect-smoke-concurrency-h3)
 }
 export HERDR_SESSION="$HERDR_LAB_SESSION"
 ID="autodetectsmoke1"
-WT=
 cleanup_all() {
   local cleanup_status=0
-  [ -n "$WT" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT" >/dev/null 2>&1
   "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || cleanup_status=$?
+  fm_test_pool_release_all || cleanup_status=1
   rm -rf "$TMP_ROOT"
   return "$cleanup_status"
 }
@@ -100,6 +101,9 @@ Verify the real spawn path selects Herdr.
 EOF
 
 PROJ="$TMP_ROOT/scratch-project"
+# Registered before the repo exists so the pool is released even if the run
+# aborts between here and the spawn below (tests/cleanup-safety.sh).
+fm_test_pool_register "$PROJ"
 mkdir -p "$PROJ"
 git -C "$PROJ" init -q
 printf '# scratch\n' > "$PROJ/README.md"
@@ -172,7 +176,6 @@ status=$?
 if "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get "$PANE" >/dev/null 2>&1; then
   fail "fm-teardown.sh did not close the auto-detected herdr pane"
 fi
-WT=
 pass "real herdr: teardown completes the auto-detected spawn/teardown cycle (meta cleared, pane closed)"
 
 if ! cleanup_all; then
