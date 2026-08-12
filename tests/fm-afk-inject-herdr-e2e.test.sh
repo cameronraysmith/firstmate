@@ -40,6 +40,8 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
 
 # This suite runs against its own isolated lab session, so a Herdr pane
 # inherited from the terminal it was launched in must not follow spawn into it
@@ -62,8 +64,9 @@ LOOP_SCRIPT=
 cleanup_all() {
   if [ -n "${DAEMON_PID:-}" ]; then
     afk_exit "${STATE_DIR:-}" 2>/dev/null || true
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+    # Bounded: a daemon that does not act on the stop must not strand the
+    # session teardown below (tests/cleanup-safety.sh).
+    fm_test_reap_bounded "$DAEMON_PID" >/dev/null 2>&1 || true
   fi
   herdr_safe_stop_and_delete "$SESSION" 2>/dev/null || true
   rm -rf "${HERDR_SHIM_DIR:-}" 2>/dev/null || true
@@ -295,8 +298,7 @@ start_daemon() {
 stop_daemon() {
   [ -n "${DAEMON_PID:-}" ] || return 0
   afk_exit "$STATE_DIR" 2>/dev/null || true
-  kill "$DAEMON_PID" 2>/dev/null || true
-  wait "$DAEMON_PID" 2>/dev/null || true
+  fm_test_reap_bounded "$DAEMON_PID" >/dev/null 2>&1 || true
   DAEMON_PID=""
   sleep 1
 }
