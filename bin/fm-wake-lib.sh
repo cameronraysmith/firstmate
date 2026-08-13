@@ -1005,10 +1005,10 @@ fm_wake_print_deduped() {
 # writers.
 
 fm_wake_signal_sig() {  # <file> -> "size:mtime"
-  if [ "$_FM_UNAME" = Darwin ]; then
-    stat -f '%z:%Fm' "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c '%s:%Y' "$1" 2>/dev/null
+  else
+    stat -f '%z:%Fm' "$1" 2>/dev/null
   fi
 }
 
