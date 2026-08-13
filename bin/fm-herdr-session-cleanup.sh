@@ -14,7 +14,9 @@
 # the named-session snapshot, exactly one matching home-local journal, one tab,
 # one pane, absent task metadata, no registered agent, and a process proof that
 # the pane contains only one idle recognized shell with no child process. A
-# version 2 journal must also bind the exact workspace, tab, and pane.
+# version 2 journal must also bind the exact workspace, and the exact tab and
+# pane whenever it records an endpoint at all; one whose endpoint a refused
+# retirement cleared binds its workspace alone.
 # Topology is first checked from one locked API snapshot, then every mutation
 # prerequisite is immediately rechecked before the existing exact-pane
 # focus-preserving close helper is called.
