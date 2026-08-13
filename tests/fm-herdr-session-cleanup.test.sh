@@ -81,10 +81,16 @@ esac
 SH
 chmod +x "$STATELESS_PS"
 IDLE_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":["-bash"],"argv0":"bash","name":"bash","pid":67}]}}}'
+# Both processor-time sources are pointed at this fixture on purpose: the pid
+# below is invented, so leaving the system fallback at the host's own ps would
+# decide the unreadable case by whether that pid happens to exist on the host
+# running the suite rather than by what the proof does with an unreadable
+# reading.
 stateless_proof() {  # <env assignments via caller>
   # shellcheck disable=SC2329 # invoked indirectly by the idle-shell proof.
   fm_backend_herdr_cli() { printf '%s\n' "$IDLE_PROCESS_INFO"; }
-  FM_HERDR_PS_BIN="$STATELESS_PS" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+  FM_HERDR_PS_BIN="$STATELESS_PS" FM_HERDR_SYSTEM_PS_BIN="$STATELESS_PS" \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
     FM_BACKEND_HERDR_CPU_QUIESCENCE_WINDOW=0 \
     fm_backend_herdr_pane_idle_shell_pid test w2:p1
 }
@@ -193,7 +199,12 @@ fm_backend_herdr_cli() {
           return 0
           ;;
         "pane list")
-          printf '{"result":{"panes":[{"pane_id":"w2:p9","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"}]}}\n' "$TAB" "$WS"
+          if [ -e "$FIXTURE_DIR/leftover-ambiguous" ]; then
+            printf '{"result":{"panes":[{"pane_id":"w2:p9","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"},{"pane_id":"w2:p10","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"}]}}\n' \
+              "$TAB" "$WS" "$TAB" "$WS"
+          else
+            printf '{"result":{"panes":[{"pane_id":"w2:p9","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"}]}}\n' "$TAB" "$WS"
+          fi
           return 0
           ;;
       esac
@@ -280,6 +291,10 @@ write_v2() { # <home> <workspace> <tab> <pane>
   } > "$FM_STATE_OVERRIDE/$ID.herdr-presentation"
 }
 
+write_v2_unbound() { # <home> <workspace>
+  write_v2 "$1" "$2" '' ''
+}
+
 write_cross_home_v2() {
   mkdir -p "$TMP_ROOT/other-home"
   write_v2 "$TMP_ROOT/other-home" "$WS" "$TAB" "$PANE"
@@ -353,6 +368,33 @@ grep -qx 'pane_id=w2:p9' "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
 grep -qx "workspace_id=$WS" "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
   || fail "rebinding a retained v2 journal moved its workspace binding"
 pass "a retained v2 journal is rebound to what Herdr left behind so it stays bindable"
+
+# A leftover that never settles into one exact endpoint is the case the rebind
+# exists for, so leaving the recorded endpoint alone there would keep the
+# journal naming the pane this cleanup just proved gone, which no later session
+# start can ever bind again.
+reset_fixture; : > "$FIXTURE_DIR/workspace-survives"; : > "$FIXTURE_DIR/leftover-ambiguous"
+write_v2 "$FM_HOME" "$WS" "$TAB" "$PANE"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ -f "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] \
+  || fail "an unreadable leftover endpoint retired the journal"
+grep -qx "workspace_id=$WS" "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
+  || fail "clearing an unreadable endpoint dropped the workspace binding"
+if ! grep -qx 'tab_id=' "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
+  || ! grep -qx 'pane_id=' "$FM_STATE_OVERRIDE/$ID.herdr-presentation"; then
+  fail "a leftover with no readable endpoint kept a journal bound to the closed pane"
+fi
+pass "a leftover whose exact endpoint cannot be read clears it instead of keeping a dead one"
+
+reset_fixture; write_v2_unbound "$FM_HOME" "$WS"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ ! -e "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] \
+  || fail "a v2 journal with no recorded endpoint was never reclaimable"
+[ "$(wc -l < "$CLOSE_LOG" | tr -d ' ')" = 1 ] \
+  || fail "reclaiming an endpoint-free v2 journal did not close exactly once"
+pass "a v2 journal binding its workspace alone is bound from the live shape and retired"
+
+reset_fixture; write_v2 "$FM_HOME" "$WS" "$TAB" ''; assert_preserved "half-recorded v2 endpoint"
 
 reset_fixture; : > "$FM_STATE_OVERRIDE/$ID.meta"; assert_preserved "current task metadata"
 reset_fixture; printf 'live\n' > "$FIXTURE_DIR/agent"; assert_preserved "registered agent"

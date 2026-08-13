@@ -1558,7 +1558,7 @@ gone=0
 survives=\${FM_FAKE_HERDR_WORKSPACE_SURVIVES:-0}
 case "\${1:-} \${2:-}" in
   "workspace list")
-    if [ "\$gone" = 1 ] && [ "\$survives" != 1 ]; then
+    if [ "\$gone" = 1 ] && [ "\$survives" = 0 ]; then
       printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH","label":"firstmate","active_tab_id":"wH:t1","focused":true,"tab_count":1,"pane_count":1}]}}'
     else
       printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH","label":"firstmate","active_tab_id":"wH:t1","focused":true,"tab_count":1,"pane_count":1},{"workspace_id":"wG","label":"$label","active_tab_id":"wG:tQ","focused":false,"tab_count":1,"pane_count":1}]}}'
@@ -1575,7 +1575,9 @@ case "\${1:-} \${2:-}" in
     esac
     ;;
   "pane list")
-    if [ "\$gone" = 1 ] && [ "\$survives" = 1 ]; then
+    if [ "\$gone" = 1 ] && [ "\$survives" = 2 ]; then
+      printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pR","tab_id":"wG:tQ","workspace_id":"wG"},{"pane_id":"wG:pS","tab_id":"wG:tQ","workspace_id":"wG"}]}}'
+    elif [ "\$gone" = 1 ] && [ "\$survives" = 1 ]; then
       printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pR","tab_id":"wG:tQ","workspace_id":"wG"}]}}'
     else
       printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG"}]}}'
@@ -1649,6 +1651,40 @@ test_herdr_projected_teardown_keeps_evidence_for_an_unprovable_leftover() {
   [ ! -e "$case_dir/state/task-x1.meta" ] \
     || fail "herdr-projected-leftover: an unretired workspace blocked ordinary record removal"
   pass "a projection workspace outliving its task pane is left alone with a bindable journal, never leaked"
+}
+
+# FM_FAKE_HERDR_WORKSPACE_SURVIVES=2 is the leftover that never settles into one
+# tab holding one pane. Retirement and the rebind read that topology through the
+# same reader, so the endpoint is unreadable in exactly the case the rebind
+# exists to cover; keeping the recorded one would leave the journal naming the
+# task pane this teardown just proved gone, which no later session start can
+# bind, stranding the workspace exactly as before.
+test_herdr_projected_teardown_clears_a_stale_endpoint_on_an_unsettled_leftover() {
+  local case_dir journal
+  case_dir=$(make_case herdr-projected-unsettled)
+  write_meta "$case_dir" local-only ship
+  configure_projected_herdr_teardown_case "$case_dir"
+  : > "$case_dir/state/task-x1.status"
+  FM_FAKE_HERDR_LOG="$case_dir/herdr.log" FM_FAKE_HERDR_CLOSED="$case_dir/closed" \
+    FM_FAKE_HERDR_WORKSPACE_SURVIVES=2 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 FM_BACKEND_HERDR_PROJECTION_RETIRE_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-projected-unsettled: teardown failed: $(cat "$case_dir/stderr")"
+  journal="$case_dir/state/task-x1.herdr-presentation"
+  assert_grep "without settling into one exact restorable shell" "$case_dir/stderr" \
+    "herdr-projected-unsettled: the unsettled leftover was not reported"
+  [ "$(grep -c 'pane close' "$case_dir/herdr.log")" = 1 ] \
+    || fail "herdr-projected-unsettled: an unsettled leftover had a pane closed anyway"
+  [ -f "$journal" ] \
+    || fail "herdr-projected-unsettled: a surviving workspace lost the journal that binds it to this home"
+  grep -qx 'workspace_id=wG' "$journal" \
+    || fail "herdr-projected-unsettled: clearing an unreadable endpoint dropped the workspace binding"
+  if ! grep -qx 'tab_id=' "$journal" || ! grep -qx 'pane_id=' "$journal"; then
+    fail "herdr-projected-unsettled: the retained journal still names the task pane that is gone"
+  fi
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-projected-unsettled: an unretired workspace blocked ordinary record removal"
+  pass "an unsettled leftover keeps a journal bound to its workspace with no stale endpoint"
 }
 
 assert_herdr_teardown_preflight_refuses_before_changes() {
@@ -2735,6 +2771,7 @@ test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_projected_teardown_retires_journal_when_workspace_is_gone
 test_herdr_projected_teardown_keeps_evidence_for_an_unprovable_leftover
+test_herdr_projected_teardown_clears_a_stale_endpoint_on_an_unsettled_leftover
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
 test_forced_secondmate_teardown_holds_descendant_lifecycle_locks
