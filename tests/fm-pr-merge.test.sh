@@ -32,6 +32,8 @@
 #   (q) a push URL pointing at another repository is refused before any push
 #   (r) an origin whose owner/repository casing differs from the PR URL lands
 #   (s) the landing writes only the base branch, never a followed tag
+#   (t) an uppercase-scheme origin on a foreign host is refused like a lowercase one
+#   (u) the landing's fetches write no tag refs into the project clone
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -680,6 +682,58 @@ test_landing_pushes_no_followed_tags() {
   pass "fm-pr-merge lands the base branch without publishing tags a followed-tags push would add"
 }
 
+test_uppercase_scheme_foreign_host_refuses() {
+  local case_dir rc before after
+  make_ff_case uppercase-scheme-origin
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+  before=$(origin_base_head "$case_dir")
+  # git routes a case-variant scheme through the same http(s) transport, so the
+  # host comparison has to see this as the http(s) URL it is.
+  git -C "$case_dir/project" remote set-url origin HTTPS://mirror.invalid/example/repo.git
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "uppercase-scheme-origin: fm-pr-merge should refuse a foreign host behind an uppercase scheme"
+  assert_grep 'is on mirror.invalid, not github.com' "$case_dir/stderr" \
+    "uppercase-scheme-origin: the refusal did not name the origin's own host"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "uppercase-scheme-origin: the base branch moved from $before to $after despite the refusal"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "uppercase-scheme-origin: a forge-side merge was used to work around the refusal"
+  pass "fm-pr-merge refuses a foreign host whose URL scheme is not lowercase"
+}
+
+test_landing_fetches_write_no_tags() {
+  local case_dir after baseline
+  make_ff_case fetch-no-tags
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+  # An annotated tag reachable from the base branch, published after the project
+  # clone was made, is what a fetch auto-follows into refs/tags of that clone.
+  baseline=$(origin_base_head "$case_dir")
+  git -C "$case_dir/work" tag -a -m "release one" v1.0.0 "$baseline"
+  git -C "$case_dir/work" push -q origin refs/tags/v1.0.0
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "fetch-no-tags: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$FF_HEAD" ] \
+    || fail "fetch-no-tags: base branch is $after, not the validated PR head $FF_HEAD"
+  [ -z "$(git -C "$case_dir/project" for-each-ref --format='%(refname)' refs/tags)" ] \
+    || fail "fetch-no-tags: the landing wrote tag refs into the project clone"
+  pass "fm-pr-merge lands without writing any tag ref into the project clone"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -701,3 +755,5 @@ test_pr_lookup_failure_names_its_cause
 test_divergent_push_url_refuses
 test_non_canonical_case_origin_lands
 test_landing_pushes_no_followed_tags
+test_uppercase_scheme_foreign_host_refuses
+test_landing_fetches_write_no_tags

@@ -136,7 +136,8 @@ fold_case() {
 # case folded the way a host name compares. Only these two schemes name their
 # host literally; ssh:// and scp-like forms may name an SSH config alias.
 origin_web_host() {
-  local url=${1-} rest authority hostpart
+  local url rest authority hostpart
+  url=$(fold_case "${1-}")
   case $url in
     https://?*|http://?*) ;;
     *) return 1 ;;
@@ -149,13 +150,14 @@ origin_web_host() {
     *) hostpart=${hostpart%%:*} ;;
   esac
   [ -n "$hostpart" ] || return 1
-  fold_case "$hostpart"
+  printf '%s\n' "$hostpart"
 }
 
 # Refuse a URL that does not address the PR's own repository: it must carry the
 # PR's owner/repository path, and an http(s) URL must also name the PR's host.
 # GitHub compares owners and repository names case-insensitively, as it does
-# hosts, so the path match runs over a case-folded copy of both sides.
+# hosts, and git accepts a case-variant URL scheme, so every comparison here
+# runs over one case-folded copy of the URL rather than the URL as written.
 url_addresses_pr_repo() { # <label> <project dir> <url>
   local label=$1 dir=$2 url=$3 host folded target
   folded=$(fold_case "$url")
@@ -168,9 +170,9 @@ url_addresses_pr_repo() { # <label> <project dir> <url>
       return 1
       ;;
   esac
-  case "$url" in
+  case "$folded" in
     https://*|http://*)
-      host=$(origin_web_host "$url") || host=
+      host=$(origin_web_host "$folded") || host=
       if [ "$host" != "$PR_HOST" ]; then
         echo "error: $label in $dir is on ${host:-no readable host}, not $PR_HOST; refusing to land there" >&2
         return 1
@@ -263,14 +265,14 @@ EOF
     return 1
   fi
 
-  if ! git -C "$proj" fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base"; then
+  if ! git -C "$proj" fetch --quiet --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"; then
     echo "error: cannot fetch $base from origin in $proj" >&2
     return 1
   fi
   # refs/pull/<n>/head is what the forge actually serves for this PR, so
   # fetching it and comparing proves the reported head is the commit on offer,
   # and works whether the PR branch lives in this repository or in a fork.
-  if ! git -C "$proj" fetch --quiet origin "refs/pull/$PR_NUMBER/head"; then
+  if ! git -C "$proj" fetch --quiet --no-tags origin "refs/pull/$PR_NUMBER/head"; then
     echo "error: cannot fetch the head of PR $URL in $proj" >&2
     return 1
   fi
@@ -293,7 +295,7 @@ EOF
     echo "error: the forge rejected $base at $head; nothing was forced" >&2
     return 1
   fi
-  if ! git -C "$proj" fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base"; then
+  if ! git -C "$proj" fetch --quiet --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"; then
     echo "error: cannot confirm $base after the push in $proj" >&2
     return 1
   fi
