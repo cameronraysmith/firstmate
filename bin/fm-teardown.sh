@@ -38,8 +38,8 @@
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
 # A Herdr presentation journal never authorizes cleanup. Teardown still closes
-# only exact panes from ordinary endpoint metadata and never calls
-# `workspace close`. Closing the task pane usually empties its projection
+# only exact panes and never calls `workspace close`. The task pane comes from
+# ordinary endpoint metadata. Closing it usually empties its projection
 # workspace so Herdr removes it; when the workspace outlives the task pane
 # holding a restored shell instead, teardown retires it under the same session
 # lock by closing that one remaining pane, subject to the same proofs the
