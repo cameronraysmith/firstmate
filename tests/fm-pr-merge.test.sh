@@ -31,6 +31,7 @@
 #   (p) a failed PR lookup refuses and carries the lookup's own reason
 #   (q) a push URL pointing at another repository is refused before any push
 #   (r) an origin whose owner/repository casing differs from the PR URL lands
+#   (s) the landing writes only the base branch, never a followed tag
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -652,6 +653,33 @@ test_non_canonical_case_origin_lands() {
   pass "fm-pr-merge lands through an origin whose owner/repository casing differs from the PR URL"
 }
 
+test_landing_pushes_no_followed_tags() {
+  local case_dir after
+  make_ff_case follow-tags-origin
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+  # An annotated tag reachable from the PR head and absent on the origin is
+  # exactly what push.followTags publishes alongside the branch. Repository
+  # scope outranks global and system, so pinning past it pins past those too.
+  git -C "$case_dir/project" fetch -q origin refs/pull/9/head
+  git -C "$case_dir/project" tag -a -m "release nine" v9.9.9 "$FF_HEAD"
+  git -C "$case_dir/project" config push.followTags true
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "follow-tags-origin: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$FF_HEAD" ] \
+    || fail "follow-tags-origin: base branch is $after, not the validated PR head $FF_HEAD"
+  [ -z "$(git -C "$case_dir/example/repo.git" rev-parse --verify --quiet refs/tags/v9.9.9 || true)" ] \
+    || fail "follow-tags-origin: the landing published refs/tags/v9.9.9 alongside the base branch"
+  [ -z "$(git -C "$case_dir/example/repo.git" for-each-ref --format='%(refname)' refs/tags)" ] \
+    || fail "follow-tags-origin: the landing published a tag on the origin"
+  pass "fm-pr-merge lands the base branch without publishing tags a followed-tags push would add"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -672,3 +700,4 @@ test_foreign_host_origin_refuses
 test_pr_lookup_failure_names_its_cause
 test_divergent_push_url_refuses
 test_non_canonical_case_origin_lands
+test_landing_pushes_no_followed_tags

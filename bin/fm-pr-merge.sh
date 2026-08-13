@@ -285,7 +285,11 @@ EOF
     echo "Rebase the PR branch onto $base and let CI run again, then retry." >&2
     return 1
   fi
-  if ! git -C "$proj" push --quiet origin "$head:refs/heads/$base"; then
+  # push.followTags and push.recurseSubmodules widen a push beyond its refspec,
+  # to reachable tags and to each submodule's own remote, so the landing pins
+  # both rather than inheriting whatever the clone or the user configured.
+  if ! git -C "$proj" -c push.followTags=false -c push.recurseSubmodules=no \
+    push --quiet origin "$head:refs/heads/$base"; then
     echo "error: the forge rejected $base at $head; nothing was forced" >&2
     return 1
   fi
