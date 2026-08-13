@@ -220,11 +220,13 @@ prune_gone_branches() {
   # that still has a worktree (a live or not-yet-torn-down task). "Gone" plus
   # "no worktree" already proves the work landed: teardown removes a branch's
   # worktree only after confirming the work reached the remote. We deliberately
-  # do NOT also require the branch to be an ancestor of origin/<default>: a
-  # branch landed by fm-pr-merge.sh's default local fast-forward is one, but a
-  # branch landed by an explicit forge-side squash or merge never is, so such
-  # a check would wrongly keep every forge-merged branch. The no-worktree
-  # guard is the real safety net. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
+  # do NOT also require the branch to be an ancestor of origin/<default>:
+  # whether a landed branch head ends up an ancestor depends on the landing
+  # method (fm-pr-merge.sh's default local fast-forward and a forge-side
+  # merge commit leave it one; a forge-side squash or rebase never does), so
+  # such a check would keep squash- and rebase-landed branches forever. The
+  # no-worktree guard is the real safety net. Set FM_FLEET_PRUNE=0 to skip
+  # pruning entirely.
   [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
 
   local worktree_branches current refline branch track

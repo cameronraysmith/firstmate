@@ -35,8 +35,9 @@
 #
 # Neither landing checks that the PR's checks are green. AGENTS.md section 7's
 # "never merge a red PR" is enforced above this script, by whoever decides to
-# land, and this path verifies only that the PR is recorded and that the landing
-# it performs is the one that was asked for.
+# land, and this path verifies only that the PR is recorded, that the PR is
+# open and not a draft before a local fast-forward, and that the landing it
+# performs is the one that was asked for.
 #
 # Extra args are accepted only for a forge-side merge, and must not include
 # --repo or -R because the repository comes only from the URL.
