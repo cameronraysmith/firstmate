@@ -215,8 +215,13 @@ production_retire_leftover "$LEFTOVER_WS" "$LEFTOVER_TITLE" "$LEFTOVER_TOKEN" \
   || fail 'retiring an already absent workspace is not idempotent'
 pass 'retiring an already absent leftover workspace succeeds without touching anything'
 
-# Each refusal below removes exactly one guard from an otherwise retirable
-# leftover, so the workspace must survive untouched.
+# Only the first refusal below isolates a single guard: it removes the
+# idle-shell proof from an otherwise retirable leftover. The other two stack.
+# The multi-tab case adds a tab to that same still-busy workspace, so it fails
+# the one-tab guard and the idle-shell proof together, and the last case
+# targets the captain's own anchor, which is not a leftover at all. Each case
+# therefore proves the workspace survives untouched, not that the one guard it
+# names would refuse on its own.
 BUSY_TOKEN=BuSyPaNeAbCdEfGhIjKlMn
 BUSY_ID=busy-projection
 BUSY_TITLE="└ $BUSY_ID · p:$BUSY_TOKEN"
