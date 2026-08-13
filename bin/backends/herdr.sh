@@ -597,6 +597,25 @@ fm_backend_herdr_projection_journal_field() {  # <journal> <key>
   grep "^${key}=" "$journal" 2>/dev/null | cut -d= -f2-
 }
 
+# fm_backend_herdr_projection_endpoint_pair_valid: a version 2 endpoint is
+# either fully bound to one exact tab and pane or fully unbound, never half of
+# each.
+# The unbound pair is what a retained journal degrades to when the leftover's
+# exact endpoint cannot be read: the workspace, home, and session bindings
+# survive while the tab and pane stop naming an endpoint that is provably gone,
+# which is precisely the version 1 evidence level the session-start pass
+# already binds from. Recording a stale endpoint instead would refuse that pass
+# forever and strand the workspace, so this pair is the one part of a version 2
+# binding allowed to be absent.
+fm_backend_herdr_projection_endpoint_pair_valid() {  # <tab> <pane>
+  case "$1$2" in
+    *[[:space:]]*) return 1 ;;
+  esac
+  if [ -n "$1" ] || [ -n "$2" ]; then
+    [ -n "$1" ] && [ -n "$2" ]
+  fi
+}
+
 # fm_backend_herdr_projection_journal_snapshot: validate a version 1 attempt
 # journal or a version 2 exact projection binding without sourcing shell code.
 # Version 2 sets FM_BACKEND_HERDR_JOURNAL_* globals for same-process callers.
@@ -645,13 +664,13 @@ fm_backend_herdr_projection_journal_snapshot() {  # <journal> <task-id>
   for exact in \
     "$FM_BACKEND_HERDR_JOURNAL_SESSION" \
     "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID" \
-    "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" \
-    "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" \
     "$FM_BACKEND_HERDR_JOURNAL_PARENT_WORKSPACE_ID"; do
     case "$exact" in
       ''|*[[:space:]]*) return 1 ;;
     esac
   done
+  fm_backend_herdr_projection_endpoint_pair_valid \
+    "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" || return 1
   [ -n "$FM_BACKEND_HERDR_JOURNAL_PARENT_LABEL" ] \
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" ] \
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_TASK_LABEL" ] || return 1
@@ -716,9 +735,11 @@ fm_backend_herdr_projection_journal_bind() {  # <journal> <task-id> <home> <sess
 }
 
 # fm_backend_herdr_projection_journal_replace_endpoint: atomically advance one
-# exact version 2 binding after its old husk was replaced successfully.
+# exact version 2 binding after its old husk was replaced successfully, or
+# clear it to the unbound pair when no exact endpoint can be read at all.
 fm_backend_herdr_projection_journal_replace_endpoint() {  # <journal> <task-id> <old-tab> <old-pane> <new-tab> <new-pane>
   local journal=$1 id=$2 old_tab=$3 old_pane=$4 new_tab=$5 new_pane=$6
+  fm_backend_herdr_projection_endpoint_pair_valid "$new_tab" "$new_pane" || return 1
   fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
   [ "$FM_BACKEND_HERDR_JOURNAL_VERSION" = 2 ] \
     && [ "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" = "$old_tab" ] \
@@ -1051,12 +1072,13 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 # where every removal primitive preserves focus and the proof stops being
 # load-bearing. That floor has ONE owner, the spawn-time gate
 # fm_backend_herdr_presentation_enabled, so every new projection is either on a
-# supported release or is a home's deliberate below-floor opt-in. Session-start
-# cleanup deliberately retires a leftover projection husk on every release,
-# including below the floor. The accepted exposure is limited to the rare
-# downgrade path where a home projected on Herdr 0.8.0 or newer and then moved
-# to a 0.7.x release, and occurs once per leftover workspace at session start
-# rather than once per task teardown; the exact prior-tab restore bounds it.
+# supported release or is a home's deliberate below-floor opt-in. Teardown and
+# session-start cleanup deliberately retire a leftover projection husk on every
+# release, including below the floor. The accepted exposure is limited to the
+# rare downgrade path where a home projected on Herdr 0.8.0 or newer and then
+# moved to a 0.7.x release, and occurs once per leftover workspace, at that
+# task's teardown or at a later session start, rather than once per torn-down
+# task; the exact prior-tab restore bounds it.
 # Refusing that close below the floor would leak workspaces that nothing else
 # removes and block teardown because fm-teardown treats an unconfirmed close as
 # a hard stop. That cleanup is therefore authorized containment rather than a
@@ -1288,15 +1310,19 @@ fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
 # process group and the sole foreground process, the foreground process name
 # and argv0 resolve to the same recognized shell, the operating-system
 # process table shows exactly that one shell row with no child process, and
-# the shell sits in a sleeping or idle state.
+# the shell is affirmatively not running: sleeping or idle when ps reports a
+# state character at all, and otherwise proved to have consumed no processor
+# time across a settle window. Every other condition above stays mandatory in
+# both cases, and a state that cannot be read or classified is never idle.
 # An idle interactive shell transiently hosts short-lived prompt helpers
 # (verified on the real 0.7.5 lab: a workspace.move relayout makes zsh redraw
 # its prompt, spawning starship as a second foreground process for a few
 # samples), so the proof retries strict single samples for a bounded settle
 # window and succeeds on the first fully clean one; a genuinely busy pane
 # fails every sample and still refuses.
-# This is the single owner of the idle-shell proof; the session-start
-# projection cleanup and every pane-death close path both rely on it.
+# This is the single owner of the idle-shell proof; leftover retirement, the
+# session-start projection cleanup, and every pane-death close path all rely
+# on it.
 fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
   local attempt=0 max_attempts=${FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS:-10}
   while :; do
@@ -1314,7 +1340,7 @@ fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
 # contract and the settle retry.
 fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid foreground_pgid count
-  local process_pid name argv0 shell_name rows stat ps_bin
+  local process_pid name argv0 shell_name rows state ps_bin
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -1352,9 +1378,81 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
     $2 == shell { child++ }
     END { exit(found == 1 && child == 0 ? 0 : 1) }
   ' || return 1
-  stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
-  case "$stat" in S*|I*) ;; *) return 1 ;; esac
+  state=$(fm_backend_herdr_pid_state_char "$ps_bin" "$shell_pid") || return 1
+  case "$state" in
+    S|I) ;;
+    '') fm_backend_herdr_pid_cpu_quiescent "$ps_bin" "$shell_pid" || return 1 ;;
+    *) return 1 ;;
+  esac
   printf '%s\n' "$shell_pid"
+}
+
+# fm_backend_herdr_pid_state_char: the process STATE character <ps-bin> reports
+# for <pid>, or empty when that implementation reports none.
+# Both BSD and Linux ps lead STAT with the state and append flag characters
+# after it, so only the FIRST character can be classified; the two alphabets
+# overlap, which is why nothing beyond that first character is interpreted.
+# An empty result is a normal reading rather than an error. Verified on
+# 2026-08-12: the nix procps-1003.1-2008 build that PATH resolves ps to on this
+# fleet's macOS host prints flags alone - "s+" for an idle interactive login
+# shell where /bin/ps prints "Ss+" - and omits BOTH the sleeping and the running
+# state, so STAT from that implementation cannot separate idle from busy at all.
+# Failing to read STAT stays an error, and only a genuinely absent state
+# character reports empty.
+fm_backend_herdr_pid_state_char() {  # <ps-bin> <pid>
+  local stat
+  stat=$("$1" -p "$2" -o stat= 2>/dev/null) || return 1
+  stat=$(printf '%s' "$stat" | tr -d '[:space:]')
+  case "$stat" in
+    [DIRSTtUWXZ]*) printf '%.1s' "$stat" ;;
+  esac
+}
+
+# fm_backend_herdr_pid_cpu_time: <pid>'s cumulative processor time, from the
+# first process-accounting source that answers with a well-formed value.
+# The configured ps is tried first so a test or operator override still owns the
+# reading, then the system ps, because the degenerate implementation above
+# answers `-o time=` with its keyword list instead of a value. That second
+# source is FM_HERDR_SYSTEM_PS_BIN rather than a hardcoded path so a sandbox
+# that overrides the reading genuinely owns every source: a hardcoded fallback
+# escapes to the host's own ps for whichever pid the sandbox invented, which
+# answers or not purely by whether that pid happens to exist there.
+# Anything that is not digits, colons, and dots is that error text or another
+# unusable answer, never a measurement.
+fm_backend_herdr_pid_cpu_time() {  # <ps-bin> <pid>
+  local candidate value
+  for candidate in "$1" "${FM_HERDR_SYSTEM_PS_BIN:-/bin/ps}"; do
+    [ -n "$candidate" ] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    value=$("$candidate" -p "$2" -o time= 2>/dev/null) || continue
+    value=$(printf '%s' "$value" | tr -d '[:space:]')
+    case "$value" in
+      ''|*[!0-9:.]*) continue ;;
+    esac
+    printf '%s' "$value"
+    return 0
+  done
+  return 1
+}
+
+# fm_backend_herdr_pid_cpu_quiescent: affirmative proof that <pid> consumed no
+# measurable processor time across one settle window.
+# This is the fallback for a ps that reports no state character, and it is
+# deliberately independent of that field rather than a relaxation of it: two
+# readings of cumulative processor time that are both well-formed and identical
+# positively establish that the process ran for none of the window, which is the
+# one thing the state character contributed that the caller's other guards do
+# not already prove. A shell spinning inside a builtin has no child process and
+# holds its own terminal foreground group, so it satisfies every other guard and
+# is caught only here.
+# An unreadable or malformed reading from every source refuses, so an unknown
+# state is never accepted as idle.
+fm_backend_herdr_pid_cpu_quiescent() {  # <ps-bin> <pid>
+  local first second
+  first=$(fm_backend_herdr_pid_cpu_time "$1" "$2") || return 1
+  sleep "${FM_BACKEND_HERDR_CPU_QUIESCENCE_WINDOW:-0.2}"
+  second=$(fm_backend_herdr_pid_cpu_time "$1" "$2") || return 1
+  [ "$first" = "$second" ]
 }
 
 # fm_backend_herdr_projection_order_best_effort: place the exact workspace id
@@ -2616,6 +2714,143 @@ fm_backend_herdr_projection_endpoint_matches_journal() {  # <session> <workspace
   matches=$(printf '%s' "$list" | jq -r --arg suffix " · p:$token" \
     '.result.workspaces[]? | select((.label | type) == "string" and (.label | endswith($suffix))) | .workspace_id' 2>/dev/null)
   [ "$matches" = "$workspace_id" ]
+}
+
+# A projection workspace normally disappears with its task: closing the sole
+# task pane empties the workspace, and Herdr removes it. A LEFTOVER is that
+# workspace when it outlives its task pane instead, holding one restored
+# agent-free shell where the task used to be. Herdr seeds that shell after the
+# task pane is gone, so cleanup that reads the workspace once, at the instant
+# it confirms its own pane closed, can see the leftover only if it waits for it.
+#
+# fm_backend_herdr_projection_leftover_endpoint: print "<tab-id><TAB><pane-id>"
+# only when <workspace-id> currently holds the exact retirable leftover
+# topology: the immutable expected label, exactly one occurrence of the
+# projection token across the named session, and exactly one tab holding
+# exactly one pane. Read-only, silent, and topology only. It grants no
+# mutation authority on its own: every caller still owns the agent, idle-shell,
+# and focus proofs before acting on the endpoint it returns.
+fm_backend_herdr_projection_leftover_endpoint() {  # <session> <workspace-id> <expected-label> <token>
+  local session=$1 workspace=$2 expected_label=$3 token=$4 list info tabs panes tab pane
+  [ -n "$session" ] && [ -n "$workspace" ] && [ -n "$expected_label" ] && [ -n "$token" ] || return 1
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  printf '%s' "$list" | jq -e --arg workspace "$workspace" --arg label "$expected_label" --arg token "$token" '
+    ([.result.workspaces[]? | select(.workspace_id == $workspace and .label == $label)] | length) == 1
+    and ([.result.workspaces[]?.label? // "" |
+          ((split("p:" + $token) | length) - 1)] | add // 0) == 1
+  ' >/dev/null 2>&1 || return 1
+  info=$(fm_backend_herdr_cli "$session" workspace get "$workspace" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg workspace "$workspace" --arg label "$expected_label" '
+    .result.workspace.workspace_id == $workspace
+    and .result.workspace.label == $label
+    and .result.workspace.tab_count == 1
+    and .result.workspace.pane_count == 1
+  ' >/dev/null 2>&1 || return 1
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 1
+  tab=$(printf '%s' "$tabs" | jq -er --arg workspace "$workspace" '
+    .result.tabs | select(type == "array") | select(length == 1) | .[0]
+    | select(.workspace_id == $workspace)
+    | .tab_id | select(type == "string" and length > 0)
+  ' 2>/dev/null) || return 1
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
+  pane=$(printf '%s' "$panes" | jq -er --arg workspace "$workspace" --arg tab "$tab" '
+    .result.panes | select(type == "array") | select(length == 1) | .[0]
+    | select(.workspace_id == $workspace and .tab_id == $tab)
+    | .pane_id | select(type == "string" and length > 0)
+  ' 2>/dev/null) || return 1
+  printf '%s\t%s' "$tab" "$pane"
+}
+
+# fm_backend_herdr_projection_retire_leftover: retire the projection workspace
+# of a task whose own pane is already confirmed gone.
+# The caller must hold the named-session presentation lock and must have
+# established that this workspace belongs to this home and that its task is no
+# longer live.
+#
+# Removal keeps the existing shape exactly: this never calls `workspace close`.
+# It closes the leftover's sole pane through the exact focus-preserving helper
+# and then requires the workspace itself to be absent, so the workspace is
+# removed by Herdr's own emptying path rather than by a new primitive.
+# A workspace that is already gone succeeds immediately, and the settle poll
+# covers the window where the task pane's removal and Herdr's restored shell
+# have not both landed yet.
+# Returns 0 only when the workspace is confirmed absent. Every refusal warns and
+# leaves the workspace untouched, for the caller to keep bound through
+# fm_backend_herdr_projection_rebind_leftover.
+fm_backend_herdr_projection_retire_leftover() {  # <session> <workspace-id> <expected-label> <token>
+  local session=$1 workspace=$2 expected_label=$3 token=$4
+  local presence endpoint pane attempt=0 max_attempts close_status=0
+  max_attempts=${FM_BACKEND_HERDR_PROJECTION_RETIRE_POLLS:-12}
+  while :; do
+    presence=$(fm_backend_herdr_workspace_presence_state "$session" "$workspace")
+    [ "$presence" = dead ] && return 0
+    if [ "$presence" = present ] \
+      && endpoint=$(fm_backend_herdr_projection_leftover_endpoint \
+        "$session" "$workspace" "$expected_label" "$token"); then
+      break
+    fi
+    endpoint=
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      echo "warning: herdr presentation workspace $workspace outlived its task pane without settling into one exact restorable shell; leaving it for inspection" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+  pane=${endpoint#*$'\t'}
+  if [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" != no-agent ] \
+    || ! fm_backend_herdr_pane_idle_shell_pid "$session" "$pane" >/dev/null; then
+    echo "warning: herdr presentation workspace $workspace outlived its task pane but its remaining pane is not a provably idle childless shell; leaving it for inspection" >&2
+    return 1
+  fi
+  fm_backend_herdr_projection_close_pane_focus_preserving \
+    "$session" "$pane" no-agent || close_status=$?
+  presence=$(fm_backend_herdr_workspace_presence_state "$session" "$workspace")
+  [ "$presence" = dead ] && return 0
+  if [ "$close_status" -ne 0 ]; then
+    echo "warning: herdr presentation workspace $workspace refused or could not confirm the exact focus-safe close of its remaining pane; leaving it for inspection" >&2
+  else
+    echo "warning: herdr presentation workspace $workspace survived the exact close of its remaining pane; leaving it for inspection" >&2
+  fi
+  return 1
+}
+
+# fm_backend_herdr_projection_rebind_leftover: keep a retained version 2 journal
+# bound to the leftover workspace's CURRENT exact endpoint after a refused
+# retirement, so the next locked session start can still bind it by its exact
+# recorded tab and pane instead of by the task pane that is already gone.
+# Version 1 journals carry no endpoint and are already bindable, so they are a
+# success with nothing to do.
+#
+# The exact endpoint is unreadable in exactly the topologies that refuse
+# retirement in the first place - a workspace that never settles into one tab
+# holding one pane, or one whose `workspace list` cannot be read at all - so
+# abandoning the journal there would leave it naming the dead task pane and
+# refuse every later session start forever. When no exact endpoint can be read
+# the recorded endpoint is therefore CLEARED rather than left stale: the home,
+# session, and workspace bindings survive, and the session-start pass binds the
+# tab and pane from the live workspace under every guard it already applies.
+# The only outcomes are an exact endpoint, no endpoint, and an untouched
+# journal - one whose identity did not match this workspace at all, or one
+# whose atomic rewrite failed; every caller reports the refusal.
+fm_backend_herdr_projection_rebind_leftover() {  # <session> <workspace-id> <journal> <task-id> <expected-label> <token>
+  local session=$1 workspace=$2 journal=$3 id=$4 expected_label=$5 token=$6 endpoint tab pane old_tab old_pane
+  fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
+  [ "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID" = "$token" ] || return 1
+  [ "$FM_BACKEND_HERDR_JOURNAL_VERSION" = 2 ] || return 0
+  [ "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID" = "$workspace" ] || return 1
+  old_tab=$FM_BACKEND_HERDR_JOURNAL_TAB_ID
+  old_pane=$FM_BACKEND_HERDR_JOURNAL_PANE_ID
+  tab=
+  pane=
+  if endpoint=$(fm_backend_herdr_projection_leftover_endpoint \
+    "$session" "$workspace" "$expected_label" "$token"); then
+    tab=${endpoint%%$'\t'*}
+    pane=${endpoint#*$'\t'}
+  fi
+  [ "$old_tab" = "$tab" ] && [ "$old_pane" = "$pane" ] && return 0
+  fm_backend_herdr_projection_journal_replace_endpoint \
+    "$journal" "$id" "$old_tab" "$old_pane" "$tab" "$pane"
 }
 
 # fm_backend_herdr_parse_target: split "<session>:<pane_id>" (pane_id itself
