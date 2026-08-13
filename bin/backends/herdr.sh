@@ -597,6 +597,25 @@ fm_backend_herdr_projection_journal_field() {  # <journal> <key>
   grep "^${key}=" "$journal" 2>/dev/null | cut -d= -f2-
 }
 
+# fm_backend_herdr_projection_endpoint_pair_valid: a version 2 endpoint is
+# either fully bound to one exact tab and pane or fully unbound, never half of
+# each.
+# The unbound pair is what a retained journal degrades to when the leftover's
+# exact endpoint cannot be read: the workspace, home, and session bindings
+# survive while the tab and pane stop naming an endpoint that is provably gone,
+# which is precisely the version 1 evidence level the session-start pass
+# already binds from. Recording a stale endpoint instead would refuse that pass
+# forever and strand the workspace, so this pair is the one part of a version 2
+# binding allowed to be absent.
+fm_backend_herdr_projection_endpoint_pair_valid() {  # <tab> <pane>
+  case "$1$2" in
+    *[[:space:]]*) return 1 ;;
+  esac
+  if [ -n "$1" ] || [ -n "$2" ]; then
+    [ -n "$1" ] && [ -n "$2" ]
+  fi
+}
+
 # fm_backend_herdr_projection_journal_snapshot: validate a version 1 attempt
 # journal or a version 2 exact projection binding without sourcing shell code.
 # Version 2 sets FM_BACKEND_HERDR_JOURNAL_* globals for same-process callers.
@@ -645,13 +664,13 @@ fm_backend_herdr_projection_journal_snapshot() {  # <journal> <task-id>
   for exact in \
     "$FM_BACKEND_HERDR_JOURNAL_SESSION" \
     "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID" \
-    "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" \
-    "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" \
     "$FM_BACKEND_HERDR_JOURNAL_PARENT_WORKSPACE_ID"; do
     case "$exact" in
       ''|*[[:space:]]*) return 1 ;;
     esac
   done
+  fm_backend_herdr_projection_endpoint_pair_valid \
+    "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" || return 1
   [ -n "$FM_BACKEND_HERDR_JOURNAL_PARENT_LABEL" ] \
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" ] \
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_TASK_LABEL" ] || return 1
@@ -716,9 +735,11 @@ fm_backend_herdr_projection_journal_bind() {  # <journal> <task-id> <home> <sess
 }
 
 # fm_backend_herdr_projection_journal_replace_endpoint: atomically advance one
-# exact version 2 binding after its old husk was replaced successfully.
+# exact version 2 binding after its old husk was replaced successfully, or
+# clear it to the unbound pair when no exact endpoint can be read at all.
 fm_backend_herdr_projection_journal_replace_endpoint() {  # <journal> <task-id> <old-tab> <old-pane> <new-tab> <new-pane>
   local journal=$1 id=$2 old_tab=$3 old_pane=$4 new_tab=$5 new_pane=$6
+  fm_backend_herdr_projection_endpoint_pair_valid "$new_tab" "$new_pane" || return 1
   fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
   [ "$FM_BACKEND_HERDR_JOURNAL_VERSION" = 2 ] \
     && [ "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" = "$old_tab" ] \
@@ -1388,13 +1409,17 @@ fm_backend_herdr_pid_state_char() {  # <ps-bin> <pid>
 # fm_backend_herdr_pid_cpu_time: <pid>'s cumulative processor time, from the
 # first process-accounting source that answers with a well-formed value.
 # The configured ps is tried first so a test or operator override still owns the
-# reading, then the system ps at its absolute path, because the degenerate
-# implementation above answers `-o time=` with its keyword list instead of a
-# value. Anything that is not digits, colons, and dots is that error text or
-# another unusable answer, never a measurement.
+# reading, then the system ps, because the degenerate implementation above
+# answers `-o time=` with its keyword list instead of a value. That second
+# source is FM_HERDR_SYSTEM_PS_BIN rather than a hardcoded path so a sandbox
+# that overrides the reading genuinely owns every source: a hardcoded fallback
+# escapes to the host's own ps for whichever pid the sandbox invented, which
+# answers or not purely by whether that pid happens to exist there.
+# Anything that is not digits, colons, and dots is that error text or another
+# unusable answer, never a measurement.
 fm_backend_herdr_pid_cpu_time() {  # <ps-bin> <pid>
   local candidate value
-  for candidate in "$1" /bin/ps; do
+  for candidate in "$1" "${FM_HERDR_SYSTEM_PS_BIN:-/bin/ps}"; do
     [ -n "$candidate" ] || continue
     command -v "$candidate" >/dev/null 2>&1 || continue
     value=$("$candidate" -p "$2" -o time= 2>/dev/null) || continue
@@ -2793,22 +2818,36 @@ fm_backend_herdr_projection_retire_leftover() {  # <session> <workspace-id> <exp
 # retirement, so the next locked session start can still bind it by its exact
 # recorded tab and pane instead of by the task pane that is already gone.
 # Version 1 journals carry no endpoint and are already bindable, so they are a
-# success with nothing to do. Any ambiguity leaves the journal untouched.
+# success with nothing to do.
+#
+# The exact endpoint is unreadable in exactly the topologies that refuse
+# retirement in the first place - a workspace that never settles into one tab
+# holding one pane, or one whose `workspace list` cannot be read at all - so
+# abandoning the journal there would leave it naming the dead task pane and
+# refuse every later session start forever. When no exact endpoint can be read
+# the recorded endpoint is therefore CLEARED rather than left stale: the home,
+# session, and workspace bindings survive, and the session-start pass binds the
+# tab and pane from the live workspace under every guard it already applies.
+# The only outcomes are an exact endpoint, no endpoint, and an untouched
+# journal whose identity did not match this workspace at all.
 fm_backend_herdr_projection_rebind_leftover() {  # <session> <workspace-id> <journal> <task-id> <expected-label> <token>
-  local session=$1 workspace=$2 journal=$3 id=$4 expected_label=$5 token=$6 endpoint tab pane
+  local session=$1 workspace=$2 journal=$3 id=$4 expected_label=$5 token=$6 endpoint tab pane old_tab old_pane
   fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
   [ "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID" = "$token" ] || return 1
   [ "$FM_BACKEND_HERDR_JOURNAL_VERSION" = 2 ] || return 0
   [ "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_ID" = "$workspace" ] || return 1
-  endpoint=$(fm_backend_herdr_projection_leftover_endpoint \
-    "$session" "$workspace" "$expected_label" "$token") || return 1
-  tab=${endpoint%%$'\t'*}
-  pane=${endpoint#*$'\t'}
-  [ "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" = "$tab" ] \
-    && [ "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" = "$pane" ] && return 0
+  old_tab=$FM_BACKEND_HERDR_JOURNAL_TAB_ID
+  old_pane=$FM_BACKEND_HERDR_JOURNAL_PANE_ID
+  tab=
+  pane=
+  if endpoint=$(fm_backend_herdr_projection_leftover_endpoint \
+    "$session" "$workspace" "$expected_label" "$token"); then
+    tab=${endpoint%%$'\t'*}
+    pane=${endpoint#*$'\t'}
+  fi
+  [ "$old_tab" = "$tab" ] && [ "$old_pane" = "$pane" ] && return 0
   fm_backend_herdr_projection_journal_replace_endpoint \
-    "$journal" "$id" "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" "$FM_BACKEND_HERDR_JOURNAL_PANE_ID" \
-    "$tab" "$pane"
+    "$journal" "$id" "$old_tab" "$old_pane" "$tab" "$pane"
 }
 
 # fm_backend_herdr_parse_target: split "<session>:<pane_id>" (pane_id itself
