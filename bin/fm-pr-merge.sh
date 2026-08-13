@@ -197,7 +197,7 @@ gh_failure_detail() {
 # whenever the fast-forward is not provably available, the forge's head moved
 # under us, or the base branch does not end up containing the validated commit.
 land_local_fast_forward() {
-  local proj remote push_urls push_url err_file detail view state base head recorded fetched landed
+  local proj remote push_urls push_url err_file detail view rest state draft base head recorded fetched landed
 
   proj=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
   if [ -z "$proj" ] || [ ! -d "$proj" ] \
@@ -224,9 +224,9 @@ $push_urls
 EOF
 
   err_file=$( (umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX") 2>/dev/null ) || err_file=
-  view=$(gh pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-    --json state,baseRefName,headRefOid \
-    -q '.state + "\t" + .baseRefName + "\t" + .headRefOid' \
+  view=$(gh pr view "$URL" \
+    --json state,isDraft,baseRefName,headRefOid \
+    -q '.state + "\t" + (.isDraft|tostring) + "\t" + .baseRefName + "\t" + .headRefOid' \
     2>"${err_file:-/dev/null}") || {
     detail=$(gh_failure_detail "$err_file")
     [ -z "$err_file" ] || rm -f "$err_file"
@@ -236,9 +236,12 @@ EOF
   [ -z "$err_file" ] || rm -f "$err_file"
   state=${view%%$'\t'*}
   [ "$state" != "$view" ] || { echo "error: cannot read PR $URL state, base branch, and head commit" >&2; return 1; }
-  head=${view##*$'\t'}
-  base=${view#*$'\t'}
-  base=${base%%$'\t'*}
+  rest=${view#*$'\t'}
+  draft=${rest%%$'\t'*}
+  [ "$draft" != "$rest" ] || { echo "error: cannot read PR $URL state, base branch, and head commit" >&2; return 1; }
+  rest=${rest#*$'\t'}
+  head=${rest##*$'\t'}
+  base=${rest%%$'\t'*}
 
   case "$state" in
     MERGED|merged)
@@ -248,6 +251,17 @@ EOF
     OPEN|open) ;;
     *)
       echo "error: PR $URL is $state, not open" >&2
+      return 1
+      ;;
+  esac
+  case "$draft" in
+    false) ;;
+    true)
+      echo "error: PR $URL is a draft; mark it ready for review before landing" >&2
+      return 1
+      ;;
+    *)
+      echo "error: cannot read whether PR $URL is a draft" >&2
       return 1
       ;;
   esac
@@ -265,18 +279,20 @@ EOF
     return 1
   fi
 
-  if ! git -C "$proj" fetch --quiet --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"; then
+  if ! git -C "$proj" -c fetch.recurseSubmodules=no fetch --quiet --no-tags origin \
+    "+refs/heads/$base:refs/remotes/origin/$base"; then
     echo "error: cannot fetch $base from origin in $proj" >&2
     return 1
   fi
   # refs/pull/<n>/head is what the forge actually serves for this PR, so
   # fetching it and comparing proves the reported head is the commit on offer,
   # and works whether the PR branch lives in this repository or in a fork.
-  if ! git -C "$proj" fetch --quiet --no-tags origin "refs/pull/$PR_NUMBER/head"; then
+  if ! git -C "$proj" -c fetch.recurseSubmodules=no fetch --quiet --no-tags origin \
+    "+refs/pull/$PR_NUMBER/head:refs/fm-merge/pull/$PR_NUMBER/head"; then
     echo "error: cannot fetch the head of PR $URL in $proj" >&2
     return 1
   fi
-  fetched=$(git -C "$proj" rev-parse --verify --quiet FETCH_HEAD) || fetched=
+  fetched=$(git -C "$proj" rev-parse --verify --quiet "refs/fm-merge/pull/$PR_NUMBER/head") || fetched=
   if [ "$fetched" != "$head" ]; then
     echo "error: PR $URL serves $fetched, not the reported head $head; nothing was landed" >&2
     return 1
@@ -295,7 +311,8 @@ EOF
     echo "error: the forge rejected $base at $head; nothing was forced" >&2
     return 1
   fi
-  if ! git -C "$proj" fetch --quiet --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"; then
+  if ! git -C "$proj" -c fetch.recurseSubmodules=no fetch --quiet --no-tags origin \
+    "+refs/heads/$base:refs/remotes/origin/$base"; then
     echo "error: cannot confirm $base after the push in $proj" >&2
     return 1
   fi

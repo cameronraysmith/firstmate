@@ -34,6 +34,7 @@
 #   (s) the landing writes only the base branch, never a followed tag
 #   (t) an uppercase-scheme origin on a foreign host is refused like a lowercase one
 #   (u) the landing's fetches write no tag refs into the project clone
+#   (v) a draft PR is refused by name, and the base branch is left untouched
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -141,10 +142,10 @@ make_ff_case() {
     "mode=no-mistakes"
 }
 
-# gh mock answering both the landing path's state/base/head lookup and
-# fm-pr-check.sh's pr_head lookup. Args: case_dir state base head
+# gh mock answering both the landing path's state/draft/base/head lookup and
+# fm-pr-check.sh's pr_head lookup. Args: case_dir state base head [draft]
 add_ff_gh_mocks() {
-  local case_dir=$1 state=$2 base=$3 head=$4
+  local case_dir=$1 state=$2 base=$3 head=$4 draft=${5:-false}
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -155,8 +156,8 @@ SH
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
-      *state,baseRefName,headRefOid*)
-        printf '%s\t%s\t%s\n' '$state' '$base' '$head' ; exit 0 ;;
+      *state,isDraft,baseRefName,headRefOid*)
+        printf '%s\t%s\t%s\t%s\n' '$state' '$draft' '$base' '$head' ; exit 0 ;;
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
     esac
     ;;
@@ -484,10 +485,37 @@ test_unserved_head_refuses_before_landing() {
   set -e
 
   expect_code 1 "$rc" "unserved-head: fm-pr-merge should refuse a head the forge does not serve"
+  assert_grep "serves $FF_HEAD, not the reported head 1234567890abcdef1234567890abcdef12345678; nothing was landed" "$case_dir/stderr" \
+    "unserved-head: the refusal did not come from the served-head comparison"
   after=$(origin_base_head "$case_dir")
   [ "$after" = "$before" ] \
     || fail "unserved-head: the base branch moved from $before to $after despite the refusal"
   pass "fm-pr-merge refuses when the reported PR head is not what the forge serves"
+}
+
+test_draft_pr_refused_before_landing() {
+  local case_dir rc before after
+  make_ff_case draft-pr
+  case_dir=$FF_CASE_DIR
+  before=$(origin_base_head "$case_dir")
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD" true
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "draft-pr: fm-pr-merge should refuse a draft PR"
+  assert_grep 'is a draft; mark it ready for review before landing' "$case_dir/stderr" \
+    "draft-pr: the refusal did not name the draft state"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "draft-pr: the base branch moved from $before to $after despite the refusal"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "draft-pr: a forge-side merge was invoked for a draft PR"
+  pass "fm-pr-merge refuses to land a draft PR and leaves the base branch untouched"
 }
 
 test_already_merged_pr_is_a_noop() {
@@ -748,6 +776,7 @@ test_default_lands_local_fast_forward
 test_local_ff_flag_lands_same_shape
 test_diverged_branch_refuses_without_forcing
 test_unserved_head_refuses_before_landing
+test_draft_pr_refused_before_landing
 test_already_merged_pr_is_a_noop
 test_forge_args_refused_for_local_landing
 test_foreign_host_origin_refuses
