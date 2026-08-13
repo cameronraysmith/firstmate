@@ -23,6 +23,14 @@
 #     authorization for that; passing one of those flags is how a caller states
 #     the captain chose it.
 #
+# The local fast-forward pushes from the task's own project clone, so that
+# clone has to be a clone of the PR's repository: its origin must carry the
+# PR's owner/repository path, and an http(s) origin must also name the PR's own
+# host. An scp-like origin such as git@alias:example/repo names an SSH config
+# alias instead of a host, and resolving one to its real host would mean
+# depending on ssh, so a same-path repository behind an alias is still accepted
+# on the path match alone.
+#
 # Neither landing checks that the PR's checks are green. AGENTS.md section 7's
 # "never merge a red PR" is enforced above this script, by whoever decides to
 # land, and this path verifies only that the PR is recorded and that the landing
@@ -56,6 +64,7 @@ if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL" \
   exit 2
 fi
 URL=$FM_PR_URL
+PR_HOST=$FM_PR_HOST
 PR_OWNER=$FM_PR_OWNER
 PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
@@ -117,12 +126,43 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   exit 1
 fi
 
+# The host an http(s) clone URL names, with any userinfo and port removed and
+# case folded the way a host name compares. Only these two schemes name their
+# host literally; ssh:// and scp-like forms may name an SSH config alias.
+origin_web_host() {
+  local url=${1-} rest authority hostpart
+  case $url in
+    https://?*|http://?*) ;;
+    *) return 1 ;;
+  esac
+  rest=${url#*://}
+  authority=${rest%%/*}
+  hostpart=${authority##*@}
+  case $hostpart in
+    '['*) hostpart=${hostpart%%']'*}']' ;;
+    *) hostpart=${hostpart%%:*} ;;
+  esac
+  [ -n "$hostpart" ] || return 1
+  printf '%s\n' "$hostpart" | tr '[:upper:]' '[:lower:]'
+}
+
+# The first meaningful line of a captured stderr, punctuated for a refusal
+# message, so a missing gh, an unauthenticated CLI, a rate limit, and a network
+# failure stay distinguishable on a gate that decides whether anything lands.
+gh_failure_detail() {
+  local file=${1-} line
+  [ -n "$file" ] && [ -s "$file" ] || return 0
+  line=$(tr -d '\000-\010\013-\037' < "$file" | grep -v '^[[:space:]]*$' | head -1)
+  [ -n "$line" ] || return 0
+  printf ': %s' "${line:0:400}"
+}
+
 # Land the PR's own head commit on its base branch, without rewriting it and
 # without touching the project clone's working tree. Refuses rather than forcing
 # whenever the fast-forward is not provably available, the forge's head moved
-# under us, or the base branch does not end up on the validated commit.
+# under us, or the base branch does not end up containing the validated commit.
 land_local_fast_forward() {
-  local proj remote view state base head recorded fetched landed
+  local proj remote origin_host err_file detail view state base head recorded fetched landed
 
   proj=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
   if [ -z "$proj" ] || [ ! -d "$proj" ] \
@@ -139,13 +179,27 @@ land_local_fast_forward() {
       return 1
       ;;
   esac
+  case "$remote" in
+    https://*|http://*)
+      origin_host=$(origin_web_host "$remote") || origin_host=
+      if [ "$origin_host" != "$PR_HOST" ]; then
+        echo "error: origin in $proj is on ${origin_host:-no readable host}, not $PR_HOST; refusing to land there" >&2
+        return 1
+      fi
+      ;;
+  esac
 
+  err_file=$( (umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX") 2>/dev/null ) || err_file=
   view=$(gh pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
     --json state,baseRefName,headRefOid \
-    -q '.state + "\t" + .baseRefName + "\t" + .headRefOid' 2>/dev/null) || {
-    echo "error: cannot read PR $URL state, base branch, and head commit" >&2
+    -q '.state + "\t" + .baseRefName + "\t" + .headRefOid' \
+    2>"${err_file:-/dev/null}") || {
+    detail=$(gh_failure_detail "$err_file")
+    [ -z "$err_file" ] || rm -f "$err_file"
+    echo "error: cannot read PR $URL state, base branch, and head commit$detail" >&2
     return 1
   }
+  [ -z "$err_file" ] || rm -f "$err_file"
   state=${view%%$'\t'*}
   [ "$state" != "$view" ] || { echo "error: cannot read PR $URL state, base branch, and head commit" >&2; return 1; }
   head=${view##*$'\t'}
@@ -207,12 +261,15 @@ land_local_fast_forward() {
     echo "error: cannot confirm $base after the push in $proj" >&2
     return 1
   fi
+  # Containment rather than equality: another commit landing on the base branch
+  # between our push and this fetch does not unmake the landing we just made.
   landed=$(git -C "$proj" rev-parse --verify --quiet "refs/remotes/origin/$base") || landed=
-  if [ "$landed" != "$head" ]; then
-    echo "error: $base is $landed, not the validated PR head $head" >&2
+  if [ -z "$landed" ] \
+    || ! git -C "$proj" merge-base --is-ancestor "$head" "refs/remotes/origin/$base"; then
+    echo "error: $base is ${landed:-unreadable}, which does not contain the validated PR head $head" >&2
     return 1
   fi
-  printf 'landed %s as a local fast-forward: %s is now %s\n' "$URL" "$base" "$head"
+  printf 'landed %s as a local fast-forward: %s is now %s\n' "$URL" "$base" "$landed"
 }
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"

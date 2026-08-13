@@ -27,6 +27,8 @@
 #   (l) a head the forge does not actually serve is refused before any push
 #   (m) an already-merged PR is a no-op success (idempotent re-run)
 #   (n) forge merge args are refused for a local fast-forward landing
+#   (o) an https origin whose owner/repo path matches on another host is refused
+#   (p) a failed PR lookup refuses and carries the lookup's own reason
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -526,6 +528,67 @@ test_forge_args_refused_for_local_landing() {
   pass "fm-pr-merge refuses forge-side merge arguments for a local fast-forward landing"
 }
 
+test_foreign_host_origin_refuses() {
+  local case_dir rc before after
+  make_ff_case foreign-host-origin
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+  before=$(origin_base_head "$case_dir")
+  # Same owner/repository path, different host: an internal mirror or another
+  # forge is not the repository the PR was validated against.
+  git -C "$case_dir/project" remote set-url origin https://mirror.invalid/example/repo.git
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "foreign-host-origin: fm-pr-merge should refuse a same-path clone on another host"
+  assert_grep 'is on mirror.invalid, not github.com' "$case_dir/stderr" \
+    "foreign-host-origin: the refusal did not name the origin's own host"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "foreign-host-origin: the base branch moved from $before to $after despite the refusal"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "foreign-host-origin: a forge-side merge was used to work around the refusal"
+  pass "fm-pr-merge refuses an https origin that matches the PR path on another host"
+}
+
+test_pr_lookup_failure_names_its_cause() {
+  local case_dir rc before after
+  make_ff_case pr-lookup-failure
+  case_dir=$FF_CASE_DIR
+  before=$(origin_base_head "$case_dir")
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+echo 'gh: authentication token expired; run gh auth login' >&2
+exit 4
+SH
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh" "$case_dir/fakebin/gh-axi"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "pr-lookup-failure: fm-pr-merge should refuse when the PR lookup fails"
+  assert_grep 'authentication token expired' "$case_dir/stderr" \
+    "pr-lookup-failure: the refusal did not carry the lookup's own reason"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "pr-lookup-failure: the base branch moved from $before to $after despite the refusal"
+  pass "fm-pr-merge names why the PR lookup failed instead of collapsing every cause"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -542,3 +605,5 @@ test_diverged_branch_refuses_without_forcing
 test_unserved_head_refuses_before_landing
 test_already_merged_pr_is_a_noop
 test_forge_args_refused_for_local_landing
+test_foreign_host_origin_refuses
+test_pr_lookup_failure_names_its_cause
