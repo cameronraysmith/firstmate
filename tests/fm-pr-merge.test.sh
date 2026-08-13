@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
-# Tests for bin/fm-pr-merge.sh: the one path firstmate uses to merge a task's
+# Tests for bin/fm-pr-merge.sh: the one path firstmate uses to land a task's
 # PR, which must always record pr= and any available pr_head= into the task's
-# meta before merging so fm-teardown.sh's landed-check has a PR reference to
+# meta before landing so fm-teardown.sh's landed-check has a PR reference to
 # verify against, even on repos with no PR CI where the usual "checks green"
 # fm-pr-check.sh trigger never fires.
 #
+# The default landing is a local fast-forward: the PR's own head commit is
+# pushed onto the base branch, so the base branch head stays byte-identical to
+# the commit CI validated and the branch's individual commits survive. A
+# forge-side merge is the explicit alternative, because every GitHub merge
+# method lands a commit CI never ran on.
+#
 # Matrix:
-#   (a) merge records pr= and pr_head= before merging, and merges
-#   (b) merge is refused when gh-axi pr merge itself fails (no silent success)
+#   (a) forge merge records pr= and pr_head= before merging, and merges
+#   (b) forge merge is refused when gh-axi pr merge itself fails (no silent success)
 #   (c) extra gh-axi pr merge args are forwarded after number and --repo
-#   (d) merge is refused before gh-axi when task meta is missing
-#   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
+#   (d) landing is refused before any forge call when task meta is missing
+#   (e) PR URL is parsed to number + --repo for a forge merge
 #   (f) malformed PR URL fails fast without calling gh-axi
-#   (g) explicit merge method is not overridden by the default --squash
+#   (g) an explicit merge method selects the forge merge, not the default
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) the default landing fast-forwards the base branch to the exact PR head,
+#       preserving every branch commit, and never calls gh-axi pr merge
+#   (j) explicit --local-ff lands the same shape as the default
+#   (k) a diverged PR branch is refused, and the base branch is left untouched
+#   (l) a head the forge does not actually serve is refused before any push
+#   (m) an already-merged PR is a no-op success (idempotent re-run)
+#   (n) forge merge args are refused for a local fast-forward landing
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -84,6 +97,82 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
+# Build a sandbox with a real git origin, a project clone, and a two-commit PR
+# branch published at refs/pull/9/head the way a forge serves it. The bare repo
+# sits at example/repo.git so the landing path's origin-matches-the-PR-repository
+# check runs for real. Sets FF_FIRST/FF_SECOND (the branch's own commits),
+# FF_HEAD (the PR head) alongside FF_CASE_DIR, rather than echoing, so the
+# caller sees every value from one call.
+make_ff_case() {
+  local name=$1 case_dir fakebin work
+  case_dir="$TMP_ROOT/$name"
+  fakebin="$case_dir/fakebin"
+  work="$case_dir/work"
+  FF_CASE_DIR=$case_dir
+  mkdir -p "$case_dir/state" "$case_dir/wt" "$fakebin" "$case_dir/example"
+  git init -q --bare "$case_dir/example/repo.git"
+  git -C "$case_dir/example/repo.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$case_dir/example/repo.git" "$work" 2>/dev/null
+  git -C "$work" commit -q --allow-empty -m "origin baseline"
+  git -C "$work" push -q origin HEAD:refs/heads/main
+  printf 'one\n' > "$work/one.txt"
+  git -C "$work" add -- one.txt
+  git -C "$work" commit -q -m "first branch commit"
+  FF_FIRST=$(git -C "$work" rev-parse HEAD)
+  printf 'two\n' > "$work/two.txt"
+  git -C "$work" add -- two.txt
+  git -C "$work" commit -q -m "second branch commit"
+  FF_SECOND=$(git -C "$work" rev-parse HEAD)
+  FF_HEAD=$FF_SECOND
+  git -C "$work" push -q origin HEAD:refs/pull/9/head
+  git clone -q "$case_dir/example/repo.git" "$case_dir/project"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" \
+    "worktree=$case_dir/wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes"
+}
+
+# gh mock answering both the landing path's state/base/head lookup and
+# fm-pr-check.sh's pr_head lookup. Args: case_dir state base head
+add_ff_gh_mocks() {
+  local case_dir=$1 state=$2 base=$3 head=$4
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *state,baseRefName,headRefOid*)
+        printf '%s\t%s\t%s\n' '$state' '$base' '$head' ; exit 0 ;;
+      *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# Advance origin's base branch past the PR head so the PR branch has diverged.
+diverge_base_branch() {
+  local case_dir=$1 tmp
+  tmp="$case_dir/_diverge"
+  git clone -q "$case_dir/example/repo.git" "$tmp"
+  git -C "$tmp" commit -q --allow-empty -m "landed elsewhere first"
+  git -C "$tmp" push -q origin HEAD:refs/heads/main
+  rm -rf "$tmp"
+}
+
+origin_base_head() {
+  git -C "$1/example/repo.git" rev-parse refs/heads/main
+}
+
 run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
@@ -107,7 +196,7 @@ test_records_pr_and_head_before_merging() {
   : > "$case_dir/gh-axi.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 -- --squash \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -118,7 +207,7 @@ test_records_pr_and_head_before_merging() {
   assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr_head= was not recorded"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
-    || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
+    || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and the requested --squash"
   pass "fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge"
 }
 
@@ -130,7 +219,7 @@ test_merge_failure_propagates_after_recording() {
   : > "$case_dir/gh-axi.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/13 \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/13 -- --squash \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -268,7 +357,7 @@ test_explicit_merge_method_not_overridden() {
 
   grep -qxF 'pr merge 22 --repo example/repo --merge' "$case_dir/gh-axi.log" \
     || fail "explicit-merge-method: caller --merge was not forwarded without an extra default --squash"
-  pass "fm-pr-merge does not add default --squash when the caller passes an explicit merge method"
+  pass "fm-pr-merge forwards an explicit merge method to the forge unchanged"
 }
 
 test_method_equals_merge_method_not_overridden() {
@@ -293,12 +382,148 @@ test_parses_pr_url_for_gh_axi() {
   add_gh_mocks "$case_dir" 6666666666666666666666666666666666666666
   : > "$case_dir/gh-axi.log"
 
-  run_pr_merge "$case_dir" task-x1 https://github.com/my-org/my-repo/pull/126 \
+  run_pr_merge "$case_dir" task-x1 https://github.com/my-org/my-repo/pull/126 -- --squash \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "url-parsing: fm-pr-merge failed"
 
   grep -qxF 'pr merge 126 --repo my-org/my-repo --squash' "$case_dir/gh-axi.log" \
-    || fail "url-parsing: gh-axi pr merge was not invoked as number + --repo + default --squash"
+    || fail "url-parsing: gh-axi pr merge was not invoked as number + --repo + the requested --squash"
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
+}
+
+test_default_lands_local_fast_forward() {
+  local case_dir after
+  make_ff_case default-local-ff
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "default-local-ff: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$FF_HEAD" ] \
+    || fail "default-local-ff: base branch is $after, not the validated PR head $FF_HEAD"
+  git -C "$case_dir/example/repo.git" merge-base --is-ancestor "$FF_FIRST" refs/heads/main \
+    || fail "default-local-ff: the branch's first commit did not survive the landing"
+  git -C "$case_dir/example/repo.git" merge-base --is-ancestor "$FF_SECOND" refs/heads/main \
+    || fail "default-local-ff: the branch's second commit did not survive the landing"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "default-local-ff: a forge-side merge was invoked for the default landing"
+  assert_grep 'pr=https://github.com/example/repo/pull/9' "$case_dir/state/task-x1.meta" \
+    "default-local-ff: pr= was not recorded"
+  assert_grep "pr_head=$FF_HEAD" "$case_dir/state/task-x1.meta" \
+    "default-local-ff: pr_head= was not recorded"
+  pass "fm-pr-merge lands the exact validated PR head on the base branch by default, keeping every branch commit"
+}
+
+test_local_ff_flag_lands_same_shape() {
+  local case_dir after
+  make_ff_case explicit-local-ff
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 -- --local-ff \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "explicit-local-ff: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$FF_HEAD" ] \
+    || fail "explicit-local-ff: base branch is $after, not the validated PR head $FF_HEAD"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "explicit-local-ff: a forge-side merge was invoked for an explicit --local-ff landing"
+  pass "fm-pr-merge lands the same shape when --local-ff is explicit"
+}
+
+test_diverged_branch_refuses_without_forcing() {
+  local case_dir rc before after
+  make_ff_case diverged-branch
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+  diverge_base_branch "$case_dir"
+  before=$(origin_base_head "$case_dir")
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "diverged-branch: fm-pr-merge should refuse a diverged PR branch"
+  assert_grep 'REFUSED' "$case_dir/stderr" \
+    "diverged-branch: refusal did not name the diverged branch"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "diverged-branch: the base branch moved from $before to $after despite the refusal"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "diverged-branch: a forge-side merge was used to work around the refusal"
+  pass "fm-pr-merge refuses a diverged PR branch and leaves the base branch untouched"
+}
+
+test_unserved_head_refuses_before_landing() {
+  local case_dir rc before after
+  make_ff_case unserved-head
+  case_dir=$FF_CASE_DIR
+  before=$(origin_base_head "$case_dir")
+  add_ff_gh_mocks "$case_dir" OPEN main 1234567890abcdef1234567890abcdef12345678
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "unserved-head: fm-pr-merge should refuse a head the forge does not serve"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "unserved-head: the base branch moved from $before to $after despite the refusal"
+  pass "fm-pr-merge refuses when the reported PR head is not what the forge serves"
+}
+
+test_already_merged_pr_is_a_noop() {
+  local case_dir before after
+  make_ff_case already-merged
+  case_dir=$FF_CASE_DIR
+  before=$(origin_base_head "$case_dir")
+  add_ff_gh_mocks "$case_dir" MERGED main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "already-merged: fm-pr-merge should succeed on an already-merged PR"
+
+  assert_grep 'already merged' "$case_dir/stdout" \
+    "already-merged: the no-op landing was not reported"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "already-merged: the base branch moved from $before to $after"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "already-merged: a forge-side merge was invoked for an already-merged PR"
+  pass "fm-pr-merge re-run on an already-merged PR is a no-op success"
+}
+
+test_forge_args_refused_for_local_landing() {
+  local case_dir rc
+  make_ff_case forge-args-local-landing
+  case_dir=$FF_CASE_DIR
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 -- --delete-branch \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "forge-args-local-landing: fm-pr-merge should refuse forge args for a local landing"
+  assert_grep 'apply only to a forge-side merge' "$case_dir/stderr" \
+    "forge-args-local-landing: refusal did not name the forge-only arguments"
+  assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" \
+    "forge-args-local-landing: PR state was recorded despite the refusal"
+  pass "fm-pr-merge refuses forge-side merge arguments for a local fast-forward landing"
 }
 
 test_records_pr_and_head_before_merging
@@ -311,3 +536,9 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_default_lands_local_fast_forward
+test_local_ff_flag_lands_same_shape
+test_diverged_branch_refuses_without_forcing
+test_unserved_head_refuses_before_landing
+test_already_merged_pr_is_a_noop
+test_forge_args_refused_for_local_landing
