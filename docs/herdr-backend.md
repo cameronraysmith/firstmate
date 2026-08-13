@@ -202,7 +202,9 @@ A malformed or missing title or token, duplicate token, zero or multiple journal
 
 Discovery reads its candidate sessions back from the records that placed the projections - a version 2 journal names its own session, and a task's endpoint metadata names its own - and never from the ambient environment, so a home with only version 1 journals and no task metadata sweeps nothing at all.
 A leftover from before this cleanup existed therefore has no journal and cannot be attributed to any home by inspection alone, since another home's live task can present exactly the same restored-shell shape while it waits for that home's own restart reclaim.
-Restoring the version 2 journal that its teardown deleted is what makes such a leftover reclaimable: name the task in `task_id` and `task_label`, copy `projection_id` and `workspace_label` from the workspace's own title, and read `session`, `workspace_id`, `tab_id`, `pane_id`, and the parent fields from `herdr workspace list`, `tab list`, and `pane list`, with `home` set to this home's physical path.
+Restoring the version 2 journal that its teardown deleted is what makes such a leftover reclaimable.
+Write it as `state/<task-id>.herdr-presentation` in this home, holding exactly the same twelve `key=value` lines a live binding writes - `version=2` among them and every other key present even where its value is empty - because a journal of any other line count is rejected outright.
+Name the task in `task_id` and as `fm-<task-id>` in `task_label`, copy `projection_id` and `workspace_label` from the workspace's own title, which must be the title that `task_id` and `projection_id` derive, and read `session`, `workspace_id`, `tab_id`, `pane_id`, and the parent fields from `herdr workspace list`, `tab list`, and `pane list`, with `home` set to this home's physical path.
 Leaving `tab_id` and `pane_id` empty is permitted and binds the workspace alone; filling exactly one of them is not.
 Writing that file is the deliberate act of ownership automation must not infer; every field is then revalidated against the live session, and any mismatch refuses rather than closing anything.
 
