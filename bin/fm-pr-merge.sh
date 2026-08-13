@@ -23,6 +23,11 @@
 #     authorization for that; passing one of those flags is how a caller states
 #     the captain chose it.
 #
+# Neither landing checks that the PR's checks are green. AGENTS.md section 7's
+# "never merge a red PR" is enforced above this script, by whoever decides to
+# land, and this path verifies only that the PR is recorded and that the landing
+# it performs is the one that was asked for.
+#
 # Extra args are accepted only for a forge-side merge, and must not include
 # --repo or -R because the repository comes only from the URL.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- --local-ff|<extra gh-axi pr merge args>]
