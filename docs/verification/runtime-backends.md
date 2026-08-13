@@ -437,7 +437,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane childless idle shell was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
 
-The projection leftover-workspace reclaim ran on 2026-08-13 against Herdr 0.8.0 protocol 19 on macOS arm64:
+The projection leftover-workspace reclaim ran on 2026-08-12 against Herdr 0.8.0 protocol 19 on macOS arm64:
 
 ```sh
 bin/fm-test-run.sh tests/fm-herdr-session-cleanup-e2e.test.sh
