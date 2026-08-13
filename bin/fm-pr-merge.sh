@@ -26,7 +26,8 @@
 # The local fast-forward pushes from the task's own project clone, so that
 # clone has to be a clone of the PR's repository: origin's fetch URL and every
 # URL the push would actually go through must carry the PR's owner/repository
-# path, and an http(s) URL among them must also name the PR's own host. An
+# path, matched case-insensitively the way the forge compares owner, repository
+# and host names, and an http(s) URL among them must also name that host. An
 # scp-like URL such as git@alias:example/repo names an SSH config alias instead
 # of a host, and resolving one to its real host would mean depending on ssh, so
 # a same-path repository behind an alias is still accepted on the path match
@@ -127,6 +128,10 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   exit 1
 fi
 
+fold_case() {
+  printf '%s\n' "${1-}" | tr '[:upper:]' '[:lower:]'
+}
+
 # The host an http(s) clone URL names, with any userinfo and port removed and
 # case folded the way a host name compares. Only these two schemes name their
 # host literally; ssh:// and scp-like forms may name an SSH config alias.
@@ -144,16 +149,20 @@ origin_web_host() {
     *) hostpart=${hostpart%%:*} ;;
   esac
   [ -n "$hostpart" ] || return 1
-  printf '%s\n' "$hostpart" | tr '[:upper:]' '[:lower:]'
+  fold_case "$hostpart"
 }
 
 # Refuse a URL that does not address the PR's own repository: it must carry the
 # PR's owner/repository path, and an http(s) URL must also name the PR's host.
+# GitHub compares owners and repository names case-insensitively, as it does
+# hosts, so the path match runs over a case-folded copy of both sides.
 url_addresses_pr_repo() { # <label> <project dir> <url>
-  local label=$1 dir=$2 url=$3 host
-  case "$url" in
-    *"/$PR_OWNER/$PR_REPO"|*"/$PR_OWNER/$PR_REPO".git \
-      |*":$PR_OWNER/$PR_REPO"|*":$PR_OWNER/$PR_REPO".git) ;;
+  local label=$1 dir=$2 url=$3 host folded target
+  folded=$(fold_case "$url")
+  target=$(fold_case "$PR_OWNER/$PR_REPO")
+  case "$folded" in
+    *"/$target"|*"/$target".git \
+      |*":$target"|*":$target".git) ;;
     *)
       echo "error: $label in $dir is not $PR_OWNER/$PR_REPO; refusing to land there" >&2
       return 1

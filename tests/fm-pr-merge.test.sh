@@ -30,6 +30,7 @@
 #   (o) an https origin whose owner/repo path matches on another host is refused
 #   (p) a failed PR lookup refuses and carries the lookup's own reason
 #   (q) a push URL pointing at another repository is refused before any push
+#   (r) an origin whose owner/repository casing differs from the PR URL lands
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -625,6 +626,32 @@ test_divergent_push_url_refuses() {
   pass "fm-pr-merge refuses when origin's push URL addresses another repository"
 }
 
+test_non_canonical_case_origin_lands() {
+  local case_dir mirror after
+  make_ff_case mixed-case-origin
+  case_dir=$FF_CASE_DIR
+  mirror="$case_dir/mixedcase/Example/Repo.git"
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+  # The forge compares owner and repository names case-insensitively, so a
+  # clone addressing Example/Repo is a clone of the PR's own repository.
+  git clone -q --mirror "$case_dir/example/repo.git" "$mirror"
+  git -C "$case_dir/project" remote set-url origin "$mirror"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "mixed-case-origin: fm-pr-merge failed: $(cat "$case_dir/stderr")"
+
+  after=$(git -C "$mirror" rev-parse refs/heads/main)
+  [ "$after" = "$FF_HEAD" ] \
+    || fail "mixed-case-origin: base branch is $after, not the validated PR head $FF_HEAD"
+  git -C "$mirror" merge-base --is-ancestor "$FF_FIRST" refs/heads/main \
+    || fail "mixed-case-origin: the branch's first commit did not survive the landing"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "mixed-case-origin: a forge-side merge was invoked for a case-variant origin"
+  pass "fm-pr-merge lands through an origin whose owner/repository casing differs from the PR URL"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -644,3 +671,4 @@ test_forge_args_refused_for_local_landing
 test_foreign_host_origin_refuses
 test_pr_lookup_failure_names_its_cause
 test_divergent_push_url_refuses
+test_non_canonical_case_origin_lands
