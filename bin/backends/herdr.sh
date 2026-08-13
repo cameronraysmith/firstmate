@@ -1072,12 +1072,13 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 # where every removal primitive preserves focus and the proof stops being
 # load-bearing. That floor has ONE owner, the spawn-time gate
 # fm_backend_herdr_presentation_enabled, so every new projection is either on a
-# supported release or is a home's deliberate below-floor opt-in. Session-start
-# cleanup deliberately retires a leftover projection husk on every release,
-# including below the floor. The accepted exposure is limited to the rare
-# downgrade path where a home projected on Herdr 0.8.0 or newer and then moved
-# to a 0.7.x release, and occurs once per leftover workspace at session start
-# rather than once per task teardown; the exact prior-tab restore bounds it.
+# supported release or is a home's deliberate below-floor opt-in. Teardown and
+# session-start cleanup deliberately retire a leftover projection husk on every
+# release, including below the floor. The accepted exposure is limited to the
+# rare downgrade path where a home projected on Herdr 0.8.0 or newer and then
+# moved to a 0.7.x release, and occurs once per leftover workspace, at that
+# task's teardown or at a later session start, rather than once per torn-down
+# task; the exact prior-tab restore bounds it.
 # Refusing that close below the floor would leak workspaces that nothing else
 # removes and block teardown because fm-teardown treats an unconfirmed close as
 # a hard stop. That cleanup is therefore authorized containment rather than a
@@ -1319,8 +1320,9 @@ fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
 # samples), so the proof retries strict single samples for a bounded settle
 # window and succeeds on the first fully clean one; a genuinely busy pane
 # fails every sample and still refuses.
-# This is the single owner of the idle-shell proof; the session-start
-# projection cleanup and every pane-death close path both rely on it.
+# This is the single owner of the idle-shell proof; leftover retirement, the
+# session-start projection cleanup, and every pane-death close path all rely
+# on it.
 fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
   local attempt=0 max_attempts=${FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS:-10}
   while :; do
@@ -2829,7 +2831,8 @@ fm_backend_herdr_projection_retire_leftover() {  # <session> <workspace-id> <exp
 # session, and workspace bindings survive, and the session-start pass binds the
 # tab and pane from the live workspace under every guard it already applies.
 # The only outcomes are an exact endpoint, no endpoint, and an untouched
-# journal whose identity did not match this workspace at all.
+# journal - one whose identity did not match this workspace at all, or one
+# whose atomic rewrite failed; every caller reports the refusal.
 fm_backend_herdr_projection_rebind_leftover() {  # <session> <workspace-id> <journal> <task-id> <expected-label> <token>
   local session=$1 workspace=$2 journal=$3 id=$4 expected_label=$5 token=$6 endpoint tab pane old_tab old_pane
   fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1

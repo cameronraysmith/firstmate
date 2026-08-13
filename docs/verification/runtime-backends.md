@@ -437,6 +437,31 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane childless idle shell was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
 
+The projection leftover-workspace reclaim ran on 2026-08-13 against Herdr 0.8.0 protocol 19 on macOS arm64:
+
+```sh
+bin/fm-test-run.sh tests/fm-herdr-session-cleanup-e2e.test.sh
+```
+
+Observed leftover-reclaim guarantees, five of that run's eight checks quoted with its closing version evidence:
+
+```text
+ok - a workspace outliving its recorded task pane is reclaimed, not left to accumulate
+ok - retiring an already absent leftover workspace succeeds without touching anything
+ok - a leftover whose pane is not a provably idle childless shell is left alone
+ok - a leftover holding more than one tab is left alone
+ok - a workspace whose label is not this projection's is never a candidate
+evidence: herdr=0.8.0 protocol=19 default-session-tripwire=armed
+```
+
+On the old path a projected workspace that outlived its recorded task pane survived teardown and every subsequent restart, accumulating one per torn-down task; on the current path that workspace is retired and only the unrelated captain-anchor workspace remains.
+A pre-existing orphan whose journal is retained is reclaimed by the locked session-start pass.
+Each refusal above removed a guard: a pane made busy with `sleep 600`, then a second tab added to that same still-busy workspace, and finally the leftover's label and token aimed at the captain's own anchor workspace, which is no leftover at all.
+Each refusal left its workspace standing, the busy-pane and anchor refusals left their panes standing too, and the exact workspace and tab focus was unchanged across all three.
+The leftover checks drove the retirement call and its guards directly rather than through a task teardown.
+The run passed all eight checks with no gate skip; the three not quoted here re-ran the restored-shell shape, the exact stale-pane close, and the idempotent repeat that the 2026-07-24 entry above records.
+The two regression assertions that bind this guarantee fail against the old path and pass against the current one: `surviving workspace retired the journal that binds it to this home` in `tests/fm-herdr-session-cleanup.test.sh`, and `herdr-projected-leftover: the surviving workspace was not reported` in `tests/fm-teardown.test.sh`.
+
 ### Workspace-removal focus safety
 
 The focus-flash regression ran on 2026-08-05 against both Herdr 0.7.5 protocol 17 and Herdr 0.8.0 protocol 19 on macOS aarch64, with the 0.7.5 run using the pinned upstream release binary first on `PATH`:

@@ -165,7 +165,7 @@ Removal therefore still comes from Herdr's own emptying path; no cleanup path an
 The journal is retired only once both the task pane and its workspace are confirmed gone.
 A leftover that cannot be proved, or whose close is refused or unconfirmed, keeps its journal - rebound to the endpoint Herdr actually left behind - so the locked session-start pass can bind and retire it later.
 The endpoint is unreadable in exactly the topologies that refuse retirement, so when no exact endpoint can be read the retained journal's tab and pane are cleared rather than left naming the task pane that is already gone: the home, session, and workspace bindings survive, and the session-start pass establishes the tab and pane from the live workspace instead, under every guard it already applies.
-A retained journal therefore either names one exact endpoint or names none, and never names a pane that is provably gone, because a stale endpoint would refuse every later session start and strand the workspace permanently.
+A rebound journal therefore either names one exact endpoint or names none, and never names a pane that is provably gone, because a stale endpoint would refuse every later session start and strand the workspace permanently.
 Retiring a journal beside a surviving workspace would destroy the only record tying that workspace to this home, which is precisely how a torn-down task used to strand one permanently, one per teardown, in the captain's live session.
 
 Recovery is deliberately conservative and presentation-only.
