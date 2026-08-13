@@ -24,12 +24,13 @@
 #     the captain chose it.
 #
 # The local fast-forward pushes from the task's own project clone, so that
-# clone has to be a clone of the PR's repository: its origin must carry the
-# PR's owner/repository path, and an http(s) origin must also name the PR's own
-# host. An scp-like origin such as git@alias:example/repo names an SSH config
-# alias instead of a host, and resolving one to its real host would mean
-# depending on ssh, so a same-path repository behind an alias is still accepted
-# on the path match alone.
+# clone has to be a clone of the PR's repository: origin's fetch URL and every
+# URL the push would actually go through must carry the PR's owner/repository
+# path, and an http(s) URL among them must also name the PR's own host. An
+# scp-like URL such as git@alias:example/repo names an SSH config alias instead
+# of a host, and resolving one to its real host would mean depending on ssh, so
+# a same-path repository behind an alias is still accepted on the path match
+# alone.
 #
 # Neither landing checks that the PR's checks are green. AGENTS.md section 7's
 # "never merge a red PR" is enforced above this script, by whoever decides to
@@ -146,6 +147,29 @@ origin_web_host() {
   printf '%s\n' "$hostpart" | tr '[:upper:]' '[:lower:]'
 }
 
+# Refuse a URL that does not address the PR's own repository: it must carry the
+# PR's owner/repository path, and an http(s) URL must also name the PR's host.
+url_addresses_pr_repo() { # <label> <project dir> <url>
+  local label=$1 dir=$2 url=$3 host
+  case "$url" in
+    *"/$PR_OWNER/$PR_REPO"|*"/$PR_OWNER/$PR_REPO".git \
+      |*":$PR_OWNER/$PR_REPO"|*":$PR_OWNER/$PR_REPO".git) ;;
+    *)
+      echo "error: $label in $dir is not $PR_OWNER/$PR_REPO; refusing to land there" >&2
+      return 1
+      ;;
+  esac
+  case "$url" in
+    https://*|http://*)
+      host=$(origin_web_host "$url") || host=
+      if [ "$host" != "$PR_HOST" ]; then
+        echo "error: $label in $dir is on ${host:-no readable host}, not $PR_HOST; refusing to land there" >&2
+        return 1
+      fi
+      ;;
+  esac
+}
+
 # The first meaningful line of a captured stderr, punctuated for a refusal
 # message, so a missing gh, an unauthenticated CLI, a rate limit, and a network
 # failure stay distinguishable on a gate that decides whether anything lands.
@@ -162,7 +186,7 @@ gh_failure_detail() {
 # whenever the fast-forward is not provably available, the forge's head moved
 # under us, or the base branch does not end up containing the validated commit.
 land_local_fast_forward() {
-  local proj remote origin_host err_file detail view state base head recorded fetched landed
+  local proj remote push_urls push_url err_file detail view state base head recorded fetched landed
 
   proj=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
   if [ -z "$proj" ] || [ ! -d "$proj" ] \
@@ -171,23 +195,22 @@ land_local_fast_forward() {
     return 1
   fi
   remote=$(git -C "$proj" remote get-url origin 2>/dev/null) || remote=
-  case "$remote" in
-    *"/$PR_OWNER/$PR_REPO"|*"/$PR_OWNER/$PR_REPO".git \
-      |*":$PR_OWNER/$PR_REPO"|*":$PR_OWNER/$PR_REPO".git) ;;
-    *)
-      echo "error: origin in $proj is not $PR_OWNER/$PR_REPO; refusing to land there" >&2
-      return 1
-      ;;
-  esac
-  case "$remote" in
-    https://*|http://*)
-      origin_host=$(origin_web_host "$remote") || origin_host=
-      if [ "$origin_host" != "$PR_HOST" ]; then
-        echo "error: origin in $proj is on ${origin_host:-no readable host}, not $PR_HOST; refusing to land there" >&2
-        return 1
-      fi
-      ;;
-  esac
+  url_addresses_pr_repo origin "$proj" "$remote" || return 1
+  # git push follows remote.origin.pushurl when one is configured, and the
+  # fetch URL just checked says nothing about it, so every URL the push would
+  # reach has to satisfy the same rule. --push --all falls back to the fetch
+  # URL when no pushurl is set, which leaves the ordinary clone unchanged.
+  push_urls=$(git -C "$proj" remote get-url --push --all origin 2>/dev/null) || push_urls=
+  if [ -z "$push_urls" ]; then
+    echo "error: origin in $proj has no push URL to land the PR through" >&2
+    return 1
+  fi
+  while IFS= read -r push_url; do
+    [ -n "$push_url" ] || continue
+    url_addresses_pr_repo "the push URL of origin" "$proj" "$push_url" || return 1
+  done <<EOF
+$push_urls
+EOF
 
   err_file=$( (umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX") 2>/dev/null ) || err_file=
   view=$(gh pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \

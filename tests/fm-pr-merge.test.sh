@@ -29,6 +29,7 @@
 #   (n) forge merge args are refused for a local fast-forward landing
 #   (o) an https origin whose owner/repo path matches on another host is refused
 #   (p) a failed PR lookup refuses and carries the lookup's own reason
+#   (q) a push URL pointing at another repository is refused before any push
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -589,6 +590,41 @@ SH
   pass "fm-pr-merge names why the PR lookup failed instead of collapsing every cause"
 }
 
+test_divergent_push_url_refuses() {
+  local case_dir rc before after elsewhere
+  make_ff_case divergent-push-url
+  case_dir=$FF_CASE_DIR
+  elsewhere="$case_dir/elsewhere/repo.git"
+  add_ff_gh_mocks "$case_dir" OPEN main "$FF_HEAD"
+  : > "$case_dir/gh-axi.log"
+  before=$(origin_base_head "$case_dir")
+  # Fetches from the PR's own repository and pushes somewhere else: git push
+  # follows remote.origin.pushurl, which the fetch URL says nothing about.
+  git init -q --bare "$elsewhere"
+  git -C "$elsewhere" symbolic-ref HEAD refs/heads/main
+  git -C "$case_dir/project" config remote.origin.pushurl "$elsewhere"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "divergent-push-url: fm-pr-merge should refuse a push URL for another repository"
+  assert_grep 'the push URL of origin' "$case_dir/stderr" \
+    "divergent-push-url: the refusal did not name the push URL"
+  assert_grep 'is not example/repo; refusing to land there' "$case_dir/stderr" \
+    "divergent-push-url: the refusal did not name the repository it expected"
+  after=$(origin_base_head "$case_dir")
+  [ "$after" = "$before" ] \
+    || fail "divergent-push-url: the base branch moved from $before to $after despite the refusal"
+  [ -z "$(git -C "$elsewhere" rev-parse --verify --quiet refs/heads/main || true)" ] \
+    || fail "divergent-push-url: the validated PR head was landed in the unvalidated repository"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "divergent-push-url: a forge-side merge was used to work around the refusal"
+  pass "fm-pr-merge refuses when origin's push URL addresses another repository"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -607,3 +643,4 @@ test_already_merged_pr_is_a_noop
 test_forge_args_refused_for_local_landing
 test_foreign_host_origin_refuses
 test_pr_lookup_failure_names_its_cause
+test_divergent_push_url_refuses
