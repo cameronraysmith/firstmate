@@ -285,7 +285,9 @@ fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
   fm_backend_herdr_projection_close_pane_focus_preserving \
     "$session" "$pane" no-agent || close_status=$?
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
-  workspace_state=$(fm_backend_herdr_workspace_presence_state "$session" "$workspace")
+  workspace_state=
+  [ "$state" != dead ] \
+    || workspace_state=$(fm_backend_herdr_workspace_presence_state "$session" "$workspace")
   if [ "$state" = dead ] && [ "$workspace_state" != dead ]; then
     # Retiring the journal here would destroy the only record that binds this
     # home to the surviving workspace, which is exactly how a torn-down task

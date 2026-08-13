@@ -164,6 +164,8 @@ Cleanup retires the leftover while it still holds the session lock and still has
 Removal therefore still comes from Herdr's own emptying path; no cleanup path anywhere calls `workspace close`.
 The journal is retired only once both the task pane and its workspace are confirmed gone.
 A leftover that cannot be proved, or whose close is refused or unconfirmed, keeps its journal - rebound to the endpoint Herdr actually left behind - so the locked session-start pass can bind and retire it later.
+The endpoint is unreadable in exactly the topologies that refuse retirement, so when no exact endpoint can be read the retained journal's tab and pane are cleared rather than left naming the task pane that is already gone: the home, session, and workspace bindings survive, and the session-start pass establishes the tab and pane from the live workspace instead, under every guard it already applies.
+A retained journal therefore either names one exact endpoint or names none, and never names a pane that is provably gone, because a stale endpoint would refuse every later session start and strand the workspace permanently.
 Retiring a journal beside a surviving workspace would destroy the only record tying that workspace to this home, which is precisely how a torn-down task used to strand one permanently, one per teardown, in the captain's live session.
 
 Recovery is deliberately conservative and presentation-only.
@@ -179,7 +181,8 @@ A live or unknown recorded or token-matched endpoint refuses duplicate launch.
 Locked session start has one narrower cleanup for a restored projected child that is no longer current task state.
 It runs only when the current home has at least one ordinary presentation journal and considers only that home; a primary never recursively sweeps a secondmate home.
 Discovery starts from the exact current `└ <concise-task> · p:<22-character-token>` grammar, but a title or token alone is never mutation authority.
-The title must contain exactly one token occurrence across the named-session snapshot and must equal the title derived from exactly one valid presentation journal in this home's own `state/`; a version 2 journal additionally must bind this exact physical home, named session, workspace, tab, and pane.
+The title must contain exactly one token occurrence across the named-session snapshot and must equal the title derived from exactly one valid presentation journal in this home's own `state/`; a version 2 journal additionally must bind this exact physical home, named session, and workspace, and must bind this exact tab and pane whenever it records an endpoint at all.
+A version 2 journal whose endpoint was cleared by a refused retirement binds its workspace only, and its tab and pane are established from the live workspace exactly as a version 1 journal's are; the endpoint is the one part of a version 2 binding allowed to be absent, and a half-recorded endpoint is corruption that refuses.
 The task's ordinary metadata must be absent, and the candidate must have exactly one tab and exactly one pane.
 Before cleanup, Firstmate acquires the existing task-id spawn lock and then the shared named-session presentation lock.
 Inside both locks it takes one exact snapshot, requires one unambiguous non-target focus and the exact title, token, tab, and pane shape, positively confirms no registered agent, and reads Herdr's process information for the exact named-session pane.
@@ -193,13 +196,14 @@ Any foreground command, child process, active shell job, unknown shell, unreadab
 Firstmate immediately revalidates the same journal, metadata absence, workspace title and token uniqueness, one-tab and one-pane topology, exact pane relationship, absent agent, process proof, and non-target focus before calling the existing exact-pane focus-preserving close helper.
 It closes only that pane and never calls `workspace close`; emptying the workspace is what removes it.
 The matching journal is retired only after both the exact pane and its workspace are positively confirmed gone; a confirmed close may retire it even when focus restoration reported an error afterwards.
-An unconfirmed close retains the journal, and so does a confirmed close whose workspace survived anyway - that journal is rebound to the endpoint Herdr left behind, so the next locked session start binds the same workspace by its exact recorded tab and pane rather than by a pane that no longer exists.
+An unconfirmed close retains the journal, and so does a confirmed close whose workspace survived anyway - that journal is rebound to the endpoint Herdr left behind, so the next locked session start binds the same workspace by its exact recorded tab and pane rather than by a pane that no longer exists, and when that endpoint cannot be read exactly the recorded one is cleared so the next start binds the workspace's live shape rather than refusing forever.
 A second run finds no matching title or journal and is a no-op.
 A malformed or missing title or token, duplicate token, zero or multiple journal matches, cross-home version 2 binding, current metadata, registered or unknown agent, extra tab or pane, active target, busy lock, changed revalidation, unreadable check, or any error preserves the candidate and lets session startup continue with at most a concise warning.
 
 Discovery reads its candidate sessions back from the records that placed the projections - a version 2 journal names its own session, and a task's endpoint metadata names its own - and never from the ambient environment, so a home with only version 1 journals and no task metadata sweeps nothing at all.
 A leftover from before this cleanup existed therefore has no journal and cannot be attributed to any home by inspection alone, since another home's live task can present exactly the same restored-shell shape while it waits for that home's own restart reclaim.
 Restoring the version 2 journal that its teardown deleted is what makes such a leftover reclaimable: name the task in `task_id` and `task_label`, copy `projection_id` and `workspace_label` from the workspace's own title, and read `session`, `workspace_id`, `tab_id`, `pane_id`, and the parent fields from `herdr workspace list`, `tab list`, and `pane list`, with `home` set to this home's physical path.
+Leaving `tab_id` and `pane_id` empty is permitted and binds the workspace alone; filling exactly one of them is not.
 Writing that file is the deliberate act of ownership automation must not infer; every field is then revalidated against the live session, and any mismatch refuses rather than closing anything.
 
 Operational compromises:
