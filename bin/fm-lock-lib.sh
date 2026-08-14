@@ -20,13 +20,18 @@ fm_lock_log() {
   echo "${FM_LOCK_LOG_PREFIX:-fm-lock}: $*" >&2
 }
 
-# Portable mtime in epoch seconds. Kept self-contained so this leaf lib drags in
-# no wake-queue machinery when a caller only needs the staleness proof.
+# Portable mtime in epoch seconds. The stat-dialect probe is the only dependency
+# this leaf lib takes, so a caller that needs the staleness proof still drags in
+# no wake-queue machinery.
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-stat-lib.sh"
+
 fm_lock_path_mtime() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %m "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %Y "$1" 2>/dev/null
+  else
+    stat -f %m "$1" 2>/dev/null
   fi
 }
 
