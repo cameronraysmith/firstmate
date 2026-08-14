@@ -14,13 +14,20 @@
 # the named-session snapshot, exactly one matching home-local journal, one tab,
 # one pane, absent task metadata, no registered agent, and a process proof that
 # the pane contains only one idle recognized shell with no child process. A
-# version 2 journal must also bind the exact workspace, tab, and pane.
+# version 2 journal must also bind the exact workspace, and the exact tab and
+# pane whenever it records an endpoint at all; one whose endpoint a refused
+# retirement cleared binds its workspace alone.
 # Topology is first checked from one locked API snapshot, then every mutation
 # prerequisite is immediately rechecked before the existing exact-pane
 # focus-preserving close helper is called.
-# The script never closes a workspace. It removes only the matching journal,
-# and only after the exact pane is confirmed gone. Every error warns and returns
-# success so session startup continues conservatively.
+# The script closes only that exact pane and never calls `workspace close`; the
+# emptied workspace is removed by Herdr's own pane-death path. It removes the
+# matching journal only after BOTH the exact pane and that workspace are
+# confirmed gone, because a journal retired beside a surviving workspace would
+# leave nothing able to bind that workspace to this home ever again. A pane
+# closed beside a surviving workspace instead keeps the journal, rebound to
+# whatever Herdr left behind, for a later session start. Every error warns and
+# returns success so session startup continues conservatively.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -191,7 +198,7 @@ fm_herdr_cleanup_snapshot_candidate() { # <snapshot> <workspace> <title> <token>
 fm_herdr_cleanup_revalidate() { # <session> <workspace> <tab> <pane> <title> <token> <home-real> <journal> <task-id> <version> <bound-workspace> <bound-tab> <bound-pane>
   local session=$1 workspace=$2 tab=$3 pane=$4 title=$5 token=$6 home_real=$7
   local journal=$8 id=$9 version=${10} bound_workspace=${11} bound_tab=${12} bound_pane=${13}
-  local workspaces workspace_info tabs panes focus
+  local endpoint focus
   [ ! -e "$STATE/$id.meta" ] && [ ! -L "$STATE/$id.meta" ] || return 1
   fm_herdr_cleanup_unique_match "$title" "$session" "$home_real" || return 1
   [ "$FM_HERDR_CLEANUP_JOURNAL" = "$journal" ] \
@@ -202,34 +209,9 @@ fm_herdr_cleanup_revalidate() { # <session> <workspace> <tab> <pane> <title> <to
     && [ "$FM_HERDR_CLEANUP_BOUND_TAB" = "$bound_tab" ] \
     && [ "$FM_HERDR_CLEANUP_BOUND_PANE" = "$bound_pane" ] || return 1
 
-  workspaces=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
-  printf '%s' "$workspaces" | jq -e --arg workspace "$workspace" --arg title "$title" --arg token "$token" '
-    ([.result.workspaces[]? | select(.workspace_id == $workspace and .label == $title)] | length) == 1
-    and ([.result.workspaces[]?.label? // "" |
-          ((split("p:" + $token) | length) - 1)] | add // 0) == 1
-  ' >/dev/null 2>&1 || return 1
-  workspace_info=$(fm_backend_herdr_cli "$session" workspace get "$workspace" 2>/dev/null) || return 1
-  printf '%s' "$workspace_info" | jq -e --arg workspace "$workspace" --arg title "$title" '
-    .result.workspace.workspace_id == $workspace
-    and .result.workspace.label == $title
-    and .result.workspace.tab_count == 1
-    and .result.workspace.pane_count == 1
-  ' >/dev/null 2>&1 || return 1
-  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 1
-  printf '%s' "$tabs" | jq -e --arg workspace "$workspace" --arg tab "$tab" '
-    (.result.tabs | type) == "array"
-    and (.result.tabs | length) == 1
-    and .result.tabs[0].workspace_id == $workspace
-    and .result.tabs[0].tab_id == $tab
-  ' >/dev/null 2>&1 || return 1
-  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
-  printf '%s' "$panes" | jq -e --arg workspace "$workspace" --arg tab "$tab" --arg pane "$pane" '
-    (.result.panes | type) == "array"
-    and (.result.panes | length) == 1
-    and .result.panes[0].workspace_id == $workspace
-    and .result.panes[0].tab_id == $tab
-    and .result.panes[0].pane_id == $pane
-  ' >/dev/null 2>&1 || return 1
+  endpoint=$(fm_backend_herdr_projection_leftover_endpoint \
+    "$session" "$workspace" "$title" "$token") || return 1
+  [ "$endpoint" = "$(printf '%s\t%s' "$tab" "$pane")" ] || return 1
   [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" = no-agent ] || return 1
   fm_backend_herdr_pane_idle_shell_pid "$session" "$pane" >/dev/null || return 1
   focus=$(fm_backend_herdr_projection_focus_snapshot "$session") || return 1
@@ -239,7 +221,7 @@ fm_herdr_cleanup_revalidate() { # <session> <workspace> <tab> <pane> <title> <to
 fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
   local session=$1 workspace=$2 title=$3 home_real=$4 token journal id task_lock
   local version bound_workspace bound_tab bound_pane presentation_lock snapshot
-  local tab pane state close_status=0
+  local tab pane state workspace_state close_status=0
   token=$(fm_herdr_cleanup_title_token "$title") || return 0
   if ! fm_herdr_cleanup_unique_match "$title" "$session" "$home_real"; then
     return 0
@@ -305,7 +287,19 @@ fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
   fm_backend_herdr_projection_close_pane_focus_preserving \
     "$session" "$pane" no-agent || close_status=$?
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
-  if [ "$state" = dead ]; then
+  workspace_state=
+  [ "$state" != dead ] \
+    || workspace_state=$(fm_backend_herdr_workspace_presence_state "$session" "$workspace")
+  if [ "$state" = dead ] && [ "$workspace_state" != dead ]; then
+    # Retiring the journal here would destroy the only record that binds this
+    # home to the surviving workspace, which is exactly how a torn-down task
+    # used to strand one permanently. Keep it, rebound to whatever Herdr left
+    # behind, so the next locked session start can retire the workspace itself.
+    fm_backend_herdr_projection_rebind_leftover \
+      "$session" "$workspace" "$journal" "$id" "$title" "$token" \
+      || fm_herdr_cleanup_warn "$id retained a journal that no longer binds its surviving presentation workspace exactly"
+    fm_herdr_cleanup_warn "$id closed its exact stale pane but its presentation workspace survived; retaining the journal so a later session start can retire it"
+  elif [ "$state" = dead ]; then
     if [ -f "$journal" ] && [ ! -L "$journal" ] \
       && fm_herdr_cleanup_unique_match "$title" "$session" "$home_real" \
       && [ "$FM_HERDR_CLEANUP_JOURNAL" = "$journal" ] \
