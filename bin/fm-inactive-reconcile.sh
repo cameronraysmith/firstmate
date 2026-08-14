@@ -90,12 +90,6 @@ if [ "$FM_INACTIVE_RECONCILE_BUDGET_SECS" -gt 30 ]; then
   exit 2
 fi
 
-if [ "$(uname)" = Darwin ]; then
-  file_mtime() { stat -f %m "$1" 2>/dev/null; }
-else
-  file_mtime() { stat -c %Y "$1" 2>/dev/null; }
-fi
-
 reconcile_now() {
   case "${FM_INACTIVE_RECONCILE_NOW:-}" in
     ''|*[!0-9]*) date +%s ;;
@@ -231,7 +225,7 @@ last_activity_age() { # <meta> <status> <turn-ended>
   now=$(reconcile_now)
   for file in "$meta" "$status" "$turn"; do
     [ -e "$file" ] || continue
-    m=$(file_mtime "$file" 2>/dev/null || true)
+    m=$(fm_path_mtime "$file" 2>/dev/null || true)
     case "$m" in ''|*[!0-9]*) continue ;; esac
     [ "$m" -le "$newest" ] || newest=$m
   done
@@ -243,7 +237,7 @@ scan_marker_age() {
   local now m
   [ -e "$SCAN_MARKER" ] && [ ! -L "$SCAN_MARKER" ] || { printf '999999\n'; return; }
   now=$(reconcile_now)
-  m=$(file_mtime "$SCAN_MARKER" 2>/dev/null || true)
+  m=$(fm_path_mtime "$SCAN_MARKER" 2>/dev/null || true)
   case "$m" in ''|*[!0-9]*) printf '999999\n'; return ;; esac
   if [ "$now" -lt "$m" ]; then printf '0\n'; else printf '%s\n' $((now - m)); fi
 }

@@ -125,6 +125,9 @@ make_lab() {  # <harness> -> echoes lab dir
   ln -sf "$ROOT/bin/fm-startup-network.sh" "$lab/bin/fm-startup-network.sh"
   ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$lab/bin/fm-timeout-lib.sh"
   ln -sf "$ROOT/bin/fm-wake-lib.sh" "$lab/bin/fm-wake-lib.sh"
+  # fm-stat-lib.sh: the stat-dialect probe fm-wake-lib.sh resolves its file reads
+  # through, so the symlinked lib can still be sourced inside the lab.
+  ln -sf "$ROOT/bin/fm-stat-lib.sh" "$lab/bin/fm-stat-lib.sh"
   ln -sf "$ROOT/bin/fm-session-lock-lib.sh" "$lab/bin/fm-session-lock-lib.sh"
   cat > "$lab/bin/fm-bootstrap.sh" <<'SH'
 #!/usr/bin/env bash
