@@ -46,6 +46,10 @@
 # bin/ script (which sets its own SCRIPT_DIR) or directly by a test.
 _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_CLASSIFY_LIB_DIR="."
 
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$_FM_CLASSIFY_LIB_DIR/fm-stat-lib.sh"
+
 # The crew current-state reader used for the "provably working" decision.
 # Overridable so tests can stub the run-step/pane verdict without a real worktree
 # or no-mistakes install; absent, it points at the real sibling script.
@@ -643,14 +647,14 @@ _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
     "$FM_STATUS_IDENTITY_READER" "$f"
     return
   fi
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return 1
-    epoch=$(LC_ALL=C stat -f '%B' "$f" 2>/dev/null) || epoch=0
-    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
-  else
+  if fm_stat_is_gnu; then
     ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return 1
     epoch=$(LC_ALL=C stat -c '%W' "$f" 2>/dev/null) || epoch=0
     if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' "$f" 2>/dev/null) || birth=''; else birth=''; fi
+  else
+    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return 1
+    epoch=$(LC_ALL=C stat -f '%B' "$f" 2>/dev/null) || epoch=0
+    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   fi
   case "$ident$birth" in *$'\t'*|*$'\n'*|'') return 1 ;; esac
   if [ -n "$birth" ]; then printf 'strong:%s:%s' "$ident" "$birth"; else printf 'weak:%s' "$ident"; fi
@@ -662,10 +666,10 @@ _fm_status_file_size() {  # <status-file>
     "$FM_STATUS_SIZE_READER" "$f"
     return
   fi
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    LC_ALL=C stat -f '%z' "$f" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     LC_ALL=C stat -c '%s' "$f" 2>/dev/null
+  else
+    LC_ALL=C stat -f '%z' "$f" 2>/dev/null
   fi
 }
 
@@ -948,10 +952,10 @@ status_presentation_marker_parse() {
 }
 
 _status_observed_path_state() {
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    LC_ALL=C stat -f '%HT:%p' "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     LC_ALL=C stat -c '%F:%f' "$1" 2>/dev/null
+  else
+    LC_ALL=C stat -f '%HT:%p' "$1" 2>/dev/null
   fi
 }
 
