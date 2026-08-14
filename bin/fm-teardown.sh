@@ -38,10 +38,17 @@
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
 # A Herdr presentation journal never authorizes cleanup. Teardown still closes
-# only the exact task pane from ordinary endpoint metadata and never calls
-# `workspace close`. It retires the non-authoritative journal only when a
-# read-only token correlation agrees with that endpoint and pane closure is
-# confirmed. Otherwise the journal stays quarantined for manual inspection.
+# only exact panes and never calls `workspace close`. The task pane comes from
+# ordinary endpoint metadata. Closing it usually empties its projection
+# workspace so Herdr removes it; when the workspace outlives the task pane
+# holding a restored shell instead, teardown retires it under the same session
+# lock by closing that one remaining pane, subject to the same proofs the
+# session-start reaper applies. It retires the non-authoritative journal only
+# when a read-only token correlation agrees with that endpoint, pane closure is
+# confirmed, and the workspace is confirmed gone; a surviving workspace keeps
+# its journal, rebound to what Herdr left behind, so a later locked session
+# start can finish the job. Otherwise the journal stays quarantined for manual
+# inspection.
 # Projected closes share the presentation-order lock, refuse to close the
 # captain's active tab, and restore the exact response-derived pre-close tab
 # if Herdr's last-pane cleanup focuses an unrelated neighboring workspace.
@@ -2301,6 +2308,36 @@ FMEOF
   return 1
 }
 
+# teardown_herdr_retire_presentation_workspace: retire this task's projection
+# workspace once its own pane is confirmed gone, under the session presentation
+# lock this teardown already holds.
+# Succeeds when the workspace is confirmed absent, which is also the ordinary
+# case where closing the task pane already emptied and removed it.
+# A refusal is never fatal: it warns, leaves the workspace untouched, and keeps
+# the journal bound to the leftover's current exact endpoint so the locked
+# session-start reaper can bind and retire it later. Reads only the globals the
+# retire-candidate gate established.
+teardown_herdr_retire_presentation_workspace() {
+  local token expected_label
+  [ -n "$HERDR_PRESENTATION_SESSION" ] && [ -n "$HERDR_PRESENTATION_WORKSPACE" ] || return 1
+  teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION" || {
+    echo "warning: herdr presentation focus lock unavailable; refusing a concurrent workspace retirement for $ID" >&2
+    return 1
+  }
+  declare -F fm_backend_herdr_projection_retire_leftover >/dev/null 2>&1 || return 1
+  fm_backend_herdr_projection_journal_snapshot "$HERDR_PRESENTATION_JOURNAL" "$ID" || return 1
+  token=$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID
+  expected_label=$(fm_backend_herdr_projection_workspace_label "$ID" "$token")
+  fm_backend_herdr_projection_retire_leftover \
+    "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" "$expected_label" "$token" \
+    && return 0
+  fm_backend_herdr_projection_rebind_leftover \
+    "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" \
+    "$HERDR_PRESENTATION_JOURNAL" "$ID" "$expected_label" "$token" \
+    || echo "warning: the retained herdr presentation journal for $ID no longer binds its surviving workspace exactly" >&2
+  return 1
+}
+
 teardown_herdr_require_prerequisites() {  # <task-id>
   local task_id=$1 prerequisite
   if ! fm_backend_source herdr; then
@@ -2717,6 +2754,7 @@ fi
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 HERDR_PRESENTATION_RETIRE_CANDIDATE=0
 HERDR_PRESENTATION_SESSION=
+HERDR_PRESENTATION_WORKSPACE=
 HERDR_PRESENTATION_PANE=
 if [ "$BACKEND" = herdr ] \
    && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
@@ -2763,7 +2801,17 @@ elif [ "$BACKEND" != orca ]; then
 fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
-    rm -f "$HERDR_PRESENTATION_JOURNAL"
+    # Closing the task pane usually empties the projection workspace and Herdr
+    # removes it. When it does not, Herdr seeds a restored shell there instead
+    # and the workspace outlives the task. Retire it here, while this teardown
+    # still holds the session presentation lock and still has the journal that
+    # binds the workspace to this home; retiring that journal beside a surviving
+    # workspace is what used to strand one per torn-down task.
+    if teardown_herdr_retire_presentation_workspace; then
+      rm -f "$HERDR_PRESENTATION_JOURNAL"
+    else
+      echo "warning: the herdr presentation workspace for $ID outlived its task pane and could not be retired safely; retaining its presentation journal so a later locked session start can retire it" >&2
+    fi
   else
     echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
   fi
