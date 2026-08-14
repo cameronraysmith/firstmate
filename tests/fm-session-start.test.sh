@@ -915,8 +915,14 @@ SH
       while [ "$(find "$ready" -type f | wc -l | tr -d ' ')" -lt 40 ]; do
         sleep 0.01
       done
+      # A distinct harness pid is not by itself a distinct session: Claude Code
+      # runs several background sessions of one home under one shared harness
+      # ancestor, so the lease is keyed on the session's own identity. Each
+      # contender therefore carries its own, or these forty would be forty
+      # processes of ONE session racing to re-acquire a lease they all own.
       if FM_HOME="$home" FM_FAKE_LOCK_STATE="$home/state" \
         FM_FAKE_HARNESS_PID="$harness_pid" PATH="$fakebin:$BASE_PATH" \
+        CLAUDE_CODE_SESSION_ID="lock-concurrency-$i" \
         "$ROOT/bin/fm-lock.sh" >/dev/null 2>&1; then
         printf '%s\n' "$harness_pid" >> "$winners"
       fi
