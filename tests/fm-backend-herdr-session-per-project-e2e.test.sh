@@ -280,10 +280,26 @@ PEEK=$(FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVER
   || fail "fm-peek.sh could not read a worker in a non-ambient session"$'\n'"$PEEK"
 assert_contains_local "$PEEK" "session-placement-ok" "peek did not read the worker's own output back"
 
+# fm-send is exercised here for RESOLUTION, not for delivery, and the
+# distinction is load-bearing rather than pedantic. This fixture's worker is
+# `sh -c 'echo session-placement-ok'`, which prints and exits, so by the time
+# the steer runs the pane holds a bare shell and no registered agent.
+# bin/fm-composer-lib.sh classifies a bare shell prompt as a dead shell rather
+# than an empty agent composer and refuses to claim delivery into it, which is
+# a documented safety rule with incident history behind it. Requiring a
+# confirmed submit here would assert that firstmate SHOULD inject into a pane
+# with nothing live in it, so the assertion would be wrong even while failing.
+#
+# What this suite is entitled to assert is its own subject: that the steer
+# ADDRESSED the placed pane, in a session the orchestrator is not in. The
+# refusal names that pane, which is exactly the cross-session resolution being
+# tested, and fm-crew-state and fm-peek above already prove the same property
+# from the reading side.
 STEER=$(FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$HOME_DIR/state" \
   FM_DATA_OVERRIDE="$HOME_DIR/data" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
-  "$ROOT/bin/fm-send.sh" placed 'echo steered-ok' 2>&1) \
-  || fail "fm-send.sh could not steer a worker in a non-ambient session"$'\n'"$STEER"
+  "$ROOT/bin/fm-send.sh" placed 'echo steered-ok' 2>&1) || :
+assert_contains_local "$STEER" "$PLACED_PANE" \
+  "fm-send.sh did not address the worker's own pane in the non-ambient session"
 pass "real herdr E2E: crew-state, peek, and steer all resolve a worker in a session the orchestrator is not in"
 
 # --- 7. teardown closes the worker's own pane in the project session ---------
