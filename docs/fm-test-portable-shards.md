@@ -111,7 +111,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 20` | Each balanced shard is about eleven minutes of measured script time, leaving roughly 2x hang-tripwire margin for job setup and runner-speed spread. |
+| portable serial 1-4 | job `timeout-minutes: 25` | Balanced shards average about eleven minutes of measured script time, but observed shard walls run 8m40s to 13m38s, so the cap is sized against that worst case rather than the average to keep it from tripping nondeterministically. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
