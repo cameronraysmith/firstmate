@@ -53,6 +53,8 @@
 #
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-startup-memory-budget-lib.sh"
+# shellcheck source=bin/fm-stat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-stat-lib.sh"
 
 # The one shared data file in this inheritance contract. There is deliberately
 # no shared learnings file.
@@ -94,26 +96,26 @@ fm_config_inherit_items() {
 }
 
 fm_inherit_file_mode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %Lp "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %a "$1" 2>/dev/null
+  else
+    stat -f %Lp "$1" 2>/dev/null
   fi
 }
 
 fm_inherit_file_device() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %d "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %d "$1" 2>/dev/null
+  else
+    stat -f %d "$1" 2>/dev/null
   fi
 }
 
 fm_inherit_file_link_count() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %l "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %h "$1" 2>/dev/null
+  else
+    stat -f %l "$1" 2>/dev/null
   fi
 }
 
