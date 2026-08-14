@@ -55,6 +55,62 @@ if (
 fi
 pass "process proof reads Linux Herdr argv arrays and rejects malformed executable identities"
 
+# Some ps implementations report no state character at all - the nix
+# procps-1003.1-2008 build prints "Ns+" for BOTH an idle and a spinning shell -
+# so the state check alone made the whole proof inert there. Absent a state
+# character the proof must fall back to affirmative processor quiescence, and it
+# must still refuse whenever that cannot be read or is not quiescent.
+STATELESS_PS="$TMP_ROOT/stateless-ps"
+cat > "$STATELESS_PS" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-axo pid=,ppid=") printf '1 0\n67 1\n' ;;
+  "-p 67 -o stat=") printf '%s\n' "${FAKE_STAT:-Ns+}" ;;
+  "-p 67 -o time=")
+    [ "${FAKE_TIME_UNREADABLE:-0}" = 1 ] && exit 1
+    if [ "${FAKE_TIME_MOVES:-0}" = 1 ]; then
+      count=$(cat "${FAKE_TIME_COUNTER:?}" 2>/dev/null || printf 0)
+      printf '%s\n' "$((count + 1))" > "${FAKE_TIME_COUNTER:?}"
+      printf '0:0%s.00\n' "$count"
+    else
+      printf '0:00.42\n'
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$STATELESS_PS"
+IDLE_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p1","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"argv":["-bash"],"argv0":"bash","name":"bash","pid":67}]}}}'
+# Both processor-time sources are pointed at this fixture on purpose: the pid
+# below is invented, so leaving the system fallback at the host's own ps would
+# decide the unreadable case by whether that pid happens to exist on the host
+# running the suite rather than by what the proof does with an unreadable
+# reading.
+stateless_proof() {  # <env assignments via caller>
+  # shellcheck disable=SC2329 # invoked indirectly by the idle-shell proof.
+  fm_backend_herdr_cli() { printf '%s\n' "$IDLE_PROCESS_INFO"; }
+  FM_HERDR_PS_BIN="$STATELESS_PS" FM_HERDR_SYSTEM_PS_BIN="$STATELESS_PS" \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    FM_BACKEND_HERDR_CPU_QUIESCENCE_WINDOW=0 \
+    fm_backend_herdr_pane_idle_shell_pid test w2:p1
+}
+( stateless_proof ) >/dev/null 2>&1 \
+  || fail "a stateless ps reading with quiescent processor time was refused"
+pass "an absent state character falls back to affirmative processor quiescence"
+( FAKE_TIME_MOVES=1 FAKE_TIME_COUNTER="$TMP_ROOT/cpu-counter" stateless_proof ) >/dev/null 2>&1 \
+  && fail "a shell consuming processor time was accepted as idle"
+pass "an absent state character refuses a shell that is still consuming processor time"
+( FAKE_TIME_UNREADABLE=1 stateless_proof ) >/dev/null 2>&1 \
+  && fail "an unreadable processor-time reading was accepted as idle"
+pass "an absent state character refuses when processor time cannot be read at all"
+( FAKE_STAT=R stateless_proof ) >/dev/null 2>&1 \
+  && fail "a running state character was accepted as idle"
+( FAKE_STAT=T stateless_proof ) >/dev/null 2>&1 \
+  && fail "a stopped state character was accepted as idle"
+( FAKE_STAT=Ss+ stateless_proof ) >/dev/null 2>&1 \
+  || fail "a present sleeping state character stopped being accepted on its own"
+pass "a present state character keeps deciding on its own, accepting only sleeping or idle"
+
 TOKEN=AbCdEfGhIjKlMnOpQrStUv
 ID=task
 WS=w2
@@ -133,10 +189,31 @@ fm_backend_herdr_cli() {
   shift
   [ ! -e "$FIXTURE_DIR/error-${first}-${second}" ] || return 1
   if [ -e "$FIXTURE_DIR/closed" ]; then
-    case "$first $second" in
-      "pane get") printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2; return 1 ;;
-      "workspace list") printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":true,"active_tab_id":"w1:t1","tab_count":1,"pane_count":1}]}}'; return 0 ;;
-    esac
+    # A workspace that outlives the close of its own last pane is the leak this
+    # cleanup exists to end; Herdr seeds a fresh restored shell there.
+    if [ -e "$FIXTURE_DIR/workspace-survives" ]; then
+      case "$first $second" in
+        "pane get")
+          [ "$3" = w2:p9 ] || { printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2; return 1; }
+          printf '{"result":{"pane":{"pane_id":"w2:p9","tab_id":"%s","workspace_id":"%s"}}}\n' "$TAB" "$WS"
+          return 0
+          ;;
+        "pane list")
+          if [ -e "$FIXTURE_DIR/leftover-ambiguous" ]; then
+            printf '{"result":{"panes":[{"pane_id":"w2:p9","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"},{"pane_id":"w2:p10","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"}]}}\n' \
+              "$TAB" "$WS" "$TAB" "$WS"
+          else
+            printf '{"result":{"panes":[{"pane_id":"w2:p9","tab_id":"%s","workspace_id":"%s","agent_status":"unknown"}]}}\n' "$TAB" "$WS"
+          fi
+          return 0
+          ;;
+      esac
+    else
+      case "$first $second" in
+        "pane get") printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2; return 1 ;;
+        "workspace list") printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":true,"active_tab_id":"w1:t1","tab_count":1,"pane_count":1}]}}'; return 0 ;;
+      esac
+    fi
   fi
   if [ -e "$FIXTURE_DIR/race" ] && [ -e "$FIXTURE_DIR/snapshotted" ] && [ "$first $second" = "workspace list" ]; then
     printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate","focused":true,"active_tab_id":"w1:t1","tab_count":1,"pane_count":1},{"workspace_id":"w2","label":"renamed","focused":false,"active_tab_id":"w2:t1","tab_count":1,"pane_count":1}]}}'
@@ -214,6 +291,10 @@ write_v2() { # <home> <workspace> <tab> <pane>
   } > "$FM_STATE_OVERRIDE/$ID.herdr-presentation"
 }
 
+write_v2_unbound() { # <home> <workspace>
+  write_v2 "$1" "$2" '' ''
+}
+
 write_cross_home_v2() {
   mkdir -p "$TMP_ROOT/other-home"
   write_v2 "$TMP_ROOT/other-home" "$WS" "$TAB" "$PANE"
@@ -269,6 +350,52 @@ fm_herdr_session_cleanup >/dev/null 2>&1
 [ ! -e "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] || fail "matching v2 cleanup kept the journal"
 [ "$(wc -l < "$CLOSE_LOG" | tr -d ' ')" = 1 ] || fail "matching v2 cleanup did not close exactly once"
 pass "v2 cleanup requires and accepts the exact journal endpoint binding"
+
+# Retiring the journal beside a surviving workspace is what makes a leftover
+# permanent: nothing else binds that workspace to this home.
+reset_fixture; : > "$FIXTURE_DIR/workspace-survives"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ "$(wc -l < "$CLOSE_LOG" | tr -d ' ')" = 1 ] || fail "surviving workspace did not close its exact pane once"
+[ -f "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] \
+  || fail "surviving workspace retired the journal that binds it to this home"
+pass "a workspace that outlives its closed pane keeps its journal for a later session start"
+
+reset_fixture; : > "$FIXTURE_DIR/workspace-survives"; write_v2 "$FM_HOME" "$WS" "$TAB" "$PANE"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ -f "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] || fail "surviving workspace retired a v2 journal"
+grep -qx 'pane_id=w2:p9' "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
+  || fail "retained v2 journal was not rebound to the leftover's exact live pane"
+grep -qx "workspace_id=$WS" "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
+  || fail "rebinding a retained v2 journal moved its workspace binding"
+pass "a retained v2 journal is rebound to what Herdr left behind so it stays bindable"
+
+# A leftover that never settles into one exact endpoint is the case the rebind
+# exists for, so leaving the recorded endpoint alone there would keep the
+# journal naming the pane this cleanup just proved gone, which no later session
+# start can ever bind again.
+reset_fixture; : > "$FIXTURE_DIR/workspace-survives"; : > "$FIXTURE_DIR/leftover-ambiguous"
+write_v2 "$FM_HOME" "$WS" "$TAB" "$PANE"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ -f "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] \
+  || fail "an unreadable leftover endpoint retired the journal"
+grep -qx "workspace_id=$WS" "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
+  || fail "clearing an unreadable endpoint dropped the workspace binding"
+if ! grep -qx 'tab_id=' "$FM_STATE_OVERRIDE/$ID.herdr-presentation" \
+  || ! grep -qx 'pane_id=' "$FM_STATE_OVERRIDE/$ID.herdr-presentation"; then
+  fail "a leftover with no readable endpoint kept a journal bound to the closed pane"
+fi
+pass "a leftover whose exact endpoint cannot be read clears it instead of keeping a dead one"
+
+reset_fixture; write_v2_unbound "$FM_HOME" "$WS"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ ! -e "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] \
+  || fail "a v2 journal with no recorded endpoint was never reclaimable"
+[ "$(wc -l < "$CLOSE_LOG" | tr -d ' ')" = 1 ] \
+  || fail "reclaiming an endpoint-free v2 journal did not close exactly once"
+pass "a v2 journal binding its workspace alone is bound from the live shape and retired"
+
+reset_fixture; write_v2 "$FM_HOME" "$WS" "$TAB" ''; assert_preserved "half-recorded v2 endpoint"
+
 reset_fixture; : > "$FM_STATE_OVERRIDE/$ID.meta"; assert_preserved "current task metadata"
 reset_fixture; printf 'live\n' > "$FIXTURE_DIR/agent"; assert_preserved "registered agent"
 reset_fixture; printf 'unknown\n' > "$FIXTURE_DIR/agent"; assert_preserved "unknown agent"
