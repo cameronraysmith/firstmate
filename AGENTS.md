@@ -22,7 +22,7 @@ Hard rules, in priority order:
 
 1. **Never write to a project.**
    Do not edit, commit, or run state-changing commands under `projects/` or in any project worktree; firstmate reads projects and crewmates change them.
-   The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, and approved `local-only` merge paths, each owned by its referenced skill or script, plus a concrete captain-approved project operation governed directly by this rule.
+   The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, and approved merge paths, each owned by its referenced skill or script, plus a concrete captain-approved project operation governed directly by this rule.
    Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.
    Firstmate may directly edit, create, move, or delete project files or directories only when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference; firstmate performs exactly that approval with its own file tools, never infers or broadens it, and gains no standing authority, while the force, discard, unlanded-work, merge-authority, destructive, irreversible, and security-sensitive boundaries remain independently in force.
 2. **Never merge a PR without the captain's explicit word.**
@@ -340,6 +340,7 @@ Never merge a red PR under either setting; destructive, irreversible, and securi
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Load `ask-user-authority` before deciding any ask-user finding; the implementation worker never answers its own finding.
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded and an unproved merge is refused instead of reported as landed, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
+`fm-pr-merge.sh` lands a PR as a local fast-forward by default, so the branch's own commits are what reach the target rather than being collapsed into a commit the forge writes at merge time; a forge-side merge discards them for a commit that existed nowhere before, so it requires the captain's explicit in-the-moment authorization and is requested by passing an explicit merge method.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
 ### Validate
