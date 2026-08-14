@@ -3,11 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+  # Deliberately unfiltered: a stacked PR targets the branch below it, not
+  # main, so a `branches: [main]` filter here leaves every PR but the bottom
+  # one unbuilt. The push filter above stays narrow so pushing a branch does
+  # not duplicate the run its own PR already triggers.
   pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # Restacking supersedes every in-flight PR run at once, but a push to main
+  # must always finish: it is the only run nothing else replaces.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -112,10 +122,11 @@ jobs:
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Measured whole remainder is ~19 min of serial work; the balanced shards
-    # are ~4.8 min each. Cap is a hang tripwire with roughly 3x margin, not the
-    # expected healthy end of the lane.
-    timeout-minutes: 15
+    # Observed shard walls run 8m40s to 13m38s, and one script has been measured
+    # varying 222s to 430s between runners. A 15-minute cap left roughly 90s of
+    # headroom at the worst shard, so a shard could exceed it nondeterministically
+    # and produce a failure attributable to no branch.
+    timeout-minutes: 25
     strategy:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
