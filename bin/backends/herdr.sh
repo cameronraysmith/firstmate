@@ -86,6 +86,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
+# shellcheck source=bin/fm-stat-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-stat-lib.sh"
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -660,18 +663,18 @@ fm_backend_herdr_presentation_lock_namespace() {
 }
 
 fm_backend_herdr_presentation_lock_namespace_mode() {
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    stat -f '%Lp' "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c '%a' "$1" 2>/dev/null
+  else
+    stat -f '%Lp' "$1" 2>/dev/null
   fi
 }
 
 fm_backend_herdr_presentation_lock_namespace_uid() {
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    stat -f '%u' "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c '%u' "$1" 2>/dev/null
+  else
+    stat -f '%u' "$1" 2>/dev/null
   fi
 }
 
