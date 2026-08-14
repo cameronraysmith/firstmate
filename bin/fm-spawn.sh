@@ -284,6 +284,7 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+HERDR_SESSION_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -291,6 +292,7 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+HERDR_SESSION_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -307,6 +309,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      herdr-session) HERDR_SESSION_ARG=$a; HERDR_SESSION_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -330,6 +333,8 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --herdr-session) want_value=herdr-session ;;
+    --herdr-session=*) HERDR_SESSION_ARG=${a#--herdr-session=}; HERDR_SESSION_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -809,7 +814,24 @@ trap spawn_abort_cleanup EXIT
 # LAUNCHING process was created, not where this session runs, so inheriting it
 # placed workers in a stale session that no herdr query could contradict
 # (bin/backends/herdr.sh fm_backend_herdr_ambient_claimed_session).
+#
+# --herdr-session is the separate, explicit channel for a caller that KNOWS the
+# session and is not merely passing its own environment along. It is not the
+# ambient variable above and is not subject to that distrust: an argument is
+# stated by the caller, an environment variable is inherited from whatever
+# created it. The remote secondmate control plane is the caller that needs it,
+# because bin/fm-remote-secondmate-control.sh pins every remote secondmate to
+# the reserved fm-remote session and enforces that pin on the recorded endpoint;
+# routing one to the orchestrators' session instead makes the launch refuse.
 spawn_herdr_target_session() {
+  if [ "$HERDR_SESSION_SET" = 1 ]; then
+    if [ -z "$HERDR_SESSION_ARG" ]; then
+      echo "error: --herdr-session requires a non-empty session name" >&2
+      return 1
+    fi
+    printf '%s\n' "$HERDR_SESSION_ARG"
+    return 0
+  fi
   if [ "$KIND" = secondmate ]; then
     printf '%s\n' "$FM_BACKEND_HERDR_ORCHESTRATOR_SESSION"
     return 0
