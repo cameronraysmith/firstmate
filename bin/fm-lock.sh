@@ -36,6 +36,10 @@ if [ "${1:-}" = "status" ]; then
   exit 0
 fi
 
+if fm_session_self_is_subagent; then
+  echo "error: this process is a harness subagent of another session and must not claim the home's session lock; the session that spawned it owns the lease. Operating read-only is correct here." >&2
+  exit 1
+fi
 me=$(fm_harness_ancestry_pid) || { echo "error: cannot locate harness process in ancestry" >&2; exit 1; }
 probe=$(mktemp "$STATE/.lock-write.XXXXXX" 2>/dev/null) || {
   echo "error: cannot write session lock; operate read-only until resolved" >&2
