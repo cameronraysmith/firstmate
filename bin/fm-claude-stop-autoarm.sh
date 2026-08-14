@@ -101,8 +101,10 @@ fm_hook_payload_is_foreign_host "$PAYLOAD" && exit 0
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 # --- identity: only the lock-owning session's hooks may arm ------------------
-# A prior session may have died after leaving its numeric harness pid in .lock.
-# Use the shared liveness predicate to recognize only that stale-owner case.
+# A prior session may have died after leaving its lock behind. Use the shared
+# competing-holder predicate to recognize only that stale-owner case: asking
+# whether the recorded pid is merely a live harness would read a daemon shared
+# with the dead session as its survivor and leave this home unsupervised.
 # Defer the mutating claim until after the unchanged AFK and need gates, so an
 # idle or away home remains byte-for-byte inert. Missing or malformed locks are
 # uncertainty rather than stale-owner evidence and remain inert.
@@ -112,7 +114,7 @@ if ! fm_session_lock_owned_by_self "$STATE"; then
   case "$LOCK_PID" in
     ''|*[!0-9]*) exit 0 ;;
   esac
-  fm_harness_pid_alive "$LOCK_PID" && exit 0
+  fm_session_lock_holder_is_other_live_session "$STATE" && exit 0
   RECOVER_SESSION_LOCK=1
 fi
 
