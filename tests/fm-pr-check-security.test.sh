@@ -552,7 +552,10 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
-  run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
+  # The subject here is the task ID, not the landing shape: the forge-side
+  # merge is asked for so this case needs no project clone to land into, and
+  # every step this asserts on runs before either landing begins.
+  run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 -- --merge \
     > "$dir/stdout" 2> "$dir/stderr" \
     || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
   fm_pr_poll_artifacts_valid "$dir/home/state" Task_A.1 "$POLL" \
@@ -601,7 +604,7 @@ SH
       --carry-count 0 --carry-ts 1700000000 --carry-platform x --carry-max 280 \
       > "$dir/x-link.out" 2> "$dir/x-link.err" \
       || fail "path-safe legacy task ID could not link an X request"
-    run_merge_entry "$dir" "$id" https://github.com/o/r/pull/4 \
+    run_merge_entry "$dir" "$id" https://github.com/o/r/pull/4 -- --merge \
       > "$dir/merge.out" 2> "$dir/merge.err" \
       || fail "path-safe legacy task ID could not use the PR merge flow"
     fm_pr_poll_artifacts_valid "$dir/home/state" "$id" "$POLL" \
@@ -1595,7 +1598,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-committed: could not arm merge poll"
-  run_merge_entry "$dir" task-a "$url" >"$dir/merge.out" 2>"$dir/merge.err" \
+  run_merge_entry "$dir" task-a "$url" -- --merge >"$dir/merge.out" 2>"$dir/merge.err" \
     || fail "merge-outcome-committed: merge entrypoint failed: $(cat "$dir/merge.err")"
   add_stop_custom_check "$dir"
   set +e
@@ -1628,7 +1631,7 @@ exec "$FM_TEST_REAL_MV" "$@"
 SH
   chmod +x "$dir/fakebin/mv"
   set +e
-  FM_TEST_REAL_MV="$REAL_MV" run_merge_entry "$dir" task-a "$url" \
+  FM_TEST_REAL_MV="$REAL_MV" run_merge_entry "$dir" task-a "$url" -- --merge \
     >"$dir/merge.out" 2>"$dir/merge.err"
   rc=$?
   set -e
