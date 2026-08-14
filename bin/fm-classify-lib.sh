@@ -32,6 +32,10 @@
 # bin/ script (which sets its own SCRIPT_DIR) or directly by a test.
 _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_CLASSIFY_LIB_DIR="."
 
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$_FM_CLASSIFY_LIB_DIR/fm-stat-lib.sh"
+
 # The crew current-state reader used for the "provably working" decision.
 # Overridable so tests can stub the run-step/pane verdict without a real worktree
 # or no-mistakes install; absent, it points at the real sibling script.
@@ -618,10 +622,10 @@ FM_OPEN_DECISIONS_FOLD_VERSION=5
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
   local f=$1
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null
+  else
+    LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null
   fi
 }
 

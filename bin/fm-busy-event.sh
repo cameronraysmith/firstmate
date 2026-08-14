@@ -48,6 +48,8 @@ EOF
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-stat-lib.sh
+. "$SCRIPT_DIR/fm-stat-lib.sh"
 
 CMD=${1:-}
 case "$CMD" in
@@ -95,18 +97,23 @@ REC=$(fm_busy_record_path "$STATE" "$ID")
 GEN_FILE=$(fm_busy_gen_path "$STATE" "$ID")
 LOCK="$REC.lock"
 
-# Portable mtime in epoch seconds. macOS (BSD) stat uses `-f <fmt>`; Linux (GNU)
-# stat uses `-c <fmt>`. Do NOT collapse this into `stat -f <fmt> ... || stat -c
-# <fmt> ...`: on GNU `-f` is *filesystem* stat, so it reads the format string as
-# a path, reports that on stderr, prints a partial filesystem dump ("  File:
-# ...") on stdout, and still exits 0 - the fallback never runs and the caller
-# gets a non-numeric token. Detect the platform once and pick the right form,
-# exactly as bin/fm-watch.sh does.
-if [ "$(uname)" = Darwin ]; then
-  lock_mtime() { stat -f %m "$1" 2>/dev/null; }
-else
-  lock_mtime() { stat -c %Y "$1" 2>/dev/null; }
-fi
+# Portable mtime in epoch seconds. GNU stat uses `-c <fmt>`; BSD stat uses
+# `-f <fmt>`. Do NOT collapse this into `stat -f <fmt> ... || stat -c <fmt> ...`:
+# on GNU `-f` is *filesystem* stat, so it reads the format string as a path,
+# reports that on stderr, prints a partial filesystem dump ("  File: ...") on
+# stdout, and still exits 0 - the fallback never runs and the caller gets a
+# non-numeric token. Ask the stat on PATH which form it speaks rather than
+# inferring it from `uname`: a GNU coreutils stat ahead of /usr/bin/stat on a
+# macOS PATH answers only the `-c` form, so a Darwin-keyed caller hands `-f` to
+# a stat that rejects it and every mtime read here silently returns a
+# filesystem dump. bin/fm-stat-lib.sh owns the probe and caches it against PATH.
+lock_mtime() {
+  if fm_stat_is_gnu; then
+    stat -c %Y "$1" 2>/dev/null
+  else
+    stat -f %m "$1" 2>/dev/null
+  fi
+}
 
 # Serialize writers. The lock protects seq advancement and the sidecar/record
 # pair; a holder that died mid-write is broken after FM_BUSY_LOCK_STALE_SECS.

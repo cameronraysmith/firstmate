@@ -48,6 +48,10 @@
 #   fmx_meta_link_clear <meta> - remove the X-request link entirely
 # Callers must have FM_HOME set before calling fmx_load_config.
 
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-stat-lib.sh"
+
 # Read the value of KEY from a .env-style file: last assignment wins; tolerates a
 # leading "export ", surrounding whitespace, and one layer of matching single or
 # double quotes. Prints nothing (and succeeds) when the file or key is absent, so
@@ -90,12 +94,12 @@ fmx_poll_shim_v1_content() {
 fmx_single_link_file_valid() {
   local file=$1 expected_device=${2-} links device
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
-  if [ "$(uname)" = Darwin ]; then
-    links=$(stat -f %l "$file" 2>/dev/null) || return 1
-    device=$(stat -f %d "$file" 2>/dev/null) || return 1
-  else
+  if fm_stat_is_gnu; then
     links=$(stat -c %h "$file" 2>/dev/null) || return 1
     device=$(stat -c %d "$file" 2>/dev/null) || return 1
+  else
+    links=$(stat -f %l "$file" 2>/dev/null) || return 1
+    device=$(stat -f %d "$file" 2>/dev/null) || return 1
   fi
   [ "$links" = 1 ] || return 1
   [ -z "$expected_device" ] || [ "$device" = "$expected_device" ]
@@ -104,10 +108,10 @@ fmx_single_link_file_valid() {
 fmx_single_link_file_mode_valid() {
   local file=$1 expected_mode=$2 expected_device=${3-} mode
   fmx_single_link_file_valid "$file" "$expected_device" || return 1
-  if [ "$(uname)" = Darwin ]; then
-    mode=$(stat -f %Lp "$file" 2>/dev/null) || return 1
-  else
+  if fm_stat_is_gnu; then
     mode=$(stat -c %a "$file" 2>/dev/null) || return 1
+  else
+    mode=$(stat -f %Lp "$file" 2>/dev/null) || return 1
   fi
   [ "$mode" = "$expected_mode" ]
 }
@@ -115,12 +119,12 @@ fmx_single_link_file_mode_valid() {
 fmx_private_artifact_dir_device() {
   local dir=$1 mode device
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  if [ "$(uname)" = Darwin ]; then
-    mode=$(stat -f %Lp "$dir" 2>/dev/null) || return 1
-    device=$(stat -f %d "$dir" 2>/dev/null) || return 1
-  else
+  if fm_stat_is_gnu; then
     mode=$(stat -c %a "$dir" 2>/dev/null) || return 1
     device=$(stat -c %d "$dir" 2>/dev/null) || return 1
+  else
+    mode=$(stat -f %Lp "$dir" 2>/dev/null) || return 1
+    device=$(stat -f %d "$dir" 2>/dev/null) || return 1
   fi
   [ "$mode" = 700 ] || return 1
   printf '%s\n' "$device"
@@ -418,7 +422,11 @@ fmx_request_relay_context() {
 
 fmx_context_registry_mtime() {
   local file=$1 mtime
-  mtime=$(stat -f '%m' "$file" 2>/dev/null) || mtime=$(stat -c '%Y' "$file" 2>/dev/null) || return 1
+  if fm_stat_is_gnu; then
+    mtime=$(stat -c '%Y' "$file" 2>/dev/null) || return 1
+  else
+    mtime=$(stat -f '%m' "$file" 2>/dev/null) || return 1
+  fi
   case "$mtime" in
     ''|*[!0-9]*) return 1 ;;
   esac
