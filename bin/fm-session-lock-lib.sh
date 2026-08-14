@@ -152,6 +152,47 @@ EOF
   printf '%s\n' "$outermost"
 }
 
+# True when this process is running as a harness SUBAGENT of another session
+# rather than as a session in its own right.
+#
+# A subagent is spawned BY a session that already owns this home. It is not a
+# second operator, it carries no fleet responsibility, and it exits when its one
+# task finishes, so it must never take the home's session lease.
+#
+# Measured 2026-08-13: a subagent is re-parented under a tmux server, which
+# truncates the harness ancestry walk at the subagent's own process. It
+# therefore resolves ITSELF as the outermost harness and publishes itself as the
+# lock holder. The primary then reads a live foreign holder and drops to
+# read-only for exactly as long as its own helper runs - so a home configured to
+# dispatch work to subagents starves itself of its own lease.
+#
+# The marker is the harness's own invocation. A subagent is launched with an
+# explicit parent session; a session in its own right never carries one. That is
+# a statement by the launcher about what this process is, not an inference from
+# process shape, which is why it is trustworthy here.
+fm_session_process_is_subagent() {  # <args>
+  case "$1" in
+    *--parent-session-id\ *|*--parent-session-id=*) return 0 ;;
+  esac
+  return 1
+}
+
+# True when any verified harness process in this process's ancestry is a
+# subagent. Checking the whole walk rather than only the outermost matters
+# because the truncation above is exactly what makes the outermost unreliable.
+fm_session_self_is_subagent() {
+  local pids pid args
+  pids=$(fm_harness_ancestry_pids) || return 1
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    fm_session_process_is_subagent "$args" && return 0
+  done <<EOF
+$pids
+EOF
+  return 1
+}
+
 # True if $1 is a live process that looks like a verified harness.
 fm_harness_pid_alive() {
   local pid=$1 comm args
