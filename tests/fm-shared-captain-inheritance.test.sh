@@ -17,10 +17,10 @@ TMP_ROOT=$(fm_test_tmproot fm-shared-captain)
 fm_git_identity fmtest fmtest@example.invalid
 
 file_mode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %Lp "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %a "$1" 2>/dev/null
+  else
+    stat -f %Lp "$1" 2>/dev/null
   fi
 }
 

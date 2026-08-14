@@ -83,6 +83,10 @@
 # bin/fm-remote-job-reap-orphans.sh uses it to reap workers that were already
 # orphaned that way.
 
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-stat-lib.sh"
+
 FM_REMOTE_JOB_LABEL=dev.firstmate.remote-job
 FM_REMOTE_JOB_MAX_BYTES=${FM_REMOTE_JOB_MAX_BYTES:-1048576}
 FM_REMOTE_JOB_QUEUE_TIMEOUT=${FM_REMOTE_JOB_QUEUE_TIMEOUT:-360}
@@ -756,9 +760,9 @@ fm_remote_job_reap() { # <account-home> <id>; only removes an exact completed re
 }
 
 fm_remote_job_path_mtime() { # <path>
-  # The platform override controls worker shape in isolated tests, not the host
-  # kernel's stat syntax.
-  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then stat -f %m "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi
+  # The platform override controls worker shape in isolated tests, not which stat
+  # dialect the stat on this PATH speaks.
+  if fm_stat_is_gnu; then stat -c %Y "$1" 2>/dev/null; else stat -f %m "$1" 2>/dev/null; fi
 }
 
 fm_remote_job_stage_owner_alive() { # <stage-dir>

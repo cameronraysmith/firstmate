@@ -94,6 +94,11 @@ write_remote_delta() {  # <result-path> <status-line>
   rm -f "$payload" "$empty"
 }
 
+# The signature a primed .seen-* suppressor must hold, byte for byte as
+# bin/fm-watch.sh writes it. The dialect comes from the shared probe: keying it
+# on `uname` hands `-f` to the GNU stat that a nix-managed macOS PATH resolves
+# first, and the empty read that follows primes a suppressor the watcher can
+# never match.
 status_signature() {  # <status-path>
   bash -c '
     . "$1"

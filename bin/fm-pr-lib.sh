@@ -17,6 +17,10 @@
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
 
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-stat-lib.sh"
+
 FM_PR_PROVIDER=
 FM_PR_URL=
 FM_PR_HOST=
@@ -214,34 +218,34 @@ fm_pr_head_valid() {
 }
 
 fm_pr_file_mode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %Lp "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %a "$1" 2>/dev/null
+  else
+    stat -f %Lp "$1" 2>/dev/null
   fi
 }
 
 fm_pr_file_device() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %d "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %d "$1" 2>/dev/null
+  else
+    stat -f %d "$1" 2>/dev/null
   fi
 }
 
 fm_pr_file_link_count() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %l "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %h "$1" 2>/dev/null
+  else
+    stat -f %l "$1" 2>/dev/null
   fi
 }
 
 fm_pr_file_inode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %i "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %i "$1" 2>/dev/null
+  else
+    stat -f %i "$1" 2>/dev/null
   fi
 }
 
