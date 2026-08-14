@@ -117,8 +117,15 @@ test_retire_serializes_and_rejects_stale_gen() {
 # and friends behind to generate stale wakes forever, and every re-run died
 # identically because the abandoned lock directory was never broken.
 #
-# The stat and uname stubs make this deterministic on any host: the writer must
-# take the Linux path and still break a provably stale lock.
+# The stat stub makes this deterministic on any host: the writer must take the
+# GNU path and still break a provably stale lock. It answers every GNU `-c`
+# format, not just the `%Y` this case reads, because bin/fm-stat-lib.sh decides
+# the dialect by asking the stat on PATH whether the GNU form works at all
+# (`stat -c %h /`) rather than by reading `uname`. A stub that answered only the
+# one format the caller happens to use would fail that probe and be classified
+# BSD, which is the very inference this lib exists to remove. The uname stub is
+# kept so the case still pins the historical Linux-path behaviour, but nothing
+# in the writer consults it any more.
 test_stale_lock_broken_under_gnu_stat() {
   local state gen fakebin real_uname out status
   state=$(new_state_dir gnu-stat-lock)
@@ -129,8 +136,11 @@ test_stale_lock_broken_under_gnu_stat() {
   # GNU coreutils semantics, self-contained so no real stat is consulted.
   cat > "$fakebin/stat" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = -c ] && [ "${2:-}" = %Y ]; then
-  printf '%s\n' 1000000000   # long-abandoned lock
+if [ "${1:-}" = -c ]; then
+  case "${2:-}" in
+    %Y) printf '%s\n' 1000000000 ;;   # long-abandoned lock
+    *)  printf '%s\n' 1 ;;            # any other GNU format still answers
+  esac
   exit 0
 fi
 if [ "${1:-}" = -f ]; then

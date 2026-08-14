@@ -102,10 +102,10 @@ make_sample_image() {
 }
 
 path_mode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %Lp "$1"
-  else
+  if fm_stat_is_gnu; then
     stat -c %a "$1"
+  else
+    stat -f %Lp "$1"
   fi
 }
 
