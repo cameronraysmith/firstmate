@@ -9,6 +9,11 @@ RECON="$ROOT/bin/fm-inactive-reconcile.sh"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 WATCH="$ROOT/bin/fm-watch.sh"
 TMP_ROOT=$(fm_test_tmproot fm-inactive-reconcile)
+FM_REAL_STAT=$(command -v stat) || fail "stat is required"
+FM_REAL_UNAME=$(command -v uname) || fail "uname is required"
+FM_REAL_STAT_IS_GNU=0
+fm_stat_is_gnu && FM_REAL_STAT_IS_GNU=1
+export FM_REAL_STAT FM_REAL_STAT_IS_GNU
 
 set_mtime() { # <epoch> <path>
   local epoch=$1 path=$2 stamp
@@ -52,10 +57,62 @@ SH
   chmod +x "$fake"/*
 }
 
+# A stat that speaks one dialect while `uname` names the other kernel. Each shim
+# delegates to the real stat on this host, so the reconciliation under test reads
+# genuine mtimes through a stat whose working format is fixed by the shim rather
+# than by the platform the suite happens to run on. The GNU shim reproduces the
+# measured GNU coreutils behavior of writing a filesystem report to STDOUT while
+# failing on -f, which is what a Darwin-keyed caller reads back as an mtime.
+make_dialect_bin() { # <dir> <gnu|bsd> <kernel>
+  local dir=$1 dialect=$2 kernel=$3
+  mkdir -p "$dir"
+  if [ "$dialect" = gnu ]; then
+    cat > "$dir/stat" <<'SH'
+#!/bin/sh
+if [ "$1" != -c ]; then
+  printf 'stat: cannot read file system information\n' >&2
+  printf '  File: "/"\n    ID: 1 Namelen: 255\nBlock size: 4096\nBlocks: Total: 1 Free: 1\nInodes: Total: 1 Free: 1\n'
+  exit 1
+fi
+fmt=$2; shift 2
+[ "${FM_REAL_STAT_IS_GNU:?}" != 1 ] || exec "${FM_REAL_STAT:?}" -c "$fmt" "$@"
+case "$fmt" in
+  %Y) fmt=%m ;; %h) fmt=%l ;; %a) fmt=%Lp ;; %d) fmt=%d ;; %i) fmt=%i ;;
+  *) printf 'fake-stat: unmapped GNU format %s\n' "$fmt" >&2; exit 1 ;;
+esac
+exec "${FM_REAL_STAT:?}" -f "$fmt" "$@"
+SH
+  else
+    cat > "$dir/stat" <<'SH'
+#!/bin/sh
+if [ "$1" != -f ]; then
+  printf 'stat: illegal option -- %s\n' "$1" >&2
+  exit 1
+fi
+fmt=$2; shift 2
+[ "${FM_REAL_STAT_IS_GNU:?}" = 1 ] || exec "${FM_REAL_STAT:?}" -f "$fmt" "$@"
+case "$fmt" in
+  %m) fmt=%Y ;; %l) fmt=%h ;; %Lp) fmt=%a ;; %d) fmt=%d ;; %i) fmt=%i ;;
+  *) printf 'fake-stat: unmapped BSD format %s\n' "$fmt" >&2; exit 1 ;;
+esac
+exec "${FM_REAL_STAT:?}" -c "$fmt" "$@"
+SH
+  fi
+  cat > "$dir/uname" <<SH
+#!/bin/sh
+case "\${1:-}" in
+  ''|-s) printf '%s\n' '$kernel' ;;
+  *) exec '$FM_REAL_UNAME' "\$@" ;;
+esac
+SH
+  chmod +x "$dir/stat" "$dir/uname"
+}
+
 make_world() { # <name>
   WORLD="$TMP_ROOT/$1"
   MAIN="$WORLD/main"
   MATE="$WORLD/mate"
+  DIALECT_BIN=
   mkdir -p "$WORLD/root" "$MAIN"/{state,data,config,projects} "$MATE"/{state,data,config,projects,bin}
   : > "$MATE/AGENTS.md"
   make_tools "$WORLD"
@@ -98,7 +155,7 @@ write_mate_meta() {
 
 run_reconcile() { # <home> [--startup]
   local home=$1 option=${2:-}
-  PATH="$WORLD/fakebin:$PATH" FM_ROOT_OVERRIDE="$WORLD/root" FM_HOME="$home" \
+  PATH="${DIALECT_BIN:+$DIALECT_BIN:}$WORLD/fakebin:$PATH" FM_ROOT_OVERRIDE="$WORLD/root" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     FM_INACTIVE_RECONCILE_SECS=60 FM_INACTIVE_CREW_STATE_BIN="$WORLD/fakebin/fm-crew-state.sh" \
     FM_FORGE_LOG="$WORLD/forge.log" "$RECON" scan ${option:+"$option"}
@@ -114,7 +171,7 @@ outcome_count() { # <home> <suffix>
 
 prime_seen() { # <state> <status>
   local state=$1 status=$2 sig
-  if [ "$(uname)" = Darwin ]; then sig=$(stat -f '%z:%Fm' "$status"); else sig=$(stat -c '%s:%Y' "$status"); fi
+  if fm_stat_is_gnu; then sig=$(stat -c '%s:%Y' "$status"); else sig=$(stat -f '%z:%Fm' "$status"); fi
   printf '%s' "$sig" > "$state/.seen-$(basename "$status" | tr '.' '_')"
 }
 
@@ -432,6 +489,30 @@ test_notice_recovery_does_not_duplicate_wake() {
   pass "notice recovery remains idempotent across queue acknowledgement"
 }
 
+# Inactivity is measured from file mtimes, so the reconciliation only ever fires
+# when the mtime read succeeds. Both worlds below pair a stat with the kernel
+# name that contradicts it, which is the arrangement a uname-keyed dialect branch
+# reads wrong: the GNU pair returns a filesystem report where an epoch belongs,
+# and the BSD pair returns nothing at all. Either way every child measures as
+# just-active and no terminal outcome is ever reconciled.
+test_stat_dialect_comes_from_the_probe_not_the_kernel() {
+  local pair dialect kernel
+  for pair in 'gnu Darwin' 'bsd Linux'; do
+    dialect=${pair% *}; kernel=${pair#* }
+    make_world "dialect-$dialect"
+    write_child "$MAIN" child 'done: PR https://example.test/owner/repo/pull/1 checks green'
+    DIALECT_BIN="$WORLD/dialect"
+    make_dialect_bin "$DIALECT_BIN" "$dialect" "$kernel"
+
+    FM_FAKE_CREW_STATE='done' run_reconcile "$MAIN" --startup
+    [ "$(wake_count "$MAIN" 'inactive-outcome:')" = 1 ] \
+      || fail "a $dialect stat on a host naming itself $kernel did not reconcile the inactive terminal outcome"
+    [ "$(outcome_count "$MAIN" pending)" = 1 ] \
+      || fail "a $dialect stat on a host naming itself $kernel did not retain the presentation receipt"
+  done
+  pass "inactivity is measured through the stat probe, not the kernel name"
+}
+
 # Forge command shims fail loudly. A successful scan proves this path never uses
 # them while reconciling a local terminal outcome.
 test_reconciliation_never_calls_forge() {
@@ -456,6 +537,7 @@ test_watcher_hook_and_idle_secondmate_exemption
 test_stalled_state_read_is_bounded_and_scan_progresses
 test_full_scan_budget_includes_wake_lock_wait
 test_notice_recovery_does_not_duplicate_wake
+test_stat_dialect_comes_from_the_probe_not_the_kernel
 test_reconciliation_never_calls_forge
 
 echo "all inactive reconciliation tests passed"
