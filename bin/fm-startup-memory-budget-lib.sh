@@ -8,6 +8,9 @@
 # parsing, default publication, and the portable prompt-memory estimate used by
 # bin/fm-startup-memory-budget.sh and the internal /stow skill.
 
+# shellcheck source=bin/fm-stat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-stat-lib.sh"
+
 FM_STARTUP_MEMORY_BUDGET_FILE="startup-memory-budget"
 FM_STARTUP_MEMORY_BUDGET_DEFAULT="7500"
 FM_STARTUP_MEMORY_BUDGET_ERROR=""
@@ -22,10 +25,10 @@ fm_startup_memory_budget_fail() {
 }
 
 fm_startup_memory_budget_link_count() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %l "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %h "$1" 2>/dev/null
+  else
+    stat -f %l "$1" 2>/dev/null
   fi
 }
 

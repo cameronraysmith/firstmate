@@ -39,6 +39,13 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# The shared stat-dialect probe, for test helpers that read a mode, mtime, or
+# size to build an expected value. It re-resolves whenever PATH changes, which
+# is what makes it correct in suites that narrow PATH to a minimal system set or
+# install a fakebin shim, so it is deliberately NOT pinned here.
+# shellcheck source=bin/fm-stat-lib.sh
+. "$ROOT/bin/fm-stat-lib.sh"
+
 # --- reporters --------------------------------------------------------------
 
 fail() {
