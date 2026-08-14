@@ -61,11 +61,11 @@ SH
 chmod +x "$FAKEBIN/herdr"
 
 lab() { env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"; }
-production_process_proof() {
+production_process_proof() {  # [pane]
   FM_HOME="$HOME_DIR" FM_BACKEND=herdr HERDR_SESSION="$HERDR_LAB_SESSION" \
     FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1 PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" \
     bash -c '. "$1"; fm_backend_herdr_pane_idle_shell_pid "$2" "$3" >/dev/null' \
-      _ "$ROOT/bin/fm-herdr-session-cleanup.sh" "$HERDR_LAB_SESSION" "$PANE"
+      _ "$ROOT/bin/fm-herdr-session-cleanup.sh" "$HERDR_LAB_SESSION" "${1:-$PANE}"
 }
 focus_snapshot() {
   local list workspace tab tabs
@@ -79,6 +79,8 @@ focus_snapshot() {
 
 ANCHOR=$(lab workspace create --cwd "$ROOT" --label captain-anchor --focus) || fail 'could not create focus anchor'
 ANCHOR_TAB=$(printf '%s' "$ANCHOR" | jq -r '.result.tab.tab_id')
+ANCHOR_WS=$(printf '%s' "$ANCHOR" | jq -r '.result.workspace.workspace_id')
+ANCHOR_PANE=$(printf '%s' "$ANCHOR" | jq -r '.result.root_pane.pane_id')
 TOKEN=AbCdEfGhIjKlMnOpQrStUv
 ID=restored-idle-shell
 TITLE="└ $ID · p:$TOKEN"
@@ -152,6 +154,107 @@ FM_HOME="$HOME_DIR" FM_BACKEND=herdr HERDR_SESSION="$HERDR_LAB_SESSION" \
 [ "$(focus_snapshot)" = "$BEFORE_FOCUS" ] || fail 'idempotent repeat changed focus'
 lab pane get "$(printf '%s' "$ANCHOR" | jq -r '.result.root_pane.pane_id')" >/dev/null \
   || fail 'anchor pane was touched by cleanup'
+
+# A torn-down task's workspace can outlive its recorded task pane, holding a
+# DIFFERENT restored shell. That is the production leak shape, and reclaiming it
+# is what keeps one from accumulating per torn-down task.
+production_retire_leftover() { # <workspace> <label> <token>
+  FM_HOME="$HOME_DIR" FM_BACKEND=herdr HERDR_SESSION="$HERDR_LAB_SESSION" \
+    FM_HERDR_SESSION_CLEANUP_SOURCE_ONLY=1 PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" \
+    bash -c '. "$1"; fm_backend_herdr_projection_retire_leftover "$2" "$3" "$4" "$5"' \
+      _ "$ROOT/bin/fm-herdr-session-cleanup.sh" "$HERDR_LAB_SESSION" "$1" "$2" "$3"
+}
+
+make_leftover() { # <task-id> <token> -> prints "<workspace>\t<pane>"
+  local id=$1 token=$2 title created seeded_pane workspace second pane tries=0
+  title="└ $id · p:$token"
+  created=$(lab workspace create --cwd "$ROOT" --label "$title" --no-focus) || return 1
+  workspace=$(printf '%s' "$created" | jq -r '.result.workspace.workspace_id')
+  seeded_pane=$(printf '%s' "$created" | jq -r '.result.root_pane.pane_id')
+  second=$(lab tab create --workspace "$workspace" --cwd "$ROOT" --label "fm-$id" --no-focus) || return 1
+  pane=$(printf '%s' "$second" | jq -r '.result.root_pane.pane_id')
+  # Retire the pane a task would have recorded, leaving the workspace alive on a
+  # different pane exactly as Herdr leaves it after a torn-down task.
+  lab pane close "$seeded_pane" >/dev/null || return 1
+  while [ "$tries" -lt 50 ]; do
+    if production_process_proof "$pane"; then break; fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  [ "$tries" -lt 50 ] || return 1
+  printf '%s\t%s' "$workspace" "$pane"
+}
+
+LEFTOVER_TOKEN=LeFtOvErAbCdEfGhIjKlMn
+LEFTOVER_ID=orphaned-projection
+LEFTOVER_TITLE="└ $LEFTOVER_ID · p:$LEFTOVER_TOKEN"
+LEFTOVER=$(make_leftover "$LEFTOVER_ID" "$LEFTOVER_TOKEN") \
+  || fail 'could not reproduce a leftover workspace holding a different restored shell'
+LEFTOVER_WS=${LEFTOVER%%$'\t'*}
+LEFTOVER_PANE=${LEFTOVER#*$'\t'}
+[ "$(focus_snapshot)" = "$BEFORE_FOCUS" ] || fail 'building the leftover fixture moved the captain focus'
+production_retire_leftover "$LEFTOVER_WS" "$LEFTOVER_TITLE" "$LEFTOVER_TOKEN" \
+  || fail 'the leftover workspace was not retired'
+if lab workspace get "$LEFTOVER_WS" >/dev/null 2>&1; then
+  fail 'the leftover workspace survived retirement'
+fi
+if lab pane get "$LEFTOVER_PANE" >/dev/null 2>&1; then
+  fail 'the leftover pane survived retirement'
+fi
+[ "$(focus_snapshot)" = "$BEFORE_FOCUS" ] || fail 'retiring the leftover workspace changed the captain focus'
+pass 'a workspace outliving its recorded task pane is reclaimed, not left to accumulate'
+
+production_retire_leftover "$LEFTOVER_WS" "$LEFTOVER_TITLE" "$LEFTOVER_TOKEN" \
+  || fail 'retiring an already absent workspace is not idempotent'
+pass 'retiring an already absent leftover workspace succeeds without touching anything'
+
+# Only the first refusal below isolates a single guard: it removes the
+# idle-shell proof from an otherwise retirable leftover. The other two stack.
+# The multi-tab case adds a tab to that same still-busy workspace, so it fails
+# the one-tab guard and the idle-shell proof together, and the last case
+# targets the captain's own anchor, which is not a leftover at all. Each case
+# therefore proves the workspace survives untouched, not that the one guard it
+# names would refuse on its own.
+BUSY_TOKEN=BuSyPaNeAbCdEfGhIjKlMn
+BUSY_ID=busy-projection
+BUSY_TITLE="└ $BUSY_ID · p:$BUSY_TOKEN"
+BUSY=$(make_leftover "$BUSY_ID" "$BUSY_TOKEN") || fail 'could not build the busy-pane fixture'
+BUSY_WS=${BUSY%%$'\t'*}
+BUSY_PANE=${BUSY#*$'\t'}
+lab pane run "$BUSY_PANE" 'sleep 600' >/dev/null || fail 'could not make the leftover pane busy'
+busy_tries=0
+while [ "$busy_tries" -lt 50 ]; do
+  production_process_proof "$BUSY_PANE" || break
+  sleep 0.1
+  busy_tries=$((busy_tries + 1))
+done
+[ "$busy_tries" -lt 50 ] || fail 'the busy fixture never stopped proving an idle shell'
+if production_retire_leftover "$BUSY_WS" "$BUSY_TITLE" "$BUSY_TOKEN" 2>/dev/null; then
+  fail 'a leftover whose pane is not a provably idle shell was retired anyway'
+fi
+lab workspace get "$BUSY_WS" >/dev/null || fail 'a refused busy leftover lost its workspace'
+lab pane get "$BUSY_PANE" >/dev/null || fail 'a refused busy leftover lost its pane'
+pass 'a leftover whose pane is not a provably idle childless shell is left alone'
+
+EXTRA=$(lab tab create --workspace "$BUSY_WS" --cwd "$ROOT" --label extra --no-focus) \
+  || fail 'could not add a second tab to the guard fixture'
+if production_retire_leftover "$BUSY_WS" "$BUSY_TITLE" "$BUSY_TOKEN" 2>/dev/null; then
+  fail 'a leftover holding more than one tab was retired anyway'
+fi
+lab workspace get "$BUSY_WS" >/dev/null || fail 'a refused multi-tab leftover lost its workspace'
+pass 'a leftover holding more than one tab is left alone'
+
+if production_retire_leftover "$ANCHOR_WS" "$LEFTOVER_TITLE" "$LEFTOVER_TOKEN" 2>/dev/null; then
+  fail "the captain's own workspace was retired against a projection label"
+fi
+lab workspace get "$ANCHOR_WS" >/dev/null || fail "the captain's own workspace was closed"
+lab pane get "$ANCHOR_PANE" >/dev/null || fail "the captain's own pane was closed"
+[ "$(focus_snapshot)" = "$BEFORE_FOCUS" ] || fail 'the guard refusals changed the captain focus'
+pass "a workspace whose label is not this projection's is never a candidate"
+
+lab pane close "$(printf '%s' "$EXTRA" | jq -r '.result.root_pane.pane_id')" >/dev/null || true
+lab pane close "$BUSY_PANE" >/dev/null || true
+
 STATUS=$(lab status --json) || fail 'could not read final named-lab version evidence'
 pass 'real named lab cleanup is idempotent and leaves the default fleet session to the teardown tripwire'
 printf 'evidence: herdr=%s protocol=%s default-session-tripwire=armed\n' \
