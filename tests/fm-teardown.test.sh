@@ -38,6 +38,7 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   (z) no-mistakes + fast-forward landing (default branch IS the branch head) -> ALLOW
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -683,6 +684,32 @@ test_no_mistakes_origin_remote_allows() {
   grep -F 'blockers are gone and date is due' "$case_dir/stdout" >/dev/null \
     || fail "nm-origin: teardown manual prompt did not preserve date-gate check"
   pass "no-mistakes worktree with HEAD on origin is torn down (no regression)"
+}
+
+test_fast_forward_landed_branch_allows() {
+  local case_dir rc landed
+  case_dir=$(make_case fast-forward-landed)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" ff-first.txt one "first branch commit"
+  wt_commit_file "$case_dir" ff-second.txt two "second branch commit"
+  # The landing shape bin/fm-pr-merge.sh produces by default: the branch's own
+  # head commit becomes the default branch head, rather than a rewritten commit,
+  # so every branch commit is reachable from a remote-tracking branch.
+  git -C "$case_dir/wt" push -q origin HEAD:main
+  git -C "$case_dir/project" fetch -q origin
+  landed=$(git -C "$case_dir/origin.git" rev-parse refs/heads/main)
+  [ "$landed" = "$(git -C "$case_dir/wt" rev-parse HEAD)" ] \
+    || fail "fast-forward-landed: origin main is $landed, not the branch head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "fast-forward-landed: teardown should succeed for a fast-forward landing"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "fast-forward-landed: teardown printed a REFUSED line"
+  pass "fast-forward-landed branch (default branch head is the branch head) is torn down"
 }
 
 test_no_mistakes_truly_unpushed_refuses() {
@@ -2777,6 +2804,7 @@ test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
+test_fast_forward_landed_branch_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
