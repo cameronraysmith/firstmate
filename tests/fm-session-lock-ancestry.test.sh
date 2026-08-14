@@ -613,6 +613,66 @@ test_recycled_holder_pid_is_not_a_live_holder() {
   pass "session-lock: a recycled pid does not keep the recorded holder alive"
 }
 
+# A subagent of the primary session must never take the home's lease. It is not
+# a second operator; it is a helper the lease-holder spawned, and it exits with
+# its task. Both directions are asserted, because a predicate that answers "yes"
+# to everything would pass a one-sided version of this test while breaking every
+# genuine session's ability to claim its own home.
+test_subagent_invocation_is_identified() {
+  local claude_sub claude_sub_eq primary bare
+  claude_sub='/nix/store/x/bin/.claude-wrapped --agent-id probe@sess --parent-session-id 1250a6ab --agent-type general-purpose'
+  claude_sub_eq='/nix/store/x/bin/.claude-wrapped --agent-id probe@sess --parent-session-id=1250a6ab'
+  primary='/nix/store/x/bin/.claude-wrapped --session-id 1250a6ab'
+  bare='/nix/store/x/bin/.claude-wrapped'
+
+  lib_eval "$TMP_ROOT" "fm_session_process_is_subagent '$claude_sub'" \
+    || fail "a subagent invocation carrying --parent-session-id was not identified"
+  lib_eval "$TMP_ROOT" "fm_session_process_is_subagent '$claude_sub_eq'" \
+    || fail "the --parent-session-id=<v> spelling was not identified"
+  ! lib_eval "$TMP_ROOT" "fm_session_process_is_subagent '$primary'" \
+    || fail "a session in its own right was misidentified as a subagent"
+  ! lib_eval "$TMP_ROOT" "fm_session_process_is_subagent '$bare'" \
+    || fail "a bare harness invocation was misidentified as a subagent"
+  pass "a subagent invocation is identified by its parent session, and a primary is not"
+}
+
+# The ancestry walk is what actually decides, and it is the part that broke:
+# a subagent is re-parented under a tmux server, so the walk terminates at the
+# subagent itself and it resolves as its own outermost harness.
+test_subagent_ancestry_is_detected_and_a_primary_is_not() {
+  local dir fakebin
+  dir="$TMP_ROOT/subagent-ancestry"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+
+  # Every pid in the walk answers as a subagent-shaped harness.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$field:${FM_TEST_SUBAGENT_SHAPE:-sub}" in
+  comm=:*) printf '%s\n' '.claude-wrapped' ;;
+  args=:sub) printf '%s\n' '/nix/store/x/bin/.claude-wrapped --agent-id p@s --parent-session-id 1250a6ab' ;;
+  args=:primary) printf '%s\n' '/nix/store/x/bin/.claude-wrapped --session-id 1250a6ab' ;;
+  ppid=:*) printf '%s\n' '1' ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  FM_TEST_SUBAGENT_SHAPE=sub lib_eval "$fakebin" "fm_session_self_is_subagent" \
+    || fail "a process whose harness ancestry is a subagent was not detected"
+  ! FM_TEST_SUBAGENT_SHAPE=primary lib_eval "$fakebin" "fm_session_self_is_subagent" \
+    || fail "a genuine session was reported as a subagent, which would deny it its own home"
+  pass "the ancestry walk detects a subagent and leaves a genuine session alone"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
@@ -623,3 +683,5 @@ test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
 test_e2e_second_session_under_one_daemon_is_refused
+test_subagent_invocation_is_identified
+test_subagent_ancestry_is_detected_and_a_primary_is_not
