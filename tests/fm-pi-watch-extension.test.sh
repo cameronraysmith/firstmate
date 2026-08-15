@@ -132,7 +132,7 @@ if (!prompt.includes("watcher: healthy pid=1")) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi extension must surface an external healthy watcher as an owned-wake failure"
+  expect_code 0 "$status" "Pi extension must surface an external healthy watcher as an owned-wake failure" "$out"
   [ -z "$out" ] || fail "Pi external-healthy test printed output: $out"
   pass "Pi extension reports external healthy watcher output"
 }
@@ -194,7 +194,7 @@ if (result.details?.ok !== true || result.details?.message !== result.content[0]
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi custom tool must expose first-cycle or repair-only metadata and return Pi's AgentToolResult shape"
+  expect_code 0 "$status" "Pi custom tool must expose first-cycle or repair-only metadata and return Pi's AgentToolResult shape" "$out"
   [ -z "$out" ] || fail "Pi tool-result test printed output: $out"
   pass "Pi custom tool exposes repair-only metadata and returns automatic-continuation guidance"
 }
@@ -257,7 +257,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi redundant tool call must remain an ownership-based no-op with repair-only guidance"
+  expect_code 0 "$status" "Pi redundant tool call must remain an ownership-based no-op with repair-only guidance" "$out"
   [ -z "$out" ] || fail "Pi redundant-call test printed output: $out"
   pass "Pi redundant tool call returns ownership guidance and spawns no second child"
 }
@@ -314,7 +314,7 @@ if (rows.length !== 1) throw new Error(`scheduled retry call spawned ${rows.leng
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi scheduled-retry call must not duplicate the extension-owned retry"
+  expect_code 0 "$status" "Pi scheduled-retry call must not duplicate the extension-owned retry" "$out"
   [ -z "$out" ] || fail "Pi scheduled-retry test printed output: $out"
   pass "Pi scheduled retry remains extension-owned after another tool call"
 }
@@ -404,7 +404,7 @@ process.exit(0);
 EOF
   )
   status=$?
-  expect_code 0 "$status" "Pi actionable close must start one successor before wake delivery settles"
+  expect_code 0 "$status" "Pi actionable close must start one successor before wake delivery settles" "$out"
   [ -z "$out" ] || fail "Pi continuous-rearm test printed output: $out"
   pass "Pi actionable close starts one successor before wake delivery settles"
 }
@@ -470,7 +470,7 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery"
+  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery" "$out"
   [ -z "$out" ] || fail "Pi hung-successor test printed output: $out"
   pass "Pi hung successor falls back to one typed actionable wake"
 }
@@ -541,7 +541,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor" "$out"
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
   pass "Pi unretired successor falls back without an overlapping retry"
 }
@@ -637,7 +637,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback" "$out"
     [ -z "$out" ] || fail "Pi late-$kind test printed output: $out"
   done
   pass "Pi late unretired closes resume classified supervision"
@@ -697,7 +697,7 @@ process.exit(0);
 EOF
   )
   status=$?
-  expect_code 0 "$status" "Pi clean empty close must trigger a bounded continuity retry"
+  expect_code 0 "$status" "Pi clean empty close must trigger a bounded continuity retry" "$out"
   [ -z "$out" ] || fail "Pi empty-close retry test printed output: $out"
   pass "Pi clean empty close triggers a bounded continuity retry"
 }
@@ -748,7 +748,7 @@ if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was n
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi established clean closes must honor the continuity retry limit"
+  expect_code 0 "$status" "Pi established clean closes must honor the continuity retry limit" "$out"
   [ -z "$out" ] || fail "Pi established-empty-close retry test printed output: $out"
   pass "Pi established clean closes stop at the configured retry limit"
 }
@@ -888,7 +888,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("owned lock did not run
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi watcher arm must distinguish owned, live-other, and missing or dead session locks"
+  expect_code 0 "$status" "Pi watcher arm must distinguish owned, live-other, and missing or dead session locks" "$out"
   [ -z "$out" ] || fail "Pi lock-ownership arm test printed output: $out"
   pass "Pi watcher arm distinguishes all session lock ownership states"
 }
@@ -1069,7 +1069,7 @@ if (liveArmPids().length !== 0) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner"
+  expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner" "$out"
   [ -z "$out" ] || fail "Pi session-transition generation owner test printed output: $out"
   pass "Pi session transitions use a generation owner across /new /resume /fork, stale callbacks, and quit"
 }
@@ -1112,7 +1112,7 @@ if (process.listenerCount("exit") !== before + 1) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi cleanup fallback listener must remain singular across session replacement"
+  expect_code 0 "$status" "Pi cleanup fallback listener must remain singular across session replacement" "$out"
   [ -z "$out" ] || fail "Pi listener-lifecycle test printed output: $out"
   pass "Pi process-exit cleanup listener remains singular across session replacement"
 }
@@ -1173,7 +1173,7 @@ process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi process exit must run the watcher cleanup fallback"
+  expect_code 0 "$status" "Pi process exit must run the watcher cleanup fallback" "$out"
   [ -z "$out" ] || fail "Pi process-exit cleanup test printed output: $out"
   pid=$(cat "$pid_file")
   i=0
@@ -1204,7 +1204,7 @@ await import(pathToFileURL(process.env.PLUGIN).href);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode plugin must import beneath an explicit ESM package boundary"
+  expect_code 0 "$status" "OpenCode plugin must import beneath an explicit ESM package boundary" "$out"
   [ -z "$out" ] || fail "OpenCode ESM boundary import printed output: $out"
   pass "OpenCode plugins have an explicit ESM boundary even under a typeless parent package"
 }
@@ -1254,7 +1254,7 @@ if (!text.includes(`home=${process.env.FM_HOME}`) || !text.includes(`root=${expe
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must use FM_HOME state outside the repo root"
+  expect_code 0 "$status" "OpenCode watch plugin must use FM_HOME state outside the repo root" "$out"
   [ -z "$out" ] || fail "OpenCode effective-state test printed output: $out"
   pass "OpenCode watcher plugin uses the effective FM_HOME state"
 }
@@ -1303,7 +1303,7 @@ if (!text.includes("poll=7")) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must source FM_HOME config outside the repo root"
+  expect_code 0 "$status" "OpenCode watch plugin must source FM_HOME config outside the repo root" "$out"
   [ -z "$out" ] || fail "OpenCode effective-config test printed output: $out"
   pass "OpenCode watcher plugin sources the effective config"
 }
@@ -1355,7 +1355,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
+  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock" "$out"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
 }
@@ -1402,7 +1402,7 @@ if (existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch coordinator must keep primary scope checks in the shared arm path"
+  expect_code 0 "$status" "OpenCode watch coordinator must keep primary scope checks in the shared arm path" "$out"
   [ -z "$out" ] || fail "OpenCode coordinator-scope test printed output: $out"
   pass "OpenCode watcher coordinator respects primary scope"
 }
@@ -1577,7 +1577,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must retire the pre-ready arm, not its actionable successor"
+  expect_code 0 "$status" "OpenCode must retire the pre-ready arm, not its actionable successor" "$out"
   [ -z "$out" ] || fail "OpenCode pre-ready actionable test printed output: $out"
   pass "OpenCode pre-ready actionable close preserves its successor"
 }
@@ -1645,7 +1645,7 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
+  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery" "$out"
   [ -z "$out" ] || fail "OpenCode hung-successor test printed output: $out"
   pass "OpenCode hung successor falls back to one typed actionable wake"
 }
@@ -1718,7 +1718,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor" "$out"
   [ -z "$out" ] || fail "OpenCode unretired-successor test printed output: $out"
   pass "OpenCode unretired successor falls back without an overlapping retry"
 }
@@ -1816,7 +1816,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback" "$out"
     [ -z "$out" ] || fail "OpenCode late-$kind test printed output: $out"
   done
   pass "OpenCode late unretired closes resume classified supervision"
@@ -1877,7 +1877,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode clean empty close must trigger a bounded continuity retry"
+  expect_code 0 "$status" "OpenCode clean empty close must trigger a bounded continuity retry" "$out"
   [ -z "$out" ] || fail "OpenCode empty-close retry test printed output: $out"
   pass "OpenCode clean empty close triggers a bounded continuity retry"
 }
@@ -1930,7 +1930,7 @@ if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was n
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode established clean closes must honor the continuity retry limit"
+  expect_code 0 "$status" "OpenCode established clean closes must honor the continuity retry limit" "$out"
   [ -z "$out" ] || fail "OpenCode established-empty-close retry test printed output: $out"
   pass "OpenCode established clean closes stop at the configured retry limit"
 }
@@ -1995,7 +1995,7 @@ try {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode close handler must verify session-lock ownership before successor launch"
+  expect_code 0 "$status" "OpenCode close handler must verify session-lock ownership before successor launch" "$out"
   [ -z "$out" ] || fail "OpenCode close lock test printed output: $out"
   pass "OpenCode close handler verifies session-lock ownership before successor launch"
 }
@@ -2068,7 +2068,7 @@ if (promptBody) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode turn-end guard must let the auto-arm plugin establish supervision first"
+  expect_code 0 "$status" "OpenCode turn-end guard must let the auto-arm plugin establish supervision first" "$out"
   [ -z "$out" ] || fail "OpenCode coordination test printed output: $out"
   pass "OpenCode watcher plugin coordinates with the turn-end guard"
 }
@@ -2145,7 +2145,7 @@ if (!promptBody.includes("TURN WOULD END BLIND")) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must not treat external healthy output as an owned arm"
+  expect_code 0 "$status" "OpenCode watch plugin must not treat external healthy output as an owned arm" "$out"
   [ -z "$out" ] || fail "OpenCode external-healthy test printed output: $out"
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
