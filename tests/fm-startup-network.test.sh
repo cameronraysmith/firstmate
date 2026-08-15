@@ -16,6 +16,7 @@
 #   - an abandoned `running` record is reported as needing a rerun rather than
 #     staying "in progress" forever
 #   - single-flight: a second `start` never launches a competing worker
+#   - the detached worker is reapable, so it does not outlive this file
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -23,7 +24,98 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-startup-network-tests)
 FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
-trap fm_test_cleanup EXIT
+
+# `start` hands its worker to nohup in a process group of its own, so the worker
+# is reparented away from this shell and the descent walk tests/lib.sh reaps by
+# cannot reach it. Left alone it does not merely outlive this file: after
+# publishing it waits out FM_SESSION_START_TIMEOUT in await_delivery for an
+# inline claim most cases never harvest, and once fm_test_cleanup removes the
+# fixture root the publish lock it waits on can never be created again, so it
+# spins forking a sleep every 100 ms for as long as the job lasts. Teardown
+# therefore stops the workers before any root is removed.
+#
+# The pid is the one the stage itself publishes, kept in a file rather than an
+# array because most callers run run_stage inside command substitution, where an
+# array append would die with that subshell - the reason tests/lib.sh keeps its
+# own cleanup registry in a file.
+WORKER_PIDS="$TMP_ROOT/.detached-worker-pids"
+: > "$WORKER_PIDS"
+
+_stage_ps() {
+  local ps_bin
+  ps_bin=$(_fm_test_ps_bin) || return 1
+  "$ps_bin" "$@"
+}
+
+# Echo the process group to signal for <pid>, and only when signalling it is
+# provably confined to this file's own fixtures: the process leads a group of
+# its own, which is how the stage launched it and what a foreground `run` in
+# this shell's group is not, and that group's leader is a stage worker running
+# out of this run's unique temp root. A pid that has been reused since it was
+# recorded fails both.
+detached_worker_group() {  # <pid>
+  local pid=$1 pgid own leader
+  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$pid" -gt 1 ] || return 1
+  pgid=$(_stage_ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]') || return 1
+  [ "$pgid" = "$pid" ] || return 1
+  own=$(_stage_ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]') || return 1
+  [ "$pgid" != "$own" ] || return 1
+  leader=$(_stage_ps -o command= -p "$pgid" 2>/dev/null) || return 1
+  case "$leader" in *"$TMP_ROOT"*fm-startup-network.sh*) ;; *) return 1 ;; esac
+  printf '%s\n' "$pgid"
+}
+
+detached_worker_stopped() {  # <pid> <pgid>
+  local pid=$1 pgid=$2 leader_alive=1 group_alive=1
+  kill -0 "$pid" 2>/dev/null || leader_alive=0
+  kill -0 -- "-$pgid" 2>/dev/null || group_alive=0
+  [ "$leader_alive" -eq 0 ] && [ "$group_alive" -eq 0 ]
+}
+
+# Stop one detached worker and everything below it. Descendants go first,
+# because fm_run_timed gives the bounded sweep a process group of its own that a
+# signal to the worker's group would miss, and killing the worker first would
+# orphan that sweep beyond any relation left to find it by.
+stop_detached_worker() {  # <pid>
+  local pid=$1 pgid waited=0
+  pgid=$(detached_worker_group "$pid") || return 0
+  fm_test_stop_children "$pid" || :
+  kill -TERM -- "-$pgid" 2>/dev/null || :
+  while ! detached_worker_stopped "$pid" "$pgid" && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  detached_worker_stopped "$pid" "$pgid" && return 0
+  if kill -0 -- "-$pgid" 2>/dev/null; then
+    kill -KILL -- "-$pgid" 2>/dev/null || :
+  fi
+  waited=0
+  while ! detached_worker_stopped "$pid" "$pgid" && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  detached_worker_stopped "$pid" "$pgid"
+}
+
+reap_detached_workers() {
+  local pid stuck=0
+  [ -s "$WORKER_PIDS" ] || return 0
+  while read -r pid; do
+    stop_detached_worker "$pid" || stuck=$((stuck + 1))
+  done < <(sort -u "$WORKER_PIDS")
+  [ "$stuck" -eq 0 ] \
+    || printf 'fm-startup-network.test.sh: %s detached worker(s) survived teardown\n' "$stuck" >&2
+}
+
+fm_startup_network_test_teardown() {
+  reap_detached_workers
+  fm_test_cleanup
+}
+
+trap fm_startup_network_test_teardown EXIT
+trap 'fm_startup_network_test_teardown; exit 130' INT
+trap 'fm_startup_network_test_teardown; exit 143' TERM
 
 # new_world <name>: an FM_HOME plus a fake code root whose bin/ is a real
 # firstmate bin/ except for fm-bootstrap.sh, which is replaced by a scriptable
@@ -112,10 +204,14 @@ EOF
 }
 
 run_stage() {  # <home> <root> <args...>
-  local home=$1 root=$2
+  local home=$1 root=$2 rc=0
   shift 2
   PATH="$root/bin:$PATH" FM_FAKE_HARNESS_PID="${FM_FAKE_HARNESS_PID_OVERRIDE:-$$}" \
-    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$root/bin/fm-startup-network.sh" "$@"
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$root/bin/fm-startup-network.sh" "$@" || rc=$?
+  # Recorded after every call rather than only after `start`, so a worker whose
+  # pid a later generation overwrites is still reapable.
+  sed -n 's/^pid=//p' "$home/state/.startup-network.status" 2>/dev/null >> "$WORKER_PIDS" || :
+  return "$rc"
 }
 
 wait_for_startup_network_wake() {  # <home> [tenths]
@@ -467,6 +563,81 @@ EOF
   pass "fm-startup-network: fleet-lock takeover cannot overlap a mutating sweep"
 }
 
+test_detached_worker_stop_waits_for_the_leader_pid() {
+  local marker="$TMP_ROOT/leader-polled"
+  (
+    detached_worker_group() { printf '4242\n'; }
+    fm_test_stop_children() { :; }
+    sleep() { :; }
+    kill() {
+      case "$*" in
+        '-TERM -- -4242' | '-KILL -- -4242') return 0 ;;
+        '-0 -- -4242') return 1 ;;
+        '-0 4242')
+          if [ ! -e "$marker" ]; then
+            : > "$marker"
+            return 0
+          fi
+          return 1
+          ;;
+        *) return 1 ;;
+      esac
+    }
+    stop_detached_worker 4242
+  ) || fail "the detached worker stop simulation failed"
+  [ -e "$marker" ] \
+    || fail "the reaper declared success when the process group was gone but its leader PID remained"
+  pass "fm-startup-network: reaping waits for the detached worker leader PID to disappear"
+}
+
+# A worker that outlives this file never settles on its own: the fixture root is
+# gone, so its unbounded wait for the publish lock can never be satisfied and it
+# spins forking a sleep every 100 ms for the rest of the job. Nothing tests/lib.sh
+# reaps by can see it, which is asserted here rather than assumed, because that
+# is the whole reason teardown carries a reaper of its own.
+test_teardown_reaps_the_detached_worker_and_its_sweep() {
+  local rec home root log worker pid waited=0
+  local -a tree
+  rec=$(new_world teardown-reap)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  printf '%s\n' $$ > "$home/state/.lock"
+
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=30 \
+    run_stage "$home" "$root" start --locked 1 --harvest-pid $$
+  await_worker_record "$home"
+  worker=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+  while [ ! -s "$log" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -s "$log" ] || fail "the worker never reached its sweep"
+
+  _fm_test_collect_descendants $$ || fail "the process table could not be read"
+  case " ${_FM_TEST_STOP_PIDS[*]:-} " in
+    *" $worker "*) fail "the worker was a descendant after all, so lib.sh's own sweep would reap it" ;;
+  esac
+  detached_worker_group "$worker" >/dev/null \
+    || fail "the worker did not lead a group of its own, so teardown has nothing safe to signal"
+  _fm_test_collect_descendants "$worker" || fail "the process table could not be read"
+  # Copied element by element: "${arr[@]:-}" on an empty array yields one EMPTY
+  # element, which would leave the count assertion below satisfied by nothing.
+  tree=()
+  for pid in "${_FM_TEST_STOP_PIDS[@]:-}"; do
+    [ -n "$pid" ] && tree+=("$pid")
+  done
+  [ "${#tree[@]}" -gt 0 ] || fail "the worker had no live sweep beneath it to reap"
+
+  stop_detached_worker "$worker" || fail "the detached worker survived teardown's reap"
+  ! kill -0 "$worker" 2>/dev/null || fail "the reaped worker is still running"
+  for pid in "${tree[@]}"; do
+    ! kill -0 "$pid" 2>/dev/null \
+      || fail "the bounded sweep outlived the worker teardown reaped: $pid"
+  done
+  pass "fm-startup-network: teardown reaps the detached worker and the sweep beneath it"
+}
+
 # Every record carries a start offset from ONE origin, so the artifact reads as a
 # timeline and not just a bag of durations. The origin is normally exported by the
 # stage, but a process that starts recording without one has to adopt an origin
@@ -623,6 +794,8 @@ test_start_is_single_flight
 test_start_reserves_its_generation_before_returning
 test_new_lock_owner_does_not_reuse_the_previous_owners_worker
 test_lock_takeover_stays_read_only_while_a_sweep_holds_the_lease
+test_detached_worker_stop_waits_for_the_leader_pid
+test_teardown_reaps_the_detached_worker_and_its_sweep
 test_records_share_one_origin_so_offsets_form_a_timeline
 test_timings_are_published_and_only_the_on_demand_report_prints_them
 test_a_bounded_run_still_publishes_the_timings_it_managed_to_record
