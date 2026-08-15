@@ -246,26 +246,63 @@ test_lock_steals_dead_pid_lock() {
   pass "dead-pid stale lock is reclaimed by a single acquirer"
 }
 
+# Describe a lock path the way a post-mortem needs it: what it is, and who it
+# names. Used only to explain a failed contention run.
+lock_path_kind() {  # <path>
+  local path=$1
+  if [ -L "$path" ]; then
+    printf 'symlink->%s\n' "$(readlink "$path" 2>/dev/null || true)"
+  elif [ -d "$path" ]; then
+    printf 'dir(pid=%s)\n' "$(cat "$path/pid" 2>/dev/null || true)"
+  elif [ -e "$path" ]; then
+    printf 'other\n'
+  else
+    printf 'absent\n'
+  fi
+}
+
+steal_contention_trace() {  # <trace-file> <post-run-path-summary>
+  {
+    printf -- '--- stale-steal contention trace ---\n'
+    printf 'after wait: %s\n' "$2"
+    printf 'outcome tally:\n'
+    sed -n 's/.* outcome=\([^ ]*\).*/\1/p' "$1" | sort | uniq -c
+    printf 'per-contender records:\n'
+    cat "$1"
+    printf -- '--- end trace ---\n'
+  } >&2
+}
+
 test_lock_stale_steal_single_winner_under_concurrency() {
-  local dir state lockdir dead marker i pids pid wins
+  local dir state lockdir dead marker trace i pids pid wins after
   dir=$(make_case lock-stale-concurrency)
   state="$dir/state"
   lockdir="$state/.contend.lock"
   marker="$dir/wins"
+  trace="$dir/trace"
   dead=$(dead_pid)
   mkdir "$lockdir"
   printf '%s\n' "$dead" > "$lockdir/pid"
   : > "$marker"
+  : > "$trace"
   pids=
   i=1
   while [ "$i" -le 40 ]; do
     FM_STATE_OVERRIDE="$state" bash -c '
       . "$1"
-      if fm_lock_try_acquire "$2"; then
+      rc=0
+      fm_lock_try_acquire "$2" || rc=$?
+      # Every contender records its verdict, not only the winner: a run where
+      # nobody steals has to name the guard that declined, or it degrades into an
+      # unexplained count of zero that no later reader can attribute.
+      printf "pid=%s rc=%s outcome=%s held=%s recovered=%s\n" \
+        "${BASHPID:-$$}" "$rc" "${FM_LOCK_ACQUIRE_OUTCOME:-}" \
+        "${FM_LOCK_HELD_PID:-}" "${FM_LOCK_RECOVERED_PID:-}" >> "$4"
+      if [ "$rc" -eq 0 ]; then
         printf "%s\n" "${BASHPID:-$$}" >> "$3"
         sleep 1
       fi
-    ' _ "$LIB" "$lockdir" "$marker" &
+    ' _ "$LIB" "$lockdir" "$marker" "$trace" &
     pids="$pids $!"
     i=$((i + 1))
   done
@@ -273,8 +310,20 @@ test_lock_stale_steal_single_winner_under_concurrency() {
     wait "$pid" 2>/dev/null || true
   done
   wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
-  [ "$wins" -eq 1 ] || fail "expected exactly one stale-lock stealer, got $wins"
-  pass "concurrent stale-lock steal yields exactly one winner"
+  after="lock=$(lock_path_kind "$lockdir") steal=$(lock_path_kind "$lockdir.steal")"
+  # Two separable claims, reported separately: mutual exclusion (never two) and
+  # progress (a dead owner is always reclaimable). A single -eq 1 reports both
+  # failures with one message and cannot say which property broke.
+  if [ "$wins" -gt 1 ]; then
+    steal_contention_trace "$trace" "$after"
+    fail "concurrent stale-lock steal admitted more than one winner: $wins"
+  fi
+  pass "concurrent stale-lock steal never admits a second winner"
+  if [ "$wins" -lt 1 ]; then
+    steal_contention_trace "$trace" "$after"
+    fail "no contender reclaimed a lock whose recorded holder was dead: $wins winners"
+  fi
+  pass "concurrent stale-lock steal reclaims a dead-owner lock"
 }
 
 test_lock_live_steal_mutex_is_not_reclaimed() {
