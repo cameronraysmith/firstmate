@@ -881,13 +881,19 @@ fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
 }
 
+# FM_LOCK_ACQUIRE_OUTCOME names the branch this call left through, for every
+# outcome and not only the failures. Without it a declined acquire is
+# indistinguishable from every other declined acquire, so a contention run that
+# reclaims nothing reports a bare count with no way to attribute it to a guard.
 fm_lock_try_acquire() {
-  local lockdir=$1 pid steal cur rc steal_owner primary_owner
+  local lockdir=$1 pid steal cur rc steal_owner steal_outcome primary_owner
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
+  FM_LOCK_ACQUIRE_OUTCOME=
 
   if fm_lock_try_create "$lockdir"; then
+    FM_LOCK_ACQUIRE_OUTCOME='acquired-uncontended'
     return 0
   fi
 
@@ -898,6 +904,7 @@ fm_lock_try_acquire() {
   # never terminates: it exhausts the shell's stack and kills the process with
   # SIGSEGV rather than reporting an unavailable lock.
   if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
+    FM_LOCK_ACQUIRE_OUTCOME='lock-path-absent'
     return 1
   fi
 
@@ -915,24 +922,30 @@ fm_lock_try_acquire() {
     # tests/fm-wake-queue.test.sh - so reclaim the abandoned hold instead.
     fm_lock_remove_path "$lockdir" || true
     if fm_lock_try_create "$lockdir"; then
+      FM_LOCK_ACQUIRE_OUTCOME='acquired-self-reclaim'
       return 0
     fi
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+    FM_LOCK_ACQUIRE_OUTCOME='self-reclaim-create-failed'
     return 1
   fi
   if fm_pid_alive "$pid"; then
     FM_LOCK_HELD_PID=$pid
+    FM_LOCK_ACQUIRE_OUTCOME='holder-alive'
     return 1
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$pid"; then
     FM_LOCK_HELD_PID=$pid
+    FM_LOCK_ACQUIRE_OUTCOME='holder-mid-acquire'
     return 1
   fi
 
   steal="$lockdir.steal"
   if ! fm_lock_try_acquire "$steal"; then
+    steal_outcome=${FM_LOCK_ACQUIRE_OUTCOME:-}
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
+    FM_LOCK_ACQUIRE_OUTCOME="steal-mutex-unavailable:$steal_outcome"
     return 1
   fi
   steal_owner=${FM_LOCK_OWNER_DIR:-}
@@ -942,18 +955,21 @@ fm_lock_try_acquire() {
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
+    FM_LOCK_ACQUIRE_OUTCOME='holder-alive-after-steal'
     return 1
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$cur"; then
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
+    FM_LOCK_ACQUIRE_OUTCOME='holder-mid-acquire-after-steal'
     return 1
   fi
   if ! fm_lock_points_to_owner "$steal" "$steal_owner"; then
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
+    FM_LOCK_ACQUIRE_OUTCOME='steal-mutex-lost'
     return 1
   fi
 
@@ -966,6 +982,7 @@ fm_lock_try_acquire() {
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
+    FM_LOCK_ACQUIRE_OUTCOME='stale-recheck-failed'
     return 1
   fi
 
@@ -974,6 +991,7 @@ fm_lock_try_acquire() {
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
+    FM_LOCK_ACQUIRE_OUTCOME='downtime-marker-failed'
     return 1
   fi
   fm_lock_remove_path "$lockdir" || true
@@ -982,11 +1000,13 @@ fm_lock_try_acquire() {
     rc=0
     # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
     FM_LOCK_RECOVERED_PID=$cur
+    FM_LOCK_ACQUIRE_OUTCOME='acquired-steal'
   fi
   if [ "$rc" -ne 0 ]; then
     # shellcheck disable=SC2034 # Read by callers after fm_lock_try_acquire returns.
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
+    FM_LOCK_ACQUIRE_OUTCOME='steal-create-failed'
   fi
   fm_lock_release "$steal"
   return "$rc"
