@@ -46,6 +46,9 @@ If the captain asks for a new harness, propose verifying it first: spawn a trivi
 ## Detection
 
 `bin/fm-harness.sh` prints firstmate's own harness, using verified env markers first and then process ancestry.
+omp (oh-my-pi) sets `OMPCODE=1` and keeps none of Pi's own markers, so `bin/fm-harness.sh` reports its own `omp` identity ahead of any retained `CLAUDECODE`, and the session-lock ancestry table anchors the exact process name `omp`.
+Identity was verified live on an omp primary 2026-08-17; the full adapter - launch profile, busy source, composer, control plane - remains unverified, so never dispatch an omp crewmate yet.
+omp is deliberately not aliased to the pi family despite being a Pi fork: its config root is `~/.omp/agent` and Pi-family mechanics must be verified on omp before any transfer.
 Within the Pi family, only the exact launch-boundary marker `FM_PI_HARNESS=pi-signed` alongside `PI_CODING_AGENT=true` selects the signed identity; unmarked shared launcher ancestry remains `pi`.
 `bin/fm-harness.sh crew` resolves the effective crewmate harness from `config/crew-harness` (absent or `default` -> own).
 `bin/fm-harness.sh secondmate` resolves the secondmate-launch harness through the chain `config/secondmate-harness` -> `config/crew-harness` -> own, so an unset `config/secondmate-harness` matches the crew harness.
