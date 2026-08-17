@@ -33,7 +33,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 detect_own() {
   # Layer 1: environment markers for verified harnesses.
   # Keep marker detection before ancestry detection as an explicit precedence rule.
-  # Claude, Pi, Grok, and Cursor set verified markers of their own; codex,
+  # Claude, Pi, omp, Grok, and Cursor set verified markers of their own; codex,
   # opencode, Kimi, and Muse are markerless, so a foreign marker retained in a terminal
   # multiplexer's stored environment can silently misidentify one of them before
   # ancestry is consulted. This is a precedence hazard, not evidence that
@@ -50,6 +50,15 @@ detect_own() {
   # CURSOR_AGENT=1 is set for the child/tool processes this script runs as.
   [ "${CURSOR_AGENT:-}" = "1" ] && { echo cursor; return; }
   [ "${CURSOR_INVOKED_AS:-}" = "cursor-agent" ] && { echo cursor; return; }
+  # omp (oh-my-pi) sets OMPCODE=1 on its agent and tool processes. An omp tool
+  # process was also observed carrying CLAUDECODE=1 (2026-08-17), whether as
+  # omp's own compatibility export or as a marker inherited from a surrounding
+  # multiplexer environment; testing OMPCODE first is correct under either
+  # explanation, the same ordering cure as cursor above. omp is a Pi fork but
+  # deliberately not aliased to the pi family: it sets none of Pi's own markers
+  # and roots its config at ~/.omp/agent, so Pi-family mechanics must be
+  # verified on omp before any of them transfer.
+  [ "${OMPCODE:-}" = "1" ] && { echo omp; return; }
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   if [ "${PI_CODING_AGENT:-}" = "true" ]; then
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
@@ -87,6 +96,9 @@ detect_own() {
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
       kimi) echo kimi; return ;;
+      # oh-my-pi. Exact name only, deliberately never a *omp* glob, so
+      # unrelated commands such as composer can never be misread as omp.
+      omp) echo omp; return ;;
       # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
       # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
       # name carries the version and CHANGES on every auto-update. Match the stable
