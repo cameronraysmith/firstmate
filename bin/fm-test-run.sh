@@ -1213,7 +1213,8 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
       ;;
     bin/fm-sessionstart-run.sh|.claude/settings.json|.codex/hooks.json|\
-    .pi/extensions/fm-primary-turnend-guard.ts)
+    .pi/extensions/fm-primary-turnend-guard.ts|\
+    .omp/extensions/fm-primary-turnend-guard.ts)
       # The run tier's two harness-supplied facts (source vocabulary and
       # context-reset stdout injection) only show up against a real harness.
       printf '%s\n' session-bootstrap
