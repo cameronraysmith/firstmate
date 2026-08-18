@@ -175,7 +175,7 @@
 # outside-the-worktree shape pi uses; omp is crewmate/scout only and is refused
 # for --secondmate until its primary supervision protocol exists.
 # Every launch is additionally prefixed with the shared launch-boundary
-# sanitizer (foreign_launch_markers), which clears the agent-session markers a
+# sanitizer (bin/fm-launch-boundary-lib.sh), which clears the agent-session markers a
 # primary exports or a pane environment retains.
 # cursor installs no per-task hook either: it writes state/<id>.cursor-session to
 # bind the pane to cursor's own conversation transcript (projects root, the exact
@@ -262,6 +262,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
+# shellcheck source=bin/fm-launch-boundary-lib.sh
+. "$SCRIPT_DIR/fm-launch-boundary-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
@@ -1226,7 +1228,7 @@ launch_template() {
     # `cursor` is not the CLI (the installed names are cursor-agent and the
     # legacy alias agent). The foreign markers that would let an inherited
     # CLAUDECODE outrank cursor's own are cleared by the shared launch-boundary
-    # sanitizer (foreign_launch_markers), not here, so no template carries a
+    # sanitizer (bin/fm-launch-boundary-lib.sh), not here, so no template carries a
     # second copy of that set. Cursor exposes no effort flag, so the shared
     # effort axis is deliberately omitted and stays in task metadata only.
     cursor) printf '%s' '__CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -1257,16 +1259,18 @@ launch_template() {
     # written below. Nothing to place in the template for it.
     # The foreign-marker clearing muse needs so its ancestry-only detection is
     # not outranked now comes from the shared launch-boundary sanitizer
-    # (foreign_launch_markers), which covers every adapter including the
+    # (bin/fm-launch-boundary-lib.sh), which covers every adapter including the
     # markerless codex, opencode, and kimi.
     muse) printf '%s' 'XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
 
+RAW_LAUNCH=0
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    RAW_LAUNCH=1
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
@@ -1455,74 +1459,6 @@ muse_worker_meta_api_key_present() {
 muse_credential_present() {
   local auth=$1
   [ -s "$auth" ] || muse_worker_meta_api_key_present
-}
-
-# foreign_launch_markers: the ONE declared set of agent-session environment
-# markers firstmate clears at every launch boundary, one name per line.
-#
-# Two independent things put them there. A primary EXPORTS its own: claude sets
-# CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION, and CLAUDE_PID
-# on every tool child, and omp sets CLAUDECODE=1 of its own accord even though
-# it is not claude (verified 2026-08-17 on omp 17.3.5 from a scrubbed
-# environment, which also settles the open question left by the omp identity
-# change: the marker is omp's own compatibility export, not something inherited).
-# Separately, a pane environment RETAINS whatever the long-lived session daemon
-# was started with, and those markers survive there indefinitely.
-#
-# Leaking one is not cosmetic. A claude worker that starts with an inherited
-# CLAUDE_CODE_CHILD_SESSION silently disables its own transcript persistence and
-# is only saved when the SAME marker is also present in the tmux GLOBAL
-# environment, which claude probes as its ambient-marker escape hatch. A worker
-# on any other session backend has no such probe at all, so the loss is
-# unconditional there (verified 2026-08-17 on Claude Code 2.1.234; the pane
-# warns "Transcript saving is off - inherited CLAUDE_CODE_CHILD_SESSION marker",
-# and clearing the marker at this boundary is what makes it stop).
-#
-# The claude-family names come from claude's own declared session-scoped key
-# list rather than from guesswork, restricted to the agent-identity and
-# session-binding entries: the same list also carries SHELL, TMUX, TMPDIR, and
-# friends, which are the pane's own environment and never firstmate's to clear.
-# Operator CONFIGURATION is likewise untouched (CLAUDE_CONFIG_DIR, subagent
-# model, feature toggles) because clearing a deliberate setting would be a
-# different bug. TRACEPARENT is deliberately absent even though claude lists it:
-# firstmate propagates a task-scoped carrier through this same launch under
-# docs/trace-context.md, and unsetting it here would silently disable that.
-foreign_launch_markers() {
-  cat <<'EOF'
-CLAUDECODE
-CLAUDE_CODE_ENTRYPOINT
-CLAUDE_CODE_SESSION_ID
-CLAUDE_CODE_CHILD_SESSION
-CLAUDE_CODE_BRIDGE_SESSION_ID
-CLAUDE_CODE_MESSAGING_SOCKET
-CLAUDE_CODE_MESSAGING_TOKEN
-CLAUDE_CODE_EXECPATH
-CLAUDE_CODE_INVOKED_SKILLS
-CLAUDE_PID
-CLAUDE_EFFORT
-AI_AGENT
-OMPCODE
-PI_CODING_AGENT
-FM_PI_HARNESS
-GROK_AGENT
-CURSOR_AGENT
-CURSOR_INVOKED_AS
-EOF
-}
-
-# foreign_marker_unset_prefix: the `env -u ...` prefix built from that set.
-# Applied to EVERY adapter rather than a per-harness list, because a marker is
-# foreign to the harness that set it too: a claude worker launched from a claude
-# primary inherits exactly the same session bindings as one launched from omp.
-foreign_marker_unset_prefix() {
-  local name out='env'
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    out="$out -u $name"
-  done <<EOF
-$(foreign_launch_markers)
-EOF
-  printf '%s ' "$out"
 }
 
 model_flag_for_harness() {
@@ -2964,7 +2900,13 @@ case "$HARNESS" in
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
-LAUNCH="$(foreign_marker_unset_prefix)$LAUNCH"
+# The launch-boundary sanitizer (bin/fm-launch-boundary-lib.sh). It is applied
+# to every adapter firstmate composed a launch command FOR, and deliberately
+# not to a raw launch command: that escape hatch exists to verify an
+# unverified adapter, its contract is to run exactly what the operator passed,
+# and one of the things a verification run may need to observe is precisely
+# which markers the environment carries.
+[ "$RAW_LAUNCH" = 1 ] || LAUNCH="$(fm_launch_marker_prefix)$LAUNCH"
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
 # back to the default ~/.claude store even when firstmate itself runs under a
