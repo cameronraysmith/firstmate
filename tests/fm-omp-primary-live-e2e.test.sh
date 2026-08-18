@@ -227,9 +227,17 @@ foreground_arm='$ bin/fm-watch-arm.sh'
 if printf '%s\n' "$pane" | grep -Fq "$foreground_arm"; then
   fail "omp used a foreground bash watcher arm"
 fi
-arm_tool_result_count=$(printf '%s\n' "$pane" | grep -Ec 'watcher: (started|unchanged|not armed|read-only)' || true)
-[ "$arm_tool_result_count" -eq 1 ] \
-  || fail "omp model re-armed from memory instead of the extension (tool-result count $arm_tool_result_count)"
+# Assert the ADAPTER's ownership, not the model's discipline. This lab replaces
+# AGENTS.md with a stub, so the model never reads the protocol line telling it not
+# to re-arm, and whether it calls the tool twice is not this suite's business. What
+# must hold is that a redundant call can never produce a SECOND cycle: the
+# extension answers it with an ownership no-op. The deterministic form of that
+# assertion lives in tests/fm-omp-primary-extensions.test.sh.
+started_count=$(printf '%s\n' "$pane" | grep -Fc 'watcher: started omp extension arm child 1' || true)
+[ "$started_count" -ge 1 ] || fail "the omp arm tool result was lost from the pane"
+second_cycle=$(printf '%s\n' "$pane" | grep -Ec 'watcher: started omp extension arm child [2-9]' || true)
+[ "$second_cycle" -eq 0 ] \
+  || fail "a redundant arm call started a second cycle instead of an ownership no-op"
 
 pid_file=$(find "$HOME_DIR/state" -maxdepth 3 -type f -name pid | head -1)
 [ -n "$pid_file" ] || fail "re-armed watcher pid was not recorded"
