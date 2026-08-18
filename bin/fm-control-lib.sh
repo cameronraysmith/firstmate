@@ -92,16 +92,15 @@ fm_control_harness_family() {  # <recorded-harness>
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse and omp are
-# crewmate/scout adapters only: neither has a primary supervision protocol, and
-# bin/fm-spawn.sh refuses a --secondmate launch on either. omp's native
-# primitives for one are verified to exist, but the protocol built on them is
-# not, and a pi extension file loads on omp while its turn-end handler never
-# fires, so borrowing the pi row would disarm the guard silently. The control
-# plane
-# asks this BEFORE it stops anything, so an incompatible relaunch target is
-# refused while the current agent is still running rather than after it has
-# been stopped.
+# Which task kinds an adapter is verified to run. muse and omp are crewmate/scout
+# adapters only, for different reasons. muse has no primary supervision protocol
+# at all. omp now has one - its own tracked .omp/extensions pair - but the
+# secondmate LAUNCH is a separate unwired surface: a secondmate home's extensions
+# are passed by absolute path at launch, and neither that template nor the remote
+# secondmate paths are built or verified for omp. bin/fm-spawn.sh refuses a
+# --secondmate launch on either. The control plane asks this BEFORE it stops
+# anything, so an incompatible relaunch target is refused while the current agent
+# is still running rather than after it has been stopped.
 fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
