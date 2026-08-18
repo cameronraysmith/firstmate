@@ -184,11 +184,15 @@ fm_watcher_healthy() {
 #               watcher is armed at each turn end and exits on its wake, so it
 #               runs only BETWEEN turns. Mid-turn a fresh beacon with no live
 #               watcher process is the healthy state.
-#   extension   Pi (and pi-signed): .pi/extensions/fm-primary-pi-watch.ts owns
-#               continuity. It tears the watcher down on every actionable wake and
-#               spawns the replacement itself, so a genuinely unheld singleton lock
-#               is healthy during that hand-off only with extension ownership and a
-#               fresh beacon. Any held but unhealthy lock remains down.
+#   extension   Pi (and pi-signed) through .pi/extensions/fm-primary-pi-watch.ts,
+#               and omp through .omp/extensions/fm-primary-omp-watch.ts. The
+#               extension owns continuity: it tears the watcher down on every
+#               actionable wake and spawns the replacement itself, so a genuinely
+#               unheld singleton lock is healthy during that hand-off only with
+#               extension ownership and a fresh beacon. Any held but unhealthy lock
+#               remains down. Each harness proves ownership with its OWN extension
+#               pair and markers; omp is never satisfied by Pi's evidence, because
+#               Pi's extensions load on omp and are inert there.
 #   persistent  every other harness (codex foreground checkpoint, opencode/grok
 #               background arm, tmux, unknown): the watcher runs as a tracked live
 #               process, so a live identity-matched pid is the real liveness signal.
@@ -203,23 +207,24 @@ fm_supervision_model() {
   harness=$("$FM_WAKE_LIB_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
   case "$harness" in
     claude|cursor) printf 'autoarm\n' ;;
-    pi|pi-signed) printf 'extension\n' ;;
+    pi|pi-signed|omp) printf 'extension\n' ;;
     *) printf 'persistent\n' ;;
   esac
 }
 
-# Pi primary supervision evidence. The Pi extensions record, in their state
-# markers, the exact build they loaded and the session process that loaded it, so
-# "a live Pi session owns supervision" is provable from durable state without a
-# watcher process and without reading any vendor-rendered surface.
+# Extension-model primary supervision evidence, shared by Pi and omp. Each
+# harness's primary extensions record, in their state markers, the exact build they
+# loaded and the session process that loaded it, so "a live session owns
+# supervision" is provable from durable state without a watcher process and without
+# reading any vendor-rendered surface.
 #
-# fm_pi_extension_version <file>
-# Print the marker version string the Pi extensions record for <file>. Must stay
-# byte-identical to the "sha256:<hex>" digest .pi/extensions/fm-primary-pi-watch.ts
-# and .pi/extensions/fm-primary-turnend-guard.ts compute for themselves; a host
-# with no SHA-256 tool falls back to a form no marker can match, which keeps every
-# consumer loud rather than silently satisfied.
-fm_pi_extension_version() {
+# fm_primary_extension_version <file>
+# Print the marker version string a primary extension records for <file>. Must stay
+# byte-identical to the "sha256:<hex>" digest the tracked .pi/extensions/*.ts and
+# .omp/extensions/*.ts files compute for themselves; a host with no SHA-256 tool
+# falls back to a form no marker can match, which keeps every consumer loud rather
+# than silently satisfied.
+fm_primary_extension_version() {
   local file=$1
   [ -f "$file" ] || return 1
   if command -v shasum >/dev/null 2>&1; then
@@ -231,10 +236,10 @@ fm_pi_extension_version() {
   fi
 }
 
-# fm_pi_extension_loaded <marker> <expected-version> <session-lock>
+# fm_primary_extension_loaded <marker> <expected-version> <session-lock>
 # True when <marker> records <expected-version> and names the session process in
 # <session-lock>, i.e. the session holding this home loaded exactly this build.
-fm_pi_extension_loaded() {
+fm_primary_extension_loaded() {
   local marker=$1 expected_version=$2 lock=$3 marker_version marker_pid lock_pid
   [ -f "$marker" ] && [ -f "$lock" ] && [ -n "$expected_version" ] || return 1
   marker_version=$(sed -n '1p' "$marker")
@@ -244,24 +249,76 @@ fm_pi_extension_loaded() {
   [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
 }
 
-# fm_pi_extension_owns_supervision <state> <root>
-# True when a LIVE Pi session owns supervision continuity for this home: both
-# primary extensions are loaded at their current on-disk builds by the process
-# recorded in this home's session lock, and that process is still alive.
+# fm_primary_extension_pairs <harness>
+# Print this harness's tracked primary extension pair, one
+# "<dir>/<source>:<marker>" record per line, or nothing when the harness has no
+# extension-owned supervision. The two harnesses keep entirely separate directories,
+# filenames, and markers on purpose: Pi's extensions LOAD on omp and are silently
+# inert there, so sharing either would let an omp primary satisfy its ownership
+# proof with evidence written by a disarmed session.
+fm_primary_extension_pairs() {
+  case "$1" in
+    pi|pi-signed)
+      printf '%s\n' \
+        ".pi/extensions/fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
+        ".pi/extensions/fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"
+      ;;
+    omp)
+      printf '%s\n' \
+        ".omp/extensions/fm-primary-omp-watch.ts:.omp-watch-extension-loaded" \
+        ".omp/extensions/fm-primary-turnend-guard.ts:.omp-turnend-extension-loaded"
+      ;;
+  esac
+}
+
+# fm_primary_extension_pair_loaded <state> <root> <lock> <pairs>
+# True when every "<dir>/<source>:<marker>" record in <pairs> is loaded at its
+# current on-disk build by the process named in <lock>.
+fm_primary_extension_pair_loaded() {
+  local state=$1 root=$2 lock=$3 pairs=$4 pair source marker version
+  [ -n "$pairs" ] || return 1
+  while IFS= read -r pair; do
+    [ -n "$pair" ] || continue
+    source=${pair%%:*}
+    marker=${pair#*:}
+    version=$(fm_primary_extension_version "$root/$source") || return 1
+    fm_primary_extension_loaded "$state/$marker" "$version" "$lock" || return 1
+  done <<EOF
+$pairs
+EOF
+  return 0
+}
+
+# fm_primary_extension_owns_supervision <state> <root> [harness]
+# True when a LIVE extension-model session owns supervision continuity for this
+# home: both of that harness's primary extensions are loaded at their current
+# on-disk builds by the process recorded in this home's session lock, and that
+# process is still alive.
 # Requiring the turn-end guard extension too is deliberate - it is the structural
 # backstop that catches a cycle the watch extension failed to restore, so a home
 # missing it has no benign hand-off to tolerate.
-fm_pi_extension_owns_supervision() {
-  local state=$1 root=$2 lock session_pid pair source marker version
+# When the harness is one of the extension-model harnesses, ONLY its own pair is
+# accepted: Pi's extensions load on omp and never fire there, so letting Pi's
+# markers answer for an omp primary is exactly the disarmed-primary hole this proof
+# exists to close. A harness with no pair of its own reaches here only through an
+# explicit FM_SUPERVISION_MODEL=extension override, i.e. a caller that already knows
+# which session owns this home, so any complete known pair answers for it.
+fm_primary_extension_owns_supervision() {
+  local state=$1 root=$2 harness=${3:-} lock session_pid pairs owned=1 candidate
   lock="$state/.lock"
-  for pair in \
-    "fm-primary-pi-watch.ts:.pi-watch-extension-loaded" \
-    "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded"; do
-    source=${pair%%:*}
-    marker=${pair#*:}
-    version=$(fm_pi_extension_version "$root/.pi/extensions/$source") || return 1
-    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
-  done
+  [ -n "$harness" ] || harness=$("$FM_WAKE_LIB_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
+  pairs=$(fm_primary_extension_pairs "$harness")
+  if [ -n "$pairs" ]; then
+    fm_primary_extension_pair_loaded "$state" "$root" "$lock" "$pairs" || return 1
+  else
+    for candidate in pi omp; do
+      if fm_primary_extension_pair_loaded "$state" "$root" "$lock" "$(fm_primary_extension_pairs "$candidate")"; then
+        owned=0
+        break
+      fi
+    done
+    [ "$owned" -eq 0 ] || return 1
+  fi
   session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
   fm_pid_alive "$session_pid"
 }
@@ -279,13 +336,15 @@ fm_pi_extension_owns_supervision() {
 # autoarm: a fresh beacon within grace is healthy even with no live watcher,
 # because the watcher only runs between turns; only a stale beacon is a lapse.
 # extension: a live identity-matched watcher is the ordinary healthy state, but a
-# genuinely unheld lock is also healthy while the beacon is fresh AND a live Pi
-# session provably owns continuity (fm_pi_extension_owns_supervision) - that is the
-# extension's own tear-down-and-respawn hand-off, which it retries and escalates
-# itself. A lock with any recorded pid remains down if the strict health check fails.
-# Without ownership proof an unheld lock is down exactly as before, so an unloaded,
-# version-drifted, or exited Pi session still alarms immediately, and a cycle the
-# extension never restores still alarms once the beacon passes grace.
+# genuinely unheld lock is also healthy while the beacon is fresh AND a live session
+# of THIS harness provably owns continuity
+# (fm_primary_extension_owns_supervision, keyed to that harness's own extension
+# pair) - that is the extension's own tear-down-and-respawn hand-off, which it
+# retries and escalates itself. A lock with any recorded pid remains down if the
+# strict health check fails. Without ownership proof an unheld lock is down exactly
+# as before, so an unloaded, version-drifted, or exited Pi or omp session still
+# alarms immediately, and a cycle the extension never restores still alarms once the
+# beacon passes grace.
 # persistent: require a live identity-matched watcher with a fresh beacon
 # (fm_watcher_healthy); a fresh leftover beacon with no live watcher is still down.
 # shellcheck disable=SC2034 # Read by callers after the function returns.
@@ -314,7 +373,7 @@ fm_watcher_supervision_verdict() {
     FM_WATCHER_VERDICT_OK=true
   elif [ "$fresh" = true ]; then
     if [ "$model" = extension ] && fm_watcher_lock_unheld "$state" \
-      && fm_pi_extension_owns_supervision "$state" "$root"; then
+      && fm_primary_extension_owns_supervision "$state" "$root"; then
       # shellcheck disable=SC2034 # Read by callers after the function returns.
       FM_WATCHER_VERDICT_OK=true
     else
