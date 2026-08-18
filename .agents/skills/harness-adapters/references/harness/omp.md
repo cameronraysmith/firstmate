@@ -1,9 +1,9 @@
 # omp (oh-my-pi)
 
-Verified for crewmate and scout work on 2026-08-17 with omp 17.3.5 on tmux, unless a fact gives another version.
-oh-my-pi is a Pi fork with its own identity, config root, lifecycle events, composer, and busy predicate.
+Verified for crewmate, scout, and primary work on 2026-08-18 with omp 17.3.5 on tmux, unless a fact gives another version.
+oh-my-pi is a Pi fork with its own identity, config root, lifecycle events, composer, busy predicate, and primary supervision.
 Nothing from the Pi reference transfers; every fact below was measured on omp itself.
-`../../../bin/fm-spawn.sh` refuses `--secondmate` on omp, and an omp primary has no snippet under `../../../docs/supervision-protocols/`.
+`../../../bin/fm-spawn.sh` still refuses `--secondmate` on omp because that launch wiring is unbuilt, not because the supervision protocol is missing.
 
 ## Operating facts
 
@@ -19,7 +19,8 @@ Nothing from the Pi reference transfers; every fact below was measured on omp it
 | Effort flag | `--thinking <low\|medium\|high\|xhigh\|max>`. `--help` documents `off\|minimal\|low\|medium\|high\|xhigh\|max\|auto`, so the whole shared vocabulary maps across. An unknown LEVEL is accepted silently and falls back to the model default rather than refusing, so never pass a value outside the allowlist. The applied level is additionally clamped to what the selected model advertises in `omp models`. |
 | Model discovery | Run `omp models` (or `omp models find <substring>`, `omp models --json`), which lists every available provider/model and each one's supported thinking levels. `omp usage` reports the authenticated accounts. |
 | Autonomy | `--auto-approve`. Without it every tool call is gated; with it a bash tool call ran unattended. `--approval-mode yolo` is the equivalent knob. |
-| Trust dialog | None observed on a never-seen worktree path, and none is needed for the busy extension, which loads through an explicit `-e` path rather than a project root. |
+| Trust dialog | None observed on a never-seen worktree path, and none is needed for the busy extension, which loads through an explicit `-e` path rather than a project root. A PRIMARY needs none either: omp auto-discovers `.omp/extensions/` without approving anything. |
+| Primary supervision | Its own tracked `.omp/extensions/` pair. Turn end BLOCKS through `session_stop`; the arm cycle is owned per omp PROCESS. See "Primary supervision" below. `--secondmate` is still refused. |
 | Environment marker | `OMPCODE=1`, and omp ALSO exports `CLAUDECODE=1` of its own accord. Detection tests `OMPCODE` first for exactly that reason. |
 | Composer | A two-row box with NO interior content row: a titled top border and an input row that IS the bottom border (`╰─ typed text ─╯`), with the terminal cursor on that bottom row. |
 | Resume | `omp --continue` for the previous session, or `omp --resume <id-prefix>`. |
@@ -46,11 +47,20 @@ It is a trap rather than a capability: `pi.on("agent_settled", ...)` registers s
 That is a disarmed primary reporting itself healthy.
 Never reuse a Pi extension, hook path, or predicate on omp without measuring it on omp.
 
-## Primary primitives that DO work, for the follow-up that builds the protocol
+Discovery keeps the two apart on its own: omp auto-discovers only top-level `.omp/extensions/*.ts` and never `.pi/`, Pi never discovers `.omp/`, and omp loads none of `.claude/settings.json`'s hooks despite exporting `CLAUDECODE=1`.
+Reaching the trap takes an explicit `-e`.
+The markers, the ownership proof (`fm_primary_extension_pairs` in `../../../bin/fm-wake-lib.sh`), and the session-start diagnostic are all keyed per harness for the same reason, so Pi evidence can never answer for an omp primary.
 
-Both were verified end to end on omp 17.3.5 and are recorded so the protocol work starts from measurement rather than analogy:
+## Primary supervision
 
-- `session_stop` is a Claude-shaped blocking stop hook. Returning `{ decision: "block", reason }` forced a continuation turn; the blocked `agent_end` carried `willContinue: true`, and the following `session_stop` carried `stop_hook_active: true`, the same one-block loop guard Claude and Codex expose.
-- An extension wakes an IDLE session with `pi.sendUserMessage(text)` and no `deliverAs`. `deliverAs: "followUp"` only queues while idle, the opposite of Pi's requirement, so copying Pi's call would have produced a wake that never fired.
+`../../../docs/supervision-protocols/omp.md` is the emitted protocol. Two mechanisms, both omp's own:
+
+- Turn end is a BLOCKING stop. omp's `session_stop` is Claude-shaped: returning `{decision: "block", reason}` refuses the stop and puts the reason in front of the model, and omp awaits an async handler, so `../../../bin/fm-turnend-guard.sh` can be spawned from inside one. omp marks only the stop that FOLLOWS a block, so forwarding its own `stop_hook_active` reuses the guard's default-mode loop guard and bounds this to one forced continuation per turn. `--claude` mode is deliberately not used - it exists for Claude's habit of marking every stop after any continuation. Note omp does not render the reason as pane text; the model's reaction is the visible signal.
+- The watcher arm cycle is owned per omp PROCESS, not per session. omp emits no lifecycle event for a same-process replacement: `/new` changes the session id while handlers keep firing. Pi's per-session generation model has nothing to bind to, and the process lifetime is the right one anyway, because the arm child supervises the fleet home rather than a conversation. So an omp primary makes ONE `fm_watch_arm_omp` call per process, and `/new` neither retires the cycle nor needs a new call.
+
+Wakes use `pi.sendUserMessage(content)` with NO options object.
+`deliverAs: "followUp"` only QUEUES on omp while the session is idle, the opposite of Pi's requirement, so copying Pi's call would have produced a wake that never fires.
+`fm_supervision_model` routes omp to the `extension` model beside Pi.
+The standing regressions are `../../../tests/fm-omp-primary-extensions.test.sh` and, opt-in, `../../../tests/fm-omp-primary-live-e2e.test.sh`; the omp pair is strict-typechecked by `../../../tests/fm-pi-primary-types.test.sh` despite that file's Pi-shaped name.
 
 `../../../docs/verification/runtime-backends.md` "omp (oh-my-pi)" owns the dated commands and output.
