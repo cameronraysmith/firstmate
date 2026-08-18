@@ -177,9 +177,10 @@ test_help_includes_entire_header() {
   pass "fm-brief.sh: --help renders the complete header"
 }
 
-# Registry with one project per delivery mode. fm-brief.sh no longer reads it -
-# the ship mode arrives as an explicit flag - so this fixture exists to prove the
-# scaffold ignores the registered posture (test_ship_mode_is_explicit_not_registry).
+# Registry with one project per delivery mode. fm-brief.sh still takes the ship
+# mode from the explicit flag, so this fixture proves the scaffold ignores the
+# registered posture (test_ship_mode_is_explicit_not_registry); the one registry
+# read it does make is the +planning marker (test_planning_context_guard).
 write_registry() {
   local home=$1
   mkdir -p "$home/data"
@@ -246,7 +247,8 @@ ROWS
 
 # The registry is the captain's standing posture, not this task's answer: the
 # scaffold must follow the explicit flag even when the project is registered
-# with a different mode, and must not consult the registry at all.
+# with a different mode, and must not consult the registry for the mode at all
+# (its one registry read is the planning marker covered separately below).
 test_ship_mode_is_explicit_not_registry() {
   local home brief
   home="$TMP_ROOT/explicit-over-registry-home"
@@ -259,7 +261,7 @@ test_ship_mode_is_explicit_not_registry() {
   assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
     "explicit no-mistakes brief did not render the pipeline definition of done"
 
-  # An unregistered project is not a blocker either, because nothing is looked up.
+  # An unregistered project is not a blocker: the planning lookup fails closed.
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a6 never-registered --mode local-only >/dev/null 2>&1 \
     || fail "unregistered project should still scaffold from the explicit mode"
   grep -qx "Delivery contract: mode=local-only" "$home/data/brief-explicit-a6/brief.md" \
@@ -369,6 +371,64 @@ test_ship_project_memory_wording() {
   assert_grep "lacks \`## Maintaining this file\`, add that short self-governance section" "$brief" \
     "project-memory contract lost the self-governance add-in-same-pass rule"
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
+}
+
+# A planning-managed project keeps AGENTS.md/CLAUDE.md as machine-local symlinks
+# into a planning repo, so a fresh task clone contains neither and crews have
+# twice recreated them unbidden (2026-08-17 vanixiets, 2026-08-18 near-miss).
+# The +planning registry marker must put a hard guard into the ship brief's
+# project-memory section, naming the historical-context path for the repo.
+# Unmarked, registered-differently, and unregistered projects must stay exactly
+# on today's behavior: no guard, same project-memory section.
+test_planning_context_guard() {
+  local home id brief ctx
+  home="$TMP_ROOT/planning-guard-home"
+  mkdir -p "$home/data"
+  ctx="$TMP_ROOT/planning-contexts"
+  mkdir -p "$ctx"
+  cat > "$home/data/projects.md" <<'EOF'
+- marked [direct-PR +planning] - fixture (added 2026-08-18)
+- unmarked [direct-PR] - fixture (added 2026-08-18)
+EOF
+
+  FM_HOME="$home" FM_PLANNING_CONTEXTS_DIR="$ctx" \
+    "$ROOT/bin/fm-brief.sh" brief-planning-g1 marked --mode no-mistakes >/dev/null 2>&1 \
+    || fail "marked project should scaffold"
+  brief="$home/data/brief-planning-g1/brief.md"
+  assert_grep "Planning-managed project - context guard" "$brief" \
+    "marked project brief missing the planning-context guard heading"
+  assert_grep "do NOT create, commit, or modify \`AGENTS.md\` or \`CLAUDE.md\` in this worktree or the PR" "$brief" \
+    "planning guard lost its prohibition"
+  assert_grep "machine-local symlinks into the planning repo and are deliberately uncommitted" "$brief" \
+    "planning guard lost the symlink explanation"
+  assert_grep "\`$ctx/marked.md\` as background reading only" "$brief" \
+    "planning guard missing the per-repo historical-context pointer"
+  assert_grep "switchover to a committed in-repo context is separately tracked" "$brief" \
+    "planning guard lost the switchover boundary"
+  assert_grep "Record only project knowledge useful to almost every future session." "$brief" \
+    "planning guard displaced the standing project-memory contract"
+  grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
+    || fail "planning marker disturbed the explicit delivery mode"
+
+  FM_HOME="$home" FM_PLANNING_CONTEXTS_DIR="$ctx" \
+    "$ROOT/bin/fm-brief.sh" brief-planning-g2 unmarked --mode no-mistakes >/dev/null 2>&1 \
+    || fail "unmarked project should scaffold"
+  assert_no_grep "context guard" "$home/data/brief-planning-g2/brief.md" \
+    "unmarked registered project received the planning guard"
+  FM_HOME="$home" FM_PLANNING_CONTEXTS_DIR="$ctx" \
+    "$ROOT/bin/fm-brief.sh" brief-planning-g3 never-registered --mode direct-PR >/dev/null 2>&1 \
+    || fail "unregistered project should scaffold"
+  assert_no_grep "context guard" "$home/data/brief-planning-g3/brief.md" \
+    "unregistered project received the planning guard"
+
+  # The guard is a ship-brief contract: scouts do not push or open PRs, and a
+  # scout scaffold has no project-memory section to extend.
+  FM_HOME="$home" FM_PLANNING_CONTEXTS_DIR="$ctx" \
+    "$ROOT/bin/fm-brief.sh" brief-planning-g4 marked --scout >/dev/null 2>&1 \
+    || fail "marked scout should scaffold"
+  assert_no_grep "context guard" "$home/data/brief-planning-g4/brief.md" \
+    "scout scaffold received the ship planning guard"
+  pass "fm-brief.sh: +planning emits the context guard on ship briefs only"
 }
 
 test_herdr_lab_contract_is_explicit_and_complete() {
@@ -720,6 +780,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_planning_context_guard
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout

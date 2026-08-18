@@ -272,6 +272,38 @@ EOF
   pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
 }
 
+# The planning-managed marker is orthogonal to mode and yolo: the default
+# output is unchanged by it, --planning answers just the marker, and every
+# absent case (unmarked row, unknown project, no registry) resolves off so the
+# brief scaffold stays byte-identical for unmarked projects.
+test_project_mode_resolves_the_planning_marker() {
+  local home out
+  home="$TMP_ROOT/project-mode-planning/home"
+  mkdir -p "$home/data"
+  cat > "$home/data/projects.md" <<'EOF'
+- marked [direct-PR +planning] - fixture (added 2026-01-01)
+- combined [no-mistakes-prod-only +yolo +planning] - fixture (added 2026-01-01)
+- unmarked [local-only +yolo] - fixture (added 2026-01-01)
+EOF
+  out=$(FM_HOME="$home" "$PROJECT_MODE" marked 2>/dev/null)
+  [ "$out" = "direct-PR off" ] || fail "+planning leaked into the default mode output (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --planning marked 2>/dev/null)
+  [ "$out" = "on" ] || fail "--planning did not report a marked project (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --planning combined 2>/dev/null)
+  [ "$out" = "on" ] || fail "--planning dropped the marker alongside +yolo and a policy (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" combined 2>/dev/null)
+  [ "$out" = "no-mistakes on" ] || fail "+planning disturbed the conditional-policy mapping (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --planning unmarked 2>/dev/null)
+  [ "$out" = "off" ] || fail "--planning reported an unmarked project as managed (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --planning never-registered 2>/dev/null)
+  [ "$out" = "off" ] || fail "--planning did not fail closed for an unknown project (got '$out')"
+  out=$(FM_HOME="$TMP_ROOT/project-mode-planning/empty-home" "$PROJECT_MODE" --planning marked 2>/dev/null)
+  [ "$out" = "off" ] || fail "--planning did not fail closed without a registry (got '$out')"
+  pass "fm-project-mode: the +planning marker resolves orthogonally and fails closed"
+}
+
+test_project_mode_resolves_the_planning_marker
+
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch

@@ -2,7 +2,8 @@
 # Resolve a project's REGISTERED delivery posture from the data/projects.md registry.
 # Prints two words to stdout: "<mode> <yolo>" where mode is one of
 # no-mistakes|direct-PR|local-only and yolo is on|off.
-#
+# With --planning, prints a single word on|off for the planning-managed marker
+# instead, so a consumer that only needs that flag does not parse mode output.
 # MECHANICAL CONSUMERS ONLY. This answers "what posture did the captain register
 # for this project", never "how does this task ship". A task's delivery mode and
 # yolo are resolved by firstmate at intake and passed explicitly to
@@ -15,7 +16,12 @@
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
-#
+#   - <name> [<mode> +planning] - <desc> (added <date>) -> <mode> off, planning-managed
+# planning-managed (orthogonal marker) = the project's agent context (AGENTS.md /
+#   CLAUDE.md) is machine-local symlinks into a planning repo, deliberately
+#   uncommitted; bin/fm-brief.sh reads this marker to emit the
+#   planning-context guard in ship briefs. Unknown mode/yolo parsing is
+#   unaffected by the marker.
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
 #   direct-PR              push + PR via gh-axi, no pipeline
@@ -35,7 +41,7 @@
 #
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.
-# Usage: fm-project-mode.sh [--raw] <project-name>
+# Usage: fm-project-mode.sh [--raw] [--planning] <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,47 +50,58 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
 RAW=0
-if [ "${1:-}" = "--raw" ]; then
-  RAW=1
+PLANNING=0
+while [ "${1:-}" = "--raw" ] || [ "${1:-}" = "--planning" ]; do
+  if [ "$1" = "--raw" ]; then RAW=1; else PLANNING=1; fi
   shift
-fi
-NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
+done
+NAME=${1:?usage: fm-project-mode.sh [--raw] [--planning] <project-name>}
 
 if [ ! -f "$REG" ]; then
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
-  echo "no-mistakes off"
+  if [ "$PLANNING" -eq 1 ]; then echo off; else echo "no-mistakes off"; fi
   exit 0
 fi
 
-# awk emits "<mode> <yolo>" (one line) or nothing if the project is absent.
+# awk emits "<mode> <yolo> <planning>" (one line) or nothing if the project is absent.
 parsed=$(awk -v n="$NAME" '
   $1=="-" && $2==n {
-    mode="no-mistakes"; yolo="off";
+    mode="no-mistakes"; yolo="off"; planning="off";
     if ($3 ~ /^\[/) {
       s="";
       for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
       gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
       k = split(s, a, " ");
-      if (a[1] != "" && a[1] != "+yolo") mode = a[1];
-      for (j=1; j<=k; j++) if (a[j]=="+yolo") yolo="on";
+      if (a[1] != "" && a[1] != "+yolo" && a[1] != "+planning") mode = a[1];
+      for (j=1; j<=k; j++) {
+        if (a[j]=="+yolo") yolo="on";
+        if (a[j]=="+planning") planning="on";
+      }
     }
-    print mode, yolo; exit
+    print mode, yolo, planning; exit
   }
 ' "$REG")
 
 if [ -z "$parsed" ]; then
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
-  echo "no-mistakes off"
+  if [ "$PLANNING" -eq 1 ]; then echo off; else echo "no-mistakes off"; fi
   exit 0
 fi
 
-mode=${parsed%% *}
-yolo=${parsed##* }
+mode=$(echo "$parsed" | awk '{print $1}')
+yolo=$(echo "$parsed" | awk '{print $2}')
+planning=$(echo "$parsed" | awk '{print $3}')
+
 case "$mode" in
   no-mistakes|direct-PR|local-only|no-mistakes-prod-only) ;;
   *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2; mode=no-mistakes; yolo=off ;;
 esac
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
+if [ "$PLANNING" -eq 1 ]; then
+  echo "${planning:-off}"
+  exit 0
+fi
+
 # A conditional policy is not a task mode. Mechanical callers get its most
 # rigorous leg; --raw callers get the annotation itself (see the header).
 if [ "$RAW" -eq 0 ] && [ "$mode" = no-mistakes-prod-only ]; then
