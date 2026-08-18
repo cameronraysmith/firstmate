@@ -55,14 +55,6 @@
       "target": "docs/documentation-audiences.json"
     },
     {
-      "source": "docs/calm.md",
-      "target": "docs/calm-mode-feasibility.md"
-    },
-    {
-      "source": "docs/calm-mode-feasibility.md",
-      "target": "docs/calm.md"
-    },
-    {
       "source": "docs/sessionstart-nudge.md",
       "target": "docs/verification/supervision.md"
     },
@@ -219,14 +211,6 @@
     {
       "path": "docs/arm-pretool-check.md",
       "audience": "maintainer-architecture"
-    },
-    {
-      "path": "docs/calm-mode-feasibility.md",
-      "audience": "maintainer-verification"
-    },
-    {
-      "path": "docs/calm.md",
-      "audience": "operator-current"
     },
     {
       "path": "docs/cd-guard.md",
