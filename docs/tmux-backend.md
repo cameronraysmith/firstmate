@@ -68,9 +68,10 @@ Run the real-harness guard after any harness upgrade and before trusting refresh
 ### Composer, busy state, and delivery
 
 Agent liveness and composer safety are separate checks.
-The tmux reader is a thin adapter over the fleet-wide classifier in `bin/fm-composer-lib.sh`: it contributes one styled full-pane capture, the `#{cursor_y}` cursor row, and foreground-process identity probes, and the shape containing the cursor - a complete bordered box (titled bottom borders tolerated), a bare agent-glyph row with its wrapped input, opencode's left bar, or Pi's identity-corroborated separator pair - normally decides the verdict.
+The tmux reader is a thin adapter over the fleet-wide classifier in `bin/fm-composer-lib.sh`: it contributes one styled full-pane capture, the `#{cursor_y}` cursor row, and foreground-process identity probes, and the shape containing the cursor - a complete bordered box (titled bottom borders tolerated), a bare agent-glyph row with its wrapped input, opencode's left bar, Pi's identity-corroborated separator pair, or omp's identity-corroborated inline-bottom box - normally decides the verdict.
 Real text in an identified shape is pending, while only positively proven emptiness reads empty.
 A blank or otherwise unidentified cursor row is `unknown` and every consumer defers, except that a foreground process proven to be Cursor is re-read cursorlessly because Cursor parks its terminal cursor below its footer.
+An omp pane is the one place a cursor sitting ON a border row is still an input row, because omp carries its input inside the bottom border; that shape is admitted only when the foreground-process probe names omp, so the edge rule stands everywhere else.
 That identity-gated exception preserves the strict container-proof rule for every other pane, so a modal dialog, a dead shell between stale rules, or a mid-redraw pane is never an injection target.
 The shared classifier accepts a shell glyph as an empty agent composer only inside a bordered container.
 A bare shell prompt is `unknown`, so away-mode escalation is never injected into a dead shell.

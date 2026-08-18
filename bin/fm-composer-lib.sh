@@ -67,6 +67,18 @@
 #                get`; the tmux foreground-process probe), because a blank
 #                region between two transcript rules is otherwise exactly the
 #                strict rule's unidentifiable blank row.
+#   inline-bottom - omp (oh-my-pi): a TWO-row box with no interior content row
+#                at all. Its top border carries a title (model, cwd, git
+#                branch, context, session name) and the input sits INSIDE the
+#                bottom border row, between that row's corner glyphs and their
+#                adjoining rule runs (`╰─ typed text ─╯`). The terminal cursor
+#                rests on that bottom border row, which every other shape
+#                treats as a structural edge and therefore never an input row.
+#                Two rows of pure box drawing are weak evidence on their own,
+#                so this shape follows pi's rule and is provable only with a
+#                live agent identity naming omp; unlike pi it ignores that
+#                identity's STATUS, because a real bordered container makes the
+#                content read meaningful on its own.
 #
 # THE SAFETY RULE for glyphs: a bare shell prompt glyph (`>` `$` `%` `#`) -
 # what a pane shows once its agent has exited to a plain login shell - is a
@@ -311,11 +323,23 @@ fm_composer_strip_ghost() {
 # part of that union for the same reason the others are: without it a cursor
 # submit could never be acknowledged, because cursor parks its terminal cursor
 # outside its composer and the composer verdict is therefore always `unknown`.
-FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
+FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop|(⟨|⟦|\[)esc(⟩|⟧|\])'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
 FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
+# omp renders its mid-turn line as "<braille spinner> <status> <bracketed esc>".
+# The STATUS is model-authored (`Working…` on the first frame, then whatever the
+# model names the step - `Sleeping 45 seconds then echoing done` was observed
+# live), so it is never the token, the same lesson cursor's row records. The
+# stable part is omp's interruptHint(), which is the literal `esc` wrapped in
+# the ACTIVE THEME's bracket pair. That pair is a theme symbol rather than a
+# fixed glyph, so all three of omp's shipped symbol sets are matched here -
+# nerd `⟨⟩`, unicode `⟦⟧`, and ascii `[]` - which also means an ASCII-only
+# terminal keeps a working signature instead of depending on a font.
+# Pi's `Working\.\.\.` deliberately does NOT match omp: omp writes a single
+# U+2026 ellipsis, so borrowing the pi row would have silently failed.
+FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT='(⟨|⟦|\[)esc(⟩|⟧|\])'
 FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
 # cursor-agent's busy footer. The TOKEN is matched, not the spinner verb: the
 # same version rendered both `Working` and `Running` beside its braille spinner
@@ -338,6 +362,7 @@ fm_busy_lines_match() {  # [harness]
       codex) regex=$FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT ;;
       opencode) regex=$FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT ;;
       pi|pi-signed) regex=$FM_DELIVERY_PI_BUSY_REGEX_DEFAULT ;;
+      omp) regex=$FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT ;;
       grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
       kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
       cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;
@@ -597,6 +622,10 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_BOX_TOP=-1
   FM_COMPOSER_SCAN_BOX_BOTTOM=-1
   FM_COMPOSER_SCAN_BOX_AMBIG=0
+  # omp's inline-bottom box: a top border immediately followed by its own
+  # bottom border, with the input carried inside that bottom row.
+  FM_COMPOSER_SCAN_INLINE_BOTTOM=-1
+  FM_COMPOSER_SCAN_INLINE_FAMILY=
   FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
   FM_COMPOSER_SCAN_UNSAFE=0
   FM_COMPOSER_SCAN_CURSOR_EDGE=0
@@ -731,6 +760,23 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
           FM_COMPOSER_SCAN_BOX_TOP=$top
           FM_COMPOSER_SCAN_BOX_BOTTOM=$row
           FM_COMPOSER_SCAN_BOX_AMBIG=$geometry_ambiguous
+        fi
+        FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
+      elif [ "$top" -ge 0 ] && [ "$family" = "$current_family" ] && [ "$valid" = 1 ] \
+         && [ "$content_rows" -eq 0 ] && [ "$row" -eq $((top + 1)) ] \
+         && [ "$indent" = "$current_indent" ]; then
+        # omp's inline-bottom box (see the shape catalogue at the top of this
+        # file): the two border rows are adjacent, so there is no interior row
+        # the complete-box arm above could classify, and the input lives in
+        # this bottom row. Geometry is deliberately not compared: omp titles
+        # its top border AND fills its bottom border with the composer, so the
+        # blank-to-the-same-width proof the other box shapes rely on cannot
+        # apply. The container proof is instead the adjacency plus the matching
+        # family, corners, and indent, and the identity gate in
+        # _fm_composer_inline_bottom_verdict is what makes it positive.
+        if [ -z "$cy" ] || [ "$cy" -eq "$row" ]; then
+          FM_COMPOSER_SCAN_INLINE_BOTTOM=$row
+          FM_COMPOSER_SCAN_INLINE_FAMILY=$family
         fi
         FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM=-1
       else
@@ -910,6 +956,79 @@ _fm_composer_classify_rows() {  # <screen> <styled> <ambiguous> <first-row> <las
   fi
 }
 
+# _fm_composer_inline_bottom_content: the composer content carried inside an
+# inline-bottom box's bottom border row (omp). The row reads
+# `<corner><rule run> <typed text> <rule run><corner>`, so the corner pair and
+# both rule runs are furniture and everything between them is content.
+# The shape itself was already proven from the plain screen by the scanner, so
+# this extractor never fails: it strips whichever furniture is still present.
+# That tolerance is deliberate rather than lax - when <styled> is 1 the caller
+# wants the GHOST-stripped read, and a harness that draws its border
+# de-emphasised would have had that border removed before this sees the row.
+_fm_composer_inline_bottom_content() {  # <raw-row> <styled> <family> -> content
+  local raw=$1 styled=$2 family=$3 content left right rule
+  case "$family" in
+    rounded) left='╰'; right='╯'; rule='─' ;;
+    light) left='└'; right='┘'; rule='─' ;;
+    double) left='╚'; right='╝'; rule='═' ;;
+    heavy) left='┗'; right='┛'; rule='━' ;;
+    ascii) left='+'; right='+'; rule='-' ;;
+    *) return 1 ;;
+  esac
+  if [ "$styled" = 1 ]; then
+    content=$(printf '%s\n' "$raw" | fm_composer_strip_ghost)
+  else
+    content=$(printf '%s\n' "$raw" | fm_composer_strip_ansi)
+  fi
+  fm_composer_normalize_trim_var content
+  case "$content" in "$left"*) content=${content#"$left"} ;; esac
+  case "$content" in *"$right") content=${content%"$right"} ;; esac
+  while :; do
+    case "$content" in "$rule"*) content=${content#"$rule"} ;; *) break ;; esac
+  done
+  while :; do
+    case "$content" in *"$rule") content=${content%"$rule"} ;; *) break ;; esac
+  done
+  fm_composer_normalize_trim_var content
+  printf '%s' "$content"
+}
+
+# _fm_composer_inline_bottom_verdict: the inline-bottom shape's verdict.
+# Identity + structure conjunction, the same rule pi's separated shape follows,
+# because two adjacent border rows are not enough proof on their own that a
+# region is an agent composer rather than decoration. Unlike pi it consults
+# only the agent NAME and never the status: the container here is a real box,
+# so the content read distinguishes empty from pending without help.
+_fm_composer_inline_bottom_verdict() {  # <screen> <styled> <has_identity> <identity> <row> <family>
+  local screen=$1 styled=$2 has_identity=$3 identity=$4 row=$5 family=$6
+  local agent raw content plain
+  if [ "$has_identity" != 1 ]; then
+    printf 'unknown'
+    return 0
+  fi
+  if [ -z "$identity" ]; then
+    printf 'need-identity'
+    return 0
+  fi
+  if [ "$identity" = probe-absent ]; then
+    printf 'unknown'
+    return 0
+  fi
+  agent=${identity%%$'\t'*}
+  if [ "$agent" != omp ]; then
+    printf 'unknown'
+    return 0
+  fi
+  raw=$(_fm_composer_screen_row "$row" "$screen")
+  content=$(_fm_composer_inline_bottom_content "$raw" "$styled" "$family") || {
+    printf 'unknown'
+    return 0
+  }
+  plain=$(_fm_composer_inline_bottom_content "$raw" 0 "$family") || plain=$content
+  fm_composer_classify_content 1 "$content" \
+    "${FM_COMPOSER_IDLE_RE:-$FM_COMPOSER_IDLE_RE_DEFAULT}" insensitive "$plain" 1 "$styled"
+}
+
 # _fm_composer_classify_bare_row: the bare agent-glyph row verdict, including
 # the styled=0 degradation: without styling, trailing text after the glyph may
 # be the harness's own idle suggestion (claude's rotating dim hint, codex's
@@ -1036,6 +1155,12 @@ _fm_composer_select_cursorless() {
     FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_BOX_BOTTOM - 1))
     FM_COMPOSER_SELECTED_AMBIG=$FM_COMPOSER_SCAN_BOX_AMBIG
   fi
+  if [ "$FM_COMPOSER_SCAN_INLINE_BOTTOM" -gt "$generic" ]; then
+    generic=$FM_COMPOSER_SCAN_INLINE_BOTTOM
+    FM_COMPOSER_SELECTED_KIND=inline
+    FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_INLINE_BOTTOM
+    FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_INLINE_BOTTOM
+  fi
   if [ "$FM_COMPOSER_SCAN_BARE_ROW" -gt "$generic" ]; then
     generic=$FM_COMPOSER_SCAN_BARE_ROW
     FM_COMPOSER_SELECTED_KIND=bare
@@ -1119,6 +1244,15 @@ EOF
   plain=$(printf '%s\n' "$screen" | fm_composer_strip_ansi)
   _fm_composer_scan_screen "$plain" '' 1
   _fm_composer_select_cursorless "$plain" || return 1
+  if [ "$FM_COMPOSER_SELECTED_KIND" = inline ]; then
+    # omp's input is furniture-wrapped inside one border row, so the generic
+    # row reader would return the border rather than the text.
+    raw=$(_fm_composer_screen_row "$FM_COMPOSER_SCAN_INLINE_BOTTOM" "$screen")
+    content=$(_fm_composer_inline_bottom_content "$raw" "$styled" "$FM_COMPOSER_SCAN_INLINE_FAMILY") \
+      || return 1
+    printf '%s\n' "$content" | LC_ALL=C awk '{$1=$1; printf "%s", $0}'
+    return 0
+  fi
   row=$FM_COMPOSER_SELECTED_FIRST
   while [ "$row" -le "$FM_COMPOSER_SELECTED_LAST" ]; do
     raw=$(_fm_composer_screen_row "$row" "$screen")
@@ -1211,6 +1345,15 @@ EOF
         "$((FM_COMPOSER_SCAN_BOX_TOP + 1))" "$((FM_COMPOSER_SCAN_BOX_BOTTOM - 1))"
       return 0
     fi
+    # omp parks its cursor on the bottom border row, which the edge check below
+    # would otherwise refuse. The scanner only records this shape when the
+    # cursor is on exactly that row, so this arm can never claim another
+    # harness's edge row.
+    if [ "$FM_COMPOSER_SCAN_INLINE_BOTTOM" -ge 0 ]; then
+      _fm_composer_inline_bottom_verdict "$screen" "$styled" "$has_identity" "$identity" \
+        "$FM_COMPOSER_SCAN_INLINE_BOTTOM" "$FM_COMPOSER_SCAN_INLINE_FAMILY"
+      return 0
+    fi
     if [ "$FM_COMPOSER_SCAN_LEFTBAR_START" -ge 0 ] \
        && [ "$cy" -ge "$FM_COMPOSER_SCAN_LEFTBAR_START" ] \
        && [ "$cy" -le "$FM_COMPOSER_SCAN_LEFTBAR_END" ]; then
@@ -1269,6 +1412,10 @@ EOF
     box)
       _fm_composer_classify_rows "$screen" "$styled" "$FM_COMPOSER_SELECTED_AMBIG" \
         "$FM_COMPOSER_SELECTED_FIRST" "$FM_COMPOSER_SELECTED_LAST"
+      ;;
+    inline)
+      _fm_composer_inline_bottom_verdict "$screen" "$styled" "$has_identity" "$identity" \
+        "$FM_COMPOSER_SCAN_INLINE_BOTTOM" "$FM_COMPOSER_SCAN_INLINE_FAMILY"
       ;;
     bare)
       if [ "$FM_COMPOSER_SELECTED_LAST" -gt "$FM_COMPOSER_SELECTED_FIRST" ]; then
