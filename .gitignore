@@ -12,3 +12,9 @@ __pycache__/
 .env
 config/
 .claude/settings.local.json
+# Interactive live-harness labs. Both suites build their lab inside the repo root
+# so the clone and its relative paths stay on one filesystem, and both remove it
+# on exit - but an interrupted run, or a concurrent `git add -A`, would otherwise
+# commit a whole nested checkout.
+.pi-live-e2e.*
+.omp-live-e2e.*

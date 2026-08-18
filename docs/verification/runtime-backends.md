@@ -1245,6 +1245,12 @@ Because omp marks only the stop that FOLLOWS a block, forwarding its own `stop_h
 Claude's `--claude` mode is deliberately not used: it exists because Claude marks every stop after any continuation, including its own auto-arm's.
 
 `tool_call` blocking works with the same `{block: true, reason}` shape Pi uses, so the arm and cd PreToolUse seatbelts ride the same extension.
+The handler receives `event.input.command`, and the allow path's returned `{}` is inert - worth measuring rather than assuming, given that a returned value from `context` replaces the payload:
+
+```text
+saw bash: {"command":"echo ALLOWPATH-RAN"}
+`ALLOWPATH-RAN` - exit 0.
+```
 
 #### Idle wake
 
