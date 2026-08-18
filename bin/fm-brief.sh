@@ -29,13 +29,20 @@
 #   without it carry a loud declaration so an omitted contract cannot be silent.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
-# captain's standing posture as context, and this script never reads it:
+# captain's standing posture as context, and the ship mode itself never reads it:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
+# The one registry read the scaffold does make is the planning-managed marker
+# (fm-project-mode.sh --planning): a project registered with +planning gets a
+# planning-context guard in the project-memory section, because such projects
+# keep AGENTS.md/CLAUDE.md as machine-local symlinks into a planning repo and a
+# fresh task clone contains neither, which has repeatedly invited crews to
+# recreate them unbidden. FM_PLANNING_CONTEXTS_DIR overrides the default
+# historical-context directory named in that guard.
 # The generated ship brief records the chosen mode as a fixed machine-readable
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
@@ -54,6 +61,8 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# For planning-managed projects it instead leads with the context guard above,
+# which forbids creating or modifying AGENTS.md/CLAUDE.md in the task worktree.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -347,6 +356,27 @@ echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
 
+# Planning-managed registry marker (header comment above): only the ship
+# scaffold consults it, and only for the project-memory guard. An unregistered
+# or unmarked project resolves to off, so unmarked scaffolds are byte-identical
+# to the previous behavior.
+PLANNING_SECTION=""
+if [ "$KIND" = ship ]; then
+  planning=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-project-mode.sh" --planning "$REPO" 2>/dev/null || echo off)
+  if [ "$planning" = on ]; then
+    PLANNING_CONTEXTS_DIR=${FM_PLANNING_CONTEXTS_DIR:-/Users/crs58/projects/sciexp/planning/contexts}
+    IFS= read -r -d '' PLANNING_SECTION <<GUARDEOF || true
+
+**Planning-managed project - context guard.** This project is registered planning-managed: do NOT create, commit, or modify \`AGENTS.md\` or \`CLAUDE.md\` in this worktree or the PR.
+In the primary checkout those files are machine-local symlinks into the planning repo and are deliberately uncommitted, so a fresh task clone legitimately contains neither.
+The repo's historical agent context is readable at \`$PLANNING_CONTEXTS_DIR/$REPO.md\` as background reading only.
+The switchover to a committed in-repo context is separately tracked; do not advance it as part of this task.
+The project-memory guidance above still applies for every other durable artifact, but its AGENTS.md/CLAUDE.md authoring steps are overridden by this guard for this task.
+GUARDEOF
+  fi
+fi
+
 # Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
@@ -458,7 +488,7 @@ Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
-
+$PLANNING_SECTION
 $DOD
 EOF
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
