@@ -329,6 +329,62 @@ EOF
   pass "omp delivers a typed watcher wake with no deliverAs and records its own marker"
 }
 
+test_watch_extension_redundant_arm_is_an_owned_noop() {
+  local repo home out status=0
+  repo="$TMP_ROOT/redundant-arm-root"
+  home="$TMP_ROOT/redundant-arm-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_omp_extension_fixture "$repo"
+  # Stays alive, so the extension keeps owning a live arm child across both calls.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'watcher: started pid=4242 recovery-generation=g1\n'
+exec sleep 30
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$repo/.omp/extensions/fm-primary-omp-watch.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let tool = null;
+const pi = {
+  on() {},
+  typebox: { Type: { Object: (p) => ({ type: "object", properties: p }) } },
+  registerCommand() {},
+  registerTool(candidate) { if (candidate.name === "fm_watch_arm_omp") tool = candidate; },
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+const first = await tool.execute();
+const second = await tool.execute();
+const text = (r) => r.content.map((item) => item.text).join("");
+if (!text(first).includes("started omp extension arm child 1")) {
+  console.error(`first arm did not start a cycle: ${text(first)}`);
+  process.exit(1);
+}
+// A redundant call is an OWNERSHIP no-op, never a second cycle and never an
+// independent health claim.
+if (!text(second).includes("watcher: unchanged")) {
+  console.error(`redundant arm was not an ownership no-op: ${text(second)}`);
+  process.exit(1);
+}
+if (/arm child [2-9]/.test(text(second))) {
+  console.error(`redundant arm started a second cycle: ${text(second)}`);
+  process.exit(1);
+}
+if (second.details?.ok !== true) {
+  console.error("the no-op was reported as a failure");
+  process.exit(1);
+}
+process.exit(0);
+EOF
+) || status=$?
+  expect_code 0 "$status" "a redundant omp arm call was not an ownership no-op" "$out"
+  pass "omp answers a redundant arm call with an ownership no-op rather than a second cycle"
+}
+
 test_watch_extension_refuses_a_foreign_session_lock() {
   local repo home out status=0
   repo="$TMP_ROOT/foreign-lock-root"
@@ -403,6 +459,7 @@ test_sessionstart_nudge_is_encoded_and_source_derived
 test_sessionstart_nudge_skips_an_empty_digest
 test_tool_call_seatbelt_blocks_a_denied_command
 test_watch_extension_wake_carries_no_options_object
+test_watch_extension_redundant_arm_is_an_owned_noop
 test_watch_extension_refuses_a_foreign_session_lock
 test_watch_extension_is_process_scoped_not_session_scoped
 test_extensions_never_import_pi_vendor_modules
