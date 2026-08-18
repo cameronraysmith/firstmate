@@ -290,6 +290,41 @@ SH
   chmod +x "$fakebin/ps"
 }
 
+make_fake_ps_omp_holder() {
+  local fakebin=$1 holder_pid=$2
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+pid=""
+prev=""
+for arg in "\$@"; do
+  [ "\$prev" = "-p" ] && pid="\$arg"
+  prev="\$arg"
+done
+case "\$*" in
+  *"comm="*)
+    if [ "\$pid" = "$holder_pid" ]; then
+      printf '/usr/local/bin/omp\n'
+    else
+      printf '/bin/zsh\n'
+    fi
+    exit 0
+    ;;
+  *"args="*)
+    if [ "\$pid" = "$holder_pid" ]; then
+      printf 'omp\n'
+    else
+      printf 'zsh\n'
+    fi
+    exit 0
+    ;;
+  *"ppid="*) printf '%s\n' "$holder_pid"; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+}
+
 # make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
 # the given "session:window" target - the exact primitive
 # fm_backend_target_exists uses for a tmux endpoint liveness read.
@@ -531,6 +566,14 @@ run_pi_session_start() {  # <home> <root> <path> [fm-session-start args...]
     "$SESSION_START" "$@"
 }
 
+run_omp_session_start() {  # <home> <root> <path> [fm-session-start args...]
+  local home=$1 root=$2 path=$3
+  shift 3
+  env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT OMPCODE=1 \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
+    "$SESSION_START" "$@"
+}
+
 run_named_harness_session_start() {  # <harness> <home> <root> <path> [fm-session-start args...]
   local harness=$1 home=$2 root=$3 path=$4
   shift 4
@@ -695,6 +738,44 @@ write_pi_loaded_markers() {
   local home=$1 root=$2 pid=$3
   write_pi_watch_loaded_marker "$home" "$root" "$pid"
   write_pi_turnend_loaded_marker "$home" "$root" "$pid"
+}
+
+install_omp_turnend_extension_fixture() {
+  local root=$1
+  mkdir -p "$root/.omp/extensions"
+  cp "$ROOT/.omp/extensions/fm-primary-turnend-guard.ts" "$root/.omp/extensions/fm-primary-turnend-guard.ts"
+}
+
+install_omp_watch_extension_fixture() {
+  local root=$1
+  mkdir -p "$root/.omp/extensions"
+  cp "$ROOT/.omp/extensions/fm-primary-omp-watch.ts" "$root/.omp/extensions/fm-primary-omp-watch.ts"
+}
+
+write_omp_watch_loaded_marker() {
+  local home=$1 root=$2 pid=$3 version
+  version=$(hash_file_for_test "$root/.omp/extensions/fm-primary-omp-watch.ts")
+  printf '%s\n%s\n' "$version" "$pid" > "$home/state/.omp-watch-extension-loaded"
+}
+
+write_omp_turnend_loaded_marker() {
+  local home=$1 root=$2 pid=$3 version
+  version=$(hash_file_for_test "$root/.omp/extensions/fm-primary-turnend-guard.ts")
+  printf '%s\n%s\n' "$version" "$pid" > "$home/state/.omp-turnend-extension-loaded"
+}
+
+write_omp_loaded_markers() {
+  local home=$1 root=$2 pid=$3
+  write_omp_watch_loaded_marker "$home" "$root" "$pid"
+  write_omp_turnend_loaded_marker "$home" "$root" "$pid"
+}
+
+# count_omp_diagnostic <digest>: how many times the digest EMITTED the omp
+# extension-load diagnostic. docs/supervision-protocols/omp.md quotes the same
+# token inside the omp supervision snippet the digest always prints, so only a
+# line-anchored count separates the diagnostic from that quotation.
+count_omp_diagnostic() {
+  printf '%s\n' "$1" | grep -c '^OMP_WATCH_EXTENSION: not loaded - '
 }
 
 # --- context digest: absent vs empty vs present -----------------------------
@@ -2403,6 +2484,108 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+test_supervision_block_exactly_one_and_omp_diagnostic() {
+  local rec root home fakebin out block_count
+  rec=$(new_world omp-supervision-block)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" omp
+
+  out=$(FM_FAKE_HARNESS=omp run_omp_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  block_count=$(printf '%s\n' "$out" | grep -c '^SUPERVISION OPERATING INSTRUCTIONS - primary harness:')
+  [ "$block_count" -eq 1 ] || fail "expected exactly one supervision block, got $block_count"
+  assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: omp" "omp supervision block missing"
+  assert_contains "$out" "Mode: omp extension background wake" "omp snippet missing from session start"
+  [ "$(count_omp_diagnostic "$out")" -eq 1 ] || fail "omp extension load diagnostic missing" "$out"
+  assert_contains "$out" "restart omp so $root/.omp/extensions/fm-primary-turnend-guard.ts and $root/.omp/extensions/fm-primary-omp-watch.ts load" "omp extension load diagnostic omits the turn-end guard extension"
+  assert_not_contains "$out" "PI_WATCH_EXTENSION" "omp primary emitted Pi's extension diagnostic"
+
+  pass "session start emits exactly one omp block and reports omp extension load state, never Pi's"
+}
+
+test_omp_diagnostic_accepts_prelock_loaded_markers() {
+  local rec root home fakebin out holder_pid
+  rec=$(new_world omp-prelock-loaded-markers)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+
+  sleep 300 &
+  holder_pid=$!
+  make_fake_ps_omp_holder "$fakebin" "$holder_pid"
+  install_omp_turnend_extension_fixture "$root"
+  install_omp_watch_extension_fixture "$root"
+
+  write_omp_loaded_markers "$home" "$root" "$holder_pid"
+
+  out=$(FM_FAKE_HARNESS=omp run_omp_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  [ "$(count_omp_diagnostic "$out")" -eq 0 ] || fail "omp diagnostic rejected current pre-lock loaded markers" "$out"
+
+  pass "session start accepts current omp markers written before lock acquisition"
+}
+
+test_omp_diagnostic_rejects_missing_turnend_guard_marker() {
+  local rec root home fakebin out holder_pid
+  rec=$(new_world omp-missing-turnend-marker)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+
+  sleep 300 &
+  holder_pid=$!
+  make_fake_ps_omp_holder "$fakebin" "$holder_pid"
+  install_omp_turnend_extension_fixture "$root"
+  install_omp_watch_extension_fixture "$root"
+
+  write_omp_watch_loaded_marker "$home" "$root" "$holder_pid"
+
+  out=$(FM_FAKE_HARNESS=omp run_omp_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  [ "$(count_omp_diagnostic "$out")" -eq 1 ] || fail "omp diagnostic trusted a session without the turn-end guard extension" "$out"
+
+  pass "session start rejects omp sessions missing the turn-end guard marker"
+}
+
+test_omp_diagnostic_rejects_pi_markers() {
+  local rec root home fakebin out holder_pid
+  rec=$(new_world omp-pi-marker-substitution)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+
+  sleep 300 &
+  holder_pid=$!
+  make_fake_ps_omp_holder "$fakebin" "$holder_pid"
+  # Both extension pairs are on disk and only Pi's markers were written: Pi's
+  # extensions load on omp and never fire there, so this home's supervision is
+  # disarmed and Pi's evidence must never answer for an omp primary.
+  install_omp_turnend_extension_fixture "$root"
+  install_omp_watch_extension_fixture "$root"
+  install_pi_turnend_extension_fixture "$root"
+  install_pi_watch_extension_fixture "$root"
+
+  write_pi_loaded_markers "$home" "$root" "$holder_pid"
+
+  out=$(FM_FAKE_HARNESS=omp run_omp_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  [ "$(count_omp_diagnostic "$out")" -eq 1 ] || fail "omp diagnostic accepted Pi markers as omp evidence" "$out"
+
+  pass "session start never satisfies an omp primary with current lock-owned Pi markers"
+}
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
@@ -2440,6 +2623,10 @@ test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker
+test_supervision_block_exactly_one_and_omp_diagnostic
+test_omp_diagnostic_accepts_prelock_loaded_markers
+test_omp_diagnostic_rejects_missing_turnend_guard_marker
+test_omp_diagnostic_rejects_pi_markers
 test_runtime_bound_truncates_loudly_and_exits_zero
 test_portable_timeout_escalates_term_resistant_process
 test_runtime_bound_leaves_a_healthy_digest_untouched
