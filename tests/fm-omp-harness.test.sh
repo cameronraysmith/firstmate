@@ -198,5 +198,32 @@ SH
   pass "launch boundary: a spawn clears the inherited agent-session markers and nothing else"
 }
 
+# omp is a verified PRIMARY, so nothing in its supervision model explains this
+# refusal - the gap is the secondmate LAUNCH surface. A secondmate home is
+# seeded with an extension tree and launched through absolute -e paths that
+# fm-spawn composes only for pi, and neither that template nor the remote
+# secondmate harness allowlists were ever built for omp. The refusal is what
+# keeps that unbuilt path from standing up a home whose supervision cycle
+# could never be armed, so it is pinned here rather than left to the primary
+# adapter's verified status to imply.
+test_spawn_refuses_secondmate() {
+  local home fakebin out status
+  IFS='|' read -r home _ _ fakebin _ <<EOF
+$(omp_spawn_case secondmate omp secondmate-1)
+EOF
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
+    PATH="$fakebin:$PATH" \
+    "$ROOT/bin/fm-spawn.sh" secondmate-1 omp --secondmate 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "omp was accepted as a secondmate harness: $out"
+  assert_contains "$out" "secondmate launch wiring is not built" \
+    "the omp secondmate refusal did not explain the boundary"
+  pass "omp is refused as a secondmate harness"
+}
+
 test_tmux_liveness_classifies_the_exact_omp_name
 test_launch_boundary_clears_foreign_session_markers
+test_spawn_refuses_secondmate

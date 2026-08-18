@@ -96,23 +96,37 @@ run_guard_case_extension() {
 #   omit         "" | watch | turnend - skip that extension's marker
 #   drift        "" | watch | turnend - write a marker whose version is not the
 #                current build, i.e. the session loaded an older extension
+# The fifth argument selects the harness whose extension pair is recorded, so the
+# same recorder can build a genuine Pi session or a genuine omp one. Their trees,
+# filenames, and markers are entirely separate on purpose.
 record_pi_extension_session() {
-  local dir=$1 session_pid=${2:-} omit=${3:-} drift=${4:-} home root pair source marker version
+  local dir=$1 session_pid=${2:-} omit=${3:-} drift=${4:-} harness=${5:-pi}
+  local home root pair source marker version dir_rel
   home=$(case_home "$dir")
   root=$(case_root "$dir")
-  mkdir -p "$root/.pi/extensions"
-  for pair in \
-    "fm-primary-pi-watch.ts:.pi-watch-extension-loaded:watch" \
-    "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded:turnend"; do
+  case "$harness" in
+    omp)
+      dir_rel=.omp/extensions
+      set -- "fm-primary-omp-watch.ts:.omp-watch-extension-loaded:watch" \
+             "fm-primary-turnend-guard.ts:.omp-turnend-extension-loaded:turnend"
+      ;;
+    *)
+      dir_rel=.pi/extensions
+      set -- "fm-primary-pi-watch.ts:.pi-watch-extension-loaded:watch" \
+             "fm-primary-turnend-guard.ts:.pi-turnend-extension-loaded:turnend"
+      ;;
+  esac
+  mkdir -p "$root/$dir_rel"
+  for pair in "$@"; do
     source=${pair%%:*}
     marker=${pair#*:}; marker=${marker%%:*}
-    printf '// %s for %s\n' "${pair##*:}" "$(basename "$dir")" > "$root/.pi/extensions/$source"
+    printf '// %s for %s\n' "${pair##*:}" "$(basename "$dir")" > "$root/$dir_rel/$source"
     [ "$omit" = "${pair##*:}" ] && continue
     if [ "$drift" = "${pair##*:}" ]; then
       version="sha256:0000000000000000000000000000000000000000000000000000000000000000"
     else
-      version=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pi_extension_version "$2"' \
-        _ "$ROOT/bin/fm-wake-lib.sh" "$root/.pi/extensions/$source") || return 1
+      version=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_primary_extension_version "$2"' \
+        _ "$ROOT/bin/fm-wake-lib.sh" "$root/$dir_rel/$source") || return 1
     fi
     printf '%s\n%s\n' "$version" "$session_pid" > "$home/state/$marker"
   done
@@ -680,8 +694,56 @@ test_pi_harness_routes_itself_to_the_extension_model() {
   pass "fm-guard stale banner: Pi and pi-signed primaries route themselves to the extension model"
 }
 
+# omp is the second extension-model primary, and the reason it needs its own proof
+# rather than sharing Pi's is that Pi's extensions LOAD on omp and never fire there.
+# A Pi marker must therefore never satisfy an omp primary.
+test_omp_harness_routes_itself_to_the_extension_model() {
+  local dir home out pid
+  dir=$(make_guard_case "harness-routing-omp")
+  home=$(case_home "$dir")
+  sleep 60 &
+  pid=$!
+  record_pi_extension_session "$dir" "$pid" "" "" omp || fail "could not record the omp extension session"
+  touch "$home/state/.last-watcher-beat"
+  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GROK_AGENT -u FM_SUPERVISION_MODEL \
+    OMPCODE=1 \
+    FM_ROOT_OVERRIDE="$(case_root "$dir")" \
+    FM_HOME="$home" \
+    FM_GUARD_GRACE=999 \
+    "$ROOT/bin/fm-guard.sh" 2>&1)
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ -z "$out" ] \
+    || fail "an omp primary must route itself to the extension model, got: $out"
+  pass "fm-guard stale banner: an omp primary routes itself to the extension model"
+}
+
+test_omp_is_not_satisfied_by_pi_extension_evidence() {
+  local dir home out pid
+  dir=$(make_guard_case "harness-routing-omp-foreign")
+  home=$(case_home "$dir")
+  sleep 60 &
+  pid=$!
+  # A fully loaded, current, live PI session in the same home.
+  record_pi_extension_session "$dir" "$pid" "" "" pi || fail "could not record the Pi extension session"
+  touch "$home/state/.last-watcher-beat"
+  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GROK_AGENT -u FM_SUPERVISION_MODEL \
+    OMPCODE=1 \
+    FM_ROOT_OVERRIDE="$(case_root "$dir")" \
+    FM_HOME="$home" \
+    FM_GUARD_GRACE=999 \
+    "$ROOT/bin/fm-guard.sh" 2>&1)
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ -n "$out" ] \
+    || fail "an omp primary accepted Pi extension markers as its own supervision ownership"
+  pass "fm-guard stale banner: Pi extension evidence never satisfies an omp primary"
+}
+
 test_first_stale_call_prints_full_banner
 test_repeated_same_episode_prints_reminder_only
+test_omp_harness_routes_itself_to_the_extension_model
+test_omp_is_not_satisfied_by_pi_extension_evidence
 test_pi_harness_routes_itself_to_the_extension_model
 test_extension_handoff_with_live_session_is_healthy
 test_extension_handoff_with_empty_lock_is_healthy
