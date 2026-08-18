@@ -4,9 +4,9 @@
 #
 # These tests run the REAL fm-spawn against a fake tmux pane and an isolated
 # git worktree, then drive the generated adapter artifact (the Pi extension,
-# the OpenCode plugin) in a plain Node host, so the artifact, the real
-# bin/fm-busy-event.sh writer, and the real classifier are exercised together
-# with no live harness session.
+# the omp extension, the OpenCode plugin) in a plain Node host, so the
+# artifact, the real bin/fm-busy-event.sh writer, and the real classifier are
+# exercised together with no live harness session.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -35,7 +35,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse pi opencode claude codex
+  fm_fake_exit0 "$fakebin" treehouse pi opencode claude codex omp
   printf '%s\n' "$fakebin"
 }
 
@@ -175,6 +175,126 @@ test_pi_extension_stale_incarnation_rejected() {
   out=$(classify pi "$id" "$state")
   [ "$out" = "busy fm-spawn" ] || fail "a stale extension event must not change state, got '$out'"
   pass "pi extension events from a superseded incarnation are rejected as stale"
+}
+
+# drive_omp_ext <ext-path> <mode>: load the generated omp extension in a plain
+# Node host and fire one lifecycle handler. omp's shape differs from Pi's on
+# purpose: it has no agent_settled event, and its ctx.isIdle() is still false AT
+# agent_end, so the settle decision reads the event's own willContinue flag
+# instead. The ctx here therefore reports isIdle() false in every mode - a
+# handler that consulted it the way Pi's does could never report idle, which is
+# exactly the failure this drives out.
+drive_omp_ext() {
+  EXT_PATH="$1" MODE="$2" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
+const handlers = {};
+mod.default({ on: (name, fn) => { handlers[name] = fn; } });
+const ctx = { isIdle: () => false };
+switch (process.env.MODE) {
+  case "agent-start": await handlers["agent_start"]({}, ctx); break;
+  case "end-terminal": await handlers["agent_end"]({}, ctx); break;
+  case "end-continuing": await handlers["agent_end"]({ willContinue: true }, ctx); break;
+  case "end-then-start":
+    await handlers["agent_end"]({}, ctx);
+    await handlers["agent_start"]({}, ctx);
+    break;
+  case "turn-end": await handlers["turn_end"]({}, ctx); break;
+  default: throw new Error("unknown mode " + process.env.MODE);
+}
+if (process.env.MODE === "turn-end") {
+  await new Promise((resolve) => setTimeout(resolve, 200));
+}
+EOF
+}
+
+test_omp_extension_semantic_lifecycle() {
+  local rec id=busy-omp-1 out state ext
+  rec=$(make_spawn_case omp-lifecycle omp "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "omp spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.omp-ext.ts"
+  assert_present "$ext" "omp spawn did not write the per-task extension"
+
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "busy fm-spawn" ] || fail "seed after spawn must be 'busy fm-spawn', got '$out'"
+
+  rm -f "$state/$id.turn-ended"
+  out=$(drive_omp_ext "$ext" turn-end) || fail "turn_end drive failed: $out"
+  [ -f "$state/$id.turn-ended" ] || fail "turn_end no longer touches the notification marker"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "busy fm-spawn" ] || fail "turn_end must stay a notification, not a state edge, got '$out'"
+
+  out=$(drive_omp_ext "$ext" end-terminal) || fail "terminal agent_end drive failed: $out"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "idle omp-ext" ] \
+    || fail "a terminal agent_end must classify 'idle omp-ext' even while ctx.isIdle() is false, got '$out'"
+
+  out=$(drive_omp_ext "$ext" agent-start) || fail "agent_start drive failed: $out"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "busy omp-ext" ] || fail "agent_start must classify 'busy omp-ext', got '$out'"
+
+  out=$(drive_omp_ext "$ext" end-continuing) || fail "continuing agent_end drive failed: $out"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "busy omp-ext" ] \
+    || fail "an agent_end that already scheduled a continuation must stay busy, got '$out'"
+
+  out=$(drive_omp_ext "$ext" end-terminal) || fail "final agent_end drive failed: $out"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "idle omp-ext" ] || fail "the final agent_end must classify idle, got '$out'"
+  pass "omp extension reports agent_start busy, settles only on a non-continuing agent_end, and keeps turn_end a notification"
+}
+
+test_omp_extension_serializes_settle_before_next_start() {
+  local rec id=busy-omp-order out state ext
+  rec=$(make_spawn_case omp-order omp "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "omp spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.omp-ext.ts"
+
+  out=$(drive_omp_ext "$ext" end-then-start) || fail "end/start drive failed: $out"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "busy omp-ext" ] || fail "a fresh agent_start after agent_end must win, got '$out'"
+  pass "omp extension awaits agent_end before the next agent_start without a test delay"
+}
+
+test_omp_extension_stale_incarnation_rejected() {
+  local rec id=busy-omp-2 out state ext
+  rec=$(make_spawn_case omp-stale omp "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "omp spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.omp-ext.ts"
+  "$ROOT/bin/fm-busy-event.sh" arm "$state" "$id" >/dev/null
+  out=$(drive_omp_ext "$ext" end-terminal) || fail "stale settle drive failed: $out"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "busy fm-spawn" ] || fail "a stale extension event must not change state, got '$out'"
+  pass "omp extension events from a superseded incarnation are rejected as stale"
+}
+
+test_omp_source_cannot_classify_another_adapter() {
+  local rec id=busy-omp-3 out state ext
+  rec=$(make_spawn_case omp-crosstalk omp "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "omp spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.omp-ext.ts"
+  out=$(drive_omp_ext "$ext" end-terminal) || fail "settle drive failed: $out"
+  # The same record read as any other harness is untrusted, not idle: omp's
+  # writer must never settle a pane running something else.
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "unknown source-mismatch" ] \
+    || fail "an omp-ext record must not classify a pi task, got '$out'"
+  out=$(classify claude "$id" "$state")
+  [ "$out" = "unknown source-mismatch" ] \
+    || fail "an omp-ext record must not classify a claude task, got '$out'"
+  pass "omp-ext is trusted only for a task recorded as omp"
 }
 
 # drive_oc_plugin <plugin-path> <events-json-lines...>: load the generated
@@ -345,6 +465,10 @@ test_kimi_and_grok_install_no_unverified_wiring() {
 test_pi_extension_semantic_lifecycle
 test_pi_extension_serializes_settle_before_next_start
 test_pi_extension_stale_incarnation_rejected
+test_omp_extension_semantic_lifecycle
+test_omp_extension_serializes_settle_before_next_start
+test_omp_extension_stale_incarnation_rejected
+test_omp_source_cannot_classify_another_adapter
 test_kimi_and_grok_install_no_unverified_wiring
 test_opencode_plugin_semantic_lifecycle
 test_claude_hooks_semantic_lifecycle

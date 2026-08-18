@@ -175,32 +175,41 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse share that 
 ## Composer classification matrix
 
 The shared composer classifier (`bin/fm-composer-lib.sh`, `fm_composer_classify_screen`) owns every composer shape fleet-wide; each backend contributes only a capture and a capability descriptor.
-The live half of that guarantee was verified on 2026-08-10 from an already-trusted checkout at the branch's final validated head, against every installed harness then covered by the empty-composer matrix on tmux 3.6a, macOS arm64, on an isolated private socket, with no prompt submitted to any harness.
-An earlier untrusted-worktree run left Claude, Grok, and Muse unverified because the guard treats first-launch trust dialogs as an unreadable-composer state and never confirms them; this trusted-checkout rerun supersedes those missing results.
+The live half of that guarantee is refreshed by the guard below, which launches every INSTALLED harness idle on an isolated private socket and submits no prompt to any of them.
 
 ```sh
-FM_COMPOSER_MATRIX_LIVE=1 tests/fm-composer-matrix-live-e2e.test.sh
+FM_COMPOSER_MATRIX_LIVE=1 bin/fm-test-run.sh tests/fm-composer-matrix-live-e2e.test.sh
 ```
 
-Observed output:
+Observed output, 2026-08-17, tmux 3.6a on macOS arm64, from a worktree trusted for neither codex nor pi:
 
 ```text
-ok - claude (2.1.227 (Claude Code)): real idle composer classifies empty
-ok - codex (codex-cli 0.146.0): real idle composer classifies empty
-ok - opencode (1.14.46): real idle composer classifies empty
-ok - pi (0.84.0): real idle composer classifies empty
-ok - grok (grok 1.0.0 (3cd0d0cbcebe)): real idle composer classifies empty
+ok - claude (2.1.234 (Claude Code)): real idle composer classifies empty
+not ok - codex (codex-cli 0.147.0): idle composer never classified empty (last verdict: unknown)
+ok - opencode (1.18.18): real idle composer classifies empty
+not ok - pi (0.84.2): idle composer never classified empty (last verdict: unknown)
+ok - omp (omp/17.3.5): real idle composer classifies empty
+# harness absent, not verified here: grok
 # harness absent, not verified here: kimi
-ok - muse (Muse Code 0.1.0 (0.1.0-R708.1)): real idle composer classifies empty
+# harness absent, not verified here: muse
 ok - strict posture live: a blank shell row classifies unknown and injection defers
-ok - zellij (zellij 0.44.0): unrelated pane change never confirms delivery (verdict: unknown)
-ok - live composer-matrix guard verified 8 live surface(s)
+ok - zellij (zellij 0.44.3): unrelated pane change never confirms delivery (verdict: unknown)
 ```
 
-All six installed harnesses' real idle composers reached a proven `empty` (Claude auto-updated to 2.1.227 between the audit and this rerun, so the shipped classifier is proven against the newer release as well), including Pi through the tmux foreground-process identity probe, Grok through the titled-bottom-border tolerance, and OpenCode through the left-bar shape; Codex and OpenCode first parked on vendor update-available modals that the strict classifier correctly refused until the guard's single non-submitting Escape dismissed them.
+Every installed harness whose folder was trusted reached a proven `empty`, including OpenCode through the left-bar shape and omp through its inline-bottom box behind the tmux foreground-process identity probe.
+The two `not ok` lines are the guard working as designed rather than classifier defects: this worktree had never been trusted for codex or pi, and both parked on a first-launch trust dialog, which is a genuinely unreadable-composer state that the strict classifier must refuse.
+The guard dismisses a vendor update-available modal with a single non-submitting Escape but deliberately preserves a trust prompt, because Escape there exits the harness and erases the actionable surface.
+Rerun from an already-trusted checkout to record verdicts for those two.
+An earlier 2026-08-10 run from a trusted checkout recorded `ok` for claude 2.1.227, codex-cli 0.146.0, opencode 1.14.46, pi 0.84.0, grok 1.0.0, and muse 0.1.0-R708.1.
+
 The strict blank-row posture held live (a blank shell row deferred injection), and a zellij pane changing for reasons unrelated to submission never confirmed a delivery, replacing the retired content-diff heuristic's false positive.
-Kimi was not installed on the verification machine; its bordered shape is pinned by the portable byte-capture regressions in `tests/fm-composer-lib.test.sh`, which also carry the other five adapters' capability profiles for every harness under both a UTF-8 locale and `LC_ALL=C`.
+Kimi was not installed on the verification machine; its bordered shape is pinned by the portable byte-capture regressions in `tests/fm-composer-lib.test.sh`, which also carry the other adapters' capability profiles for every harness under both a UTF-8 locale and `LC_ALL=C`.
 This guard is the refresh command after an upgrade to any matrix-covered harness; rerun it and update the versions above rather than trusting this table across releases.
+
+The guard's own tmux session holds a long-lived command rather than a login shell.
+Without one the shell exits immediately in a non-interactive context and the server dies as soon as the first harness window is killed, so every harness after the first reported `could not launch in the isolated tmux server` instead of a verdict.
+That failure was observed on 2026-08-17 as claude passing and codex failing on the very next check, and it is why no harness beyond the first was reachable before the holder was added.
+
 Cursor is deliberately outside this cursor-anchored empty-composer matrix because its terminal cursor is parked outside the composer; tmux's Cursor-specific, process-identity-gated cursorless fallback is covered by the [Cursor Agent CLI](#cursor-agent-cli) section's separate live evidence and drift guard.
 
 `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
@@ -959,4 +968,130 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 
 ```sh
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
+```
+
+## omp (oh-my-pi)
+
+omp is a Pi fork with its own identity, config root (`~/.omp/agent`), lifecycle events, and composer shape.
+Everything below was verified live on 2026-08-17 against `omp/17.3.5` on macOS arm64, tmux 3.6a, on an isolated private socket, in a scratch git repository outside any fleet project.
+The earlier identity work verified detection and fleet-lock ancestry only; this record covers the launch profile, busy source, composer, and control plane.
+
+### Launch profile axes
+
+`omp --help` documents `--model=<value>` (fuzzy match) and `--thinking=<value>` with `off, minimal, low, medium, high, xhigh, max, auto`.
+
+An unknown model refuses the launch, so a typo cannot silently start a differently-configured worker:
+
+```text
+$ omp --model definitely-not-a-real-model -p "say X"
+Model "definitely-not-a-real-model" not found
+```
+
+An unknown or unsupported thinking level does the opposite: it is accepted silently and resolved to the model default, which is why `bin/fm-spawn.sh` passes only firstmate's own vocabulary rather than relying on the CLI to reject a bad value.
+The level omp finally applies is also clamped to what the selected model advertises.
+Measured by reading `pi.getThinkingLevel()` from an extension at `session_start`, once per requested level, against the configured default model `glm-5.3`, whose `omp models find glm-5.3` row advertises `low,high,max`:
+
+```text
+requested off      -> off
+requested minimal  -> low
+requested low      -> low
+requested medium   -> low
+requested high     -> high
+requested xhigh    -> high
+requested max      -> max
+requested auto     -> high
+requested bogus    -> high
+requested HIGH     -> high
+```
+
+The clamp is per model rather than global: `--model haiku --thinking medium` resolved to `claude-haiku-4-5` at `medium`, and `omp models --json` publishes `low, medium, high, xhigh, max` for `claude-opus-5`.
+`omp models` is therefore the authoritative model and thinking-support discovery surface for this adapter.
+
+### Environment exported to children
+
+Run from a scrubbed environment (`env -i` carrying only `HOME`, `PATH`, `TERM`, `LANG`, and `TMPDIR`), an omp bash-tool child received `OMPCODE=1` **and** `CLAUDECODE=1`, plus `AGENT=1`, `CI=true`, and a block of non-interactive pager and editor settings.
+This settles the question the identity change left open: `CLAUDECODE=1` on an omp tool process is omp's own compatibility export, not a value inherited from a surrounding environment.
+Detection therefore has to test `OMPCODE` before `CLAUDECODE`, which it does.
+
+### Launch-boundary marker leak
+
+A worker inherits both what its primary exports and whatever the long-lived session daemon's environment retains.
+Claude Code disables its own transcript persistence when it starts with an inherited `CLAUDE_CODE_CHILD_SESSION`, and its only escape hatch is finding that same marker in the tmux GLOBAL environment, which it probes with `tmux show-environment -g`.
+Verified on Claude Code 2.1.234 in a tmux server started without the marker, launching the same binary in the same directory twice, differing only in the launch boundary:
+
+```text
+# pane env carries the marker
+⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker · restart with CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 to keep future transcripts
+
+# same launch behind `env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDECODE`
+(no warning; the session records a transcript)
+```
+
+The mitigation cannot help a worker on a backend that sets no `TMUX`, because the probe returns false immediately there.
+That case was observed live in this fleet: a Claude crewmate running with `TMUX` unset and `CLAUDE_CODE_CHILD_SESSION=1` had a session directory under `~/.claude/projects/<project-key>/` but no `<session-id>.jsonl` transcript beside it, while a sibling session in the same project directory did.
+`bin/fm-spawn.sh` now clears one declared marker set at every launch boundary for every adapter; `foreign_launch_markers` in that script owns the set and the reasoning for each inclusion and exclusion.
+
+### Composer
+
+omp draws a two-row box with no interior content row.
+The top border carries the model, cwd, git branch, context percentage, and the session name; the input sits inside the BOTTOM border row, and the terminal cursor rests on that row.
+
+```text
+╭──   GLM-5.3 · high   …/omp-lab   main   7.1%/1M  ──────────────────────────╮
+╰─ typed text                                                                ─╯
+```
+
+Captured with `tmux capture-pane -p`, the idle input row is `'╰─ '` followed by spaces and `' ─╯'`, with `#{cursor_y}` on that row and `#{cursor_x}` at column 3.
+Every other shape in the catalogue treats a row starting and ending in corner glyphs as a structural edge and never an input row, which is why an omp pane classified `unknown` in all states before this shape was taught to `bin/fm-composer-lib.sh`.
+Because two adjacent border rows are weak evidence on their own, the shape is gated on the tmux foreground-process identity probe naming `omp`, the same conjunction Pi's separated shape uses.
+Verified live against the real classifier on a running omp pane: idle read `empty`, the same pane with `unsubmitted probe text` typed read `pending`, and `C-u` returned it to `empty`.
+
+### Rendered busy token, delivery only
+
+omp's mid-turn line is a braille spinner, a status phrase, and a bracketed interrupt hint.
+The status phrase is model-authored and changed within a single turn, from `Working…` on the first frame to `Sleeping 45 seconds then echoing done` while the tool ran, so it is not a signature.
+The stable part is `interruptHint()`, the literal `esc` wrapped in the active theme's bracket pair; omp ships three symbol sets, so the matched forms are `⟨esc⟩`, `⟦esc⟧`, and `[esc]`.
+Pi's `Working...` signature does not match omp, which writes a single U+2026 ellipsis; borrowing the Pi row would have failed silently.
+This row is a DELIVERY guard and the input to the identity probe's status field only; the recorded worker state comes from the busy source below.
+
+### Busy state
+
+omp emits no `agent_settled`, and `ctx.isIdle()` is still false AT `agent_end` because the settle completes after the event.
+Its terminal signal is `agent_end` without `willContinue`, which omp sets true at every site that has already scheduled an automatic continuation.
+Observed event order for one completed turn, from an extension loaded with `-e`:
+
+```text
+input(idle=true) -> before_agent_start -> agent_start -> context -> turn_start
+  -> before_provider_request -> after_provider_response -> turn_end
+  -> session_stop(stop_hook_active=false) -> agent_end(willContinue=unset, isIdle=false)
+  -> [500ms later] isIdle=true
+```
+
+A single Escape mid-turn produced `[Command cancelled]` in the pane and closed the run with `turn_end`, `turn_end`, `agent_end(willContinue=unset, isIdle=true)`, and no `session_stop`.
+So `agent_end` covers manual interruption, which Claude's `Stop` hook does not, and `session_stop` alone would have missed it.
+
+### Control plane
+
+A single Escape cancels a running turn and leaves the composer EMPTY, so no clear key is needed, unlike muse.
+Typing `/exit` opens a slash-autocomplete popup, and one Enter exited the application: the window was gone on the next read.
+
+### Primary supervision: primitives verified, protocol not built
+
+Firstmate's Pi primary extensions LOAD on omp without error, because omp's loader rewrites `@earendil-works/*` specifiers onto its own bundled copies.
+That acceptance is a trap rather than a capability.
+`pi.on("agent_settled", ...)` registers silently and never fires, so the turn-end guard is inert, while the guard's own `state/.pi-turnend-extension-loaded` marker IS written - a disarmed primary that reports itself healthy.
+Verified by loading `.pi/extensions/fm-primary-turnend-guard.ts` under omp beside a witness extension: the marker appeared, the witness's `agent_end` fired, and the guard produced nothing.
+
+omp's own equivalents were verified to work:
+
+- `session_stop` accepts `{ decision: "block", reason }` and forces a continuation turn. The blocked `agent_end` carried `willContinue: true` and the following `session_stop` carried `stop_hook_active: true`, the same loop guard Claude and Codex expose.
+- An extension wakes an idle session with `pi.sendUserMessage(text)` and NO `deliverAs`; the pane showed the injected message and the model answered it. `deliverAs: "followUp"` only queues while idle, which is the opposite of Pi's requirement.
+
+No firstmate primary protocol is built on those primitives yet, so omp has no snippet under `docs/supervision-protocols/`, `bin/fm-spawn.sh` refuses `--secondmate` on omp, and an omp primary falls back to the `unknown` protocol.
+
+### Refresh commands
+
+```sh
+FM_COMPOSER_MATRIX_LIVE=1 bin/fm-test-run.sh tests/fm-composer-matrix-live-e2e.test.sh
+bin/fm-test-run.sh tests/fm-omp-harness.test.sh tests/fm-busy-adapter-wiring.test.sh tests/fm-composer-lib.test.sh tests/fm-control.test.sh
 ```
