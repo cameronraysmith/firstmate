@@ -1120,6 +1120,9 @@ Captured with `tmux capture-pane -p`, the idle input row is `'╰─ '` followed
 Every other shape in the catalogue treats a row starting and ending in corner glyphs as a structural edge and never an input row, which is why an omp pane classified `unknown` in all states before this shape was taught to `bin/fm-composer-lib.sh`.
 Because two adjacent border rows are weak evidence on their own, the shape is gated on the tmux foreground-process identity probe naming `omp`, the same conjunction Pi's separated shape uses.
 Verified live against the real classifier on a running omp pane: idle read `empty`, the same pane with `unsubmitted probe text` typed read `pending`, and `C-u` returned it to `empty`.
+Long input makes the composer GROW interior side-bordered rows, so it stops being the inline-bottom shape and becomes an ordinary box whose titled top border the shared geometry proof reads as ambiguity.
+A wrapped omp composer holding real text therefore reads `pending-unproven`, verified live, which is the correct degradation rather than a gap: injection defers on anything that is not `empty`, and the submit retry spends its budget on `pending-unproven` exactly as it does on `pending`.
+Widening the geometry proof to tolerate a titled TOP border was deliberately not done, because that proof is what makes `empty` trustworthy for every harness.
 
 ### Rendered busy token, delivery only
 
