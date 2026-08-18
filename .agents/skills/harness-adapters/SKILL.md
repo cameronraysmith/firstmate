@@ -69,7 +69,7 @@ Grok selects native blocking or its pre-native bounded resume fallback from the 
 Kimi is outside the primary turn-end guard scope, while `docs/turnend-guard.md` owns its separate guarded global hook for crew wake signals.
 muse is CREWMATE/SCOUT ONLY and has no primary integration at all: its plugin engine (its only hook surface) is disabled in the default build, and its Claude-compatible hook dialect names `asyncRewake` and model reawakening as explicitly unsupported, which is exactly what a firstmate primary's turn-end supervision needs.
 `bin/fm-spawn.sh` refuses a `--secondmate` launch on muse for that reason.
-omp is CREWMATE/SCOUT ONLY for a different reason: its native primitives for a primary guard ARE verified to work, but no firstmate protocol is built on them, and the Pi extensions it would otherwise inherit load silently INERT on it (see the omp section below), so `bin/fm-spawn.sh` refuses `--secondmate` on omp and an omp primary falls back to the `unknown` protocol.
+omp runs a verified PRIMARY through its own tracked extension pair, but `bin/fm-spawn.sh` still refuses `--secondmate` on omp: a secondmate home receives its primary extensions as absolute `-e` paths composed at launch, and neither that template nor the remote secondmate allowlists are built or measured for omp.
 cursor HAS a full hooks system: 20 lifecycle events configurable at project scope in `.cursor/hooks.json`, plus a Claude-Code compatibility name map that also loads `<project>/.claude/settings.json`.
 Its `stop` step cannot block - exit 2 there is a silent no-op - so `bin/fm-turnend-guard-cursor.sh` parks the turn boundary on the watcher and returns one bounded `followup_message` instead.
 Because Cursor loads the tracked Claude settings too, every Claude-shaped entrypoint whose event Cursor covers stands down on a Cursor-delivered payload.
@@ -110,6 +110,8 @@ Claude's Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns tokenles
 Codex uses bounded foreground checkpoints through `bin/fm-watch-checkpoint.sh` because Codex cannot reason while a foreground tool call is running.
 OpenCode uses `.opencode/plugins/fm-primary-watch-arm.js`, which coordinates with the turn-end guard plugin and wakes the TUI with `client.session.promptAsync`.
 Pi and pi-signed use the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus the tracked `.pi/extensions/fm-primary-pi-watch.ts`, both project-local extensions the Pi engine auto-discovers once trusted.
+omp uses its OWN tracked pair, `.omp/extensions/fm-primary-turnend-guard.ts` plus `.omp/extensions/fm-primary-omp-watch.ts`, auto-discovered from `.omp/extensions/` with no trust step; its guard BLOCKS the turn through omp's `session_stop` instead of forcing a follow-up, and its arm cycle is owned per omp PROCESS rather than per session.
+Never point an omp primary at the Pi pair: they load on omp and never fire (see the omp section below).
 When changing any primary watcher adapter, update `docs/supervision-protocols/`, `docs/turnend-guard.md` if a shared idle or turn-end hook changed, and the relevant concise fact below.
 
 ## Launch profile axes
@@ -544,11 +546,11 @@ muse is a day-0 `0.1.0` beta whose launcher polls a release channel hourly and c
 The captain accepted that risk, so firstmate does NOT set `MUSE_NO_AUTO_UPDATE=1`; a fleet that later wants stability can set it in the launch environment without any adapter change.
 Its plugin/hook engine reports `plugins are not available in this build` unless `MUSE_EXPERIMENTAL_PLUGINS=on`, which is why the busy source reads the session log instead of installing a hook.
 
-## omp (VERIFIED CREWMATE/SCOUT 2026-08-17 on tmux, omp 17.3.5)
+## omp (VERIFIED CREWMATE, SCOUT, AND PRIMARY 2026-08-18 on tmux, omp 17.3.5)
 
-oh-my-pi (`omp`) is a Pi fork with its own identity, config root, lifecycle events, composer, and busy predicate.
+oh-my-pi (`omp`) is a Pi fork with its own identity, config root, lifecycle events, composer, busy predicate, and primary supervision.
 Nothing from the pi rows transfers; every fact below was measured on omp itself.
-It runs crewmate and scout work only: `bin/fm-spawn.sh` refuses `--secondmate` on omp, and an omp primary has no snippet under `docs/supervision-protocols/`.
+It runs crewmate, scout, and primary work; `bin/fm-spawn.sh` still refuses `--secondmate` on omp because that launch wiring is unbuilt, not because the supervision protocol is missing.
 
 | Fact | Value |
 |---|---|
@@ -560,7 +562,8 @@ It runs crewmate and scout work only: `bin/fm-spawn.sh` refuses `--secondmate` o
 | Interrupt | Single Escape. The run closes with `[Command cancelled]` and the composer returns EMPTY, so no clear key is needed (unlike muse). `bin/fm-control-lib.sh` claims no cancellation acknowledgement. |
 | Skill invocation | `/<skill>`, the claude/grok form. |
 | Autonomy | `--auto-approve`. Without it every tool call is gated; with it a bash tool call ran unattended. `--approval-mode yolo` is the equivalent knob. |
-| Trust dialog | None observed on a never-seen worktree path, and none is needed for the busy extension, which loads through an explicit `-e` path rather than a project root. |
+| Trust dialog | None observed on a never-seen worktree path, and none is needed for the busy extension, which loads through an explicit `-e` path rather than a project root. A PRIMARY needs none either: omp auto-discovers `.omp/extensions/` without approving anything. |
+| Primary supervision | Its own tracked `.omp/extensions/` pair. Turn end BLOCKS through `session_stop`; the arm cycle is owned per omp PROCESS. See "Primary supervision" below. `--secondmate` is still refused. |
 | Environment marker | `OMPCODE=1`, and omp ALSO exports `CLAUDECODE=1` of its own accord. Detection tests `OMPCODE` first for exactly that reason. |
 | Composer | A two-row box with NO interior content row: a titled top border and an input row that IS the bottom border (`╰─ typed text ─╯`), with the terminal cursor on that bottom row. |
 | Effort | `--thinking`; see the [launch-profile-axes table](#launch-profile-axes) for the mapping and the silent-fallback hazard. |
@@ -588,11 +591,20 @@ It is a trap rather than a capability: `pi.on("agent_settled", ...)` registers s
 That is a disarmed primary reporting itself healthy.
 Never reuse a pi extension, hook path, or predicate on omp without measuring it on omp.
 
-### Primary primitives that DO work, for the follow-up that builds the protocol
+Discovery keeps the two apart on its own: omp auto-discovers only top-level `.omp/extensions/*.ts` and never `.pi/`, Pi never discovers `.omp/`, and omp loads none of `.claude/settings.json`'s hooks despite exporting `CLAUDECODE=1`.
+Reaching the trap takes an explicit `-e`.
+The markers, the ownership proof (`fm_primary_extension_pairs` in `bin/fm-wake-lib.sh`), and the session-start diagnostic are all keyed per harness for the same reason, so Pi evidence can never answer for an omp primary.
 
-Both were verified end to end on omp 17.3.5 and are recorded so the protocol work starts from measurement rather than analogy:
+### Primary supervision
 
-- `session_stop` is a Claude-shaped blocking stop hook. Returning `{ decision: "block", reason }` forced a continuation turn; the blocked `agent_end` carried `willContinue: true`, and the following `session_stop` carried `stop_hook_active: true`, the same one-block loop guard claude and codex expose.
-- An extension wakes an IDLE session with `pi.sendUserMessage(text)` and no `deliverAs`. `deliverAs: "followUp"` only queues while idle, the opposite of Pi's requirement, so copying Pi's call would have produced a wake that never fired.
+`docs/supervision-protocols/omp.md` is the emitted protocol. Two mechanisms, both omp's own:
+
+- Turn end is a BLOCKING stop. omp's `session_stop` is Claude-shaped: returning `{decision: "block", reason}` refuses the stop and puts the reason in front of the model, and omp awaits an async handler, so `bin/fm-turnend-guard.sh` can be spawned from inside one. omp marks only the stop that FOLLOWS a block, so forwarding its own `stop_hook_active` reuses the guard's default-mode loop guard and bounds this to one forced continuation per turn. `--claude` mode is deliberately not used - it exists for Claude's habit of marking every stop after any continuation. Note omp does not render the reason as pane text; the model's reaction is the visible signal.
+- The watcher arm cycle is owned per omp PROCESS, not per session. omp emits no lifecycle event for a same-process replacement: `/new` changes the session id while handlers keep firing. Pi's per-session generation model has nothing to bind to, and the process lifetime is the right one anyway, because the arm child supervises the fleet home rather than a conversation. So an omp primary makes ONE `fm_watch_arm_omp` call per process, and `/new` neither retires the cycle nor needs a new call.
+
+Wakes use `pi.sendUserMessage(content)` with NO options object.
+`deliverAs: "followUp"` only QUEUES on omp while the session is idle, the opposite of Pi's requirement, so copying Pi's call would have produced a wake that never fires.
+`fm_supervision_model` routes omp to the `extension` model beside Pi.
 
 `docs/verification/runtime-backends.md` "omp (oh-my-pi)" owns the dated commands and output.
+The standing regressions are `tests/fm-omp-primary-extensions.test.sh` and, opt-in, `tests/fm-omp-primary-live-e2e.test.sh`; the omp pair is strict-typechecked by `tests/fm-pi-primary-types.test.sh` despite that file's Pi-shaped name.
