@@ -51,7 +51,7 @@ const pi = { on(event, handler) { handlers.set(event, handler); } };
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 if (handlers.has("agent_settled")) {
-  console.error("the omp guard registered Pi's agent_settled handler, which never fires on omp");
+  console.error("the omp guard registered the Pi agent_settled handler, which never fires on omp");
   process.exit(1);
 }
 const stop = handlers.get("session_stop");
@@ -65,8 +65,8 @@ if (!String(first.reason).includes("TURN WOULD END BLIND")) {
   console.error(`block reason did not carry the guard banner: ${first.reason}`);
   process.exit(1);
 }
-// The guard's banner is hook-channel text, not an injected user message, so it
-// must NOT be operational-input encoded the way Pi's follow-up is.
+// The banner is hook-channel text, not an injected user message, so it must NOT
+// be operational-input encoded the way the Pi follow-up is.
 if (String(first.reason).includes("FIRSTMATE_OP:")) {
   console.error("the block reason was operational-input encoded");
   process.exit(1);
@@ -158,7 +158,7 @@ const pi = {
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 const header = (extra) => ({ sessionManager: { getHeader: () => extra } });
-// omp's session_start carries no reason field at all, so the source has to come
+// omp session_start carries no reason field at all, so the source has to come
 // from the header and argv.
 await handlers.get("session_start")({}, header({ timestamp: new Date().toISOString() }));
 await handlers.get("session_start")({}, header({ parentSession: "01a0-parent" }));
