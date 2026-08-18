@@ -1124,7 +1124,8 @@ Verified on Claude Code 2.1.234 in a tmux server started without the marker, lau
 
 The mitigation cannot help a worker on a backend that sets no `TMUX`, because the probe returns false immediately there.
 That case was observed live in this fleet: a Claude crewmate running with `TMUX` unset and `CLAUDE_CODE_CHILD_SESSION=1` had a session directory under `~/.claude/projects/<project-key>/` but no `<session-id>.jsonl` transcript beside it, while a sibling session in the same project directory did.
-`bin/fm-spawn.sh` now clears one declared marker set at every launch boundary for every adapter; `foreign_launch_markers` in that script owns the set and the reasoning for each inclusion and exclusion.
+`bin/fm-spawn.sh` now clears one declared marker set at every launch boundary for every adapter it composes a launch command for; `bin/fm-launch-boundary-lib.sh` owns the set and the reasoning for each inclusion and exclusion.
+A raw launch command is deliberately exempt: that escape hatch exists to verify an unverified adapter and its contract is to run exactly what was passed.
 
 ### Composer
 
