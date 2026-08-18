@@ -3,7 +3,7 @@ name: harness-adapters
 description: >-
   Agent-only reference for firstmate harness operations.
   Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
-  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, and muse.
+  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, muse, and omp.
 user-invocable: false
 metadata:
   internal: true
@@ -41,8 +41,9 @@ Muse is verified only for crewmate and scout work, never a secondmate or primary
 
 `../../../bin/fm-harness.sh` prints firstmate's own harness from verified environment markers, then process ancestry.
 omp (oh-my-pi) sets `OMPCODE=1` and keeps none of Pi's own markers, so `../../../bin/fm-harness.sh` reports its own `omp` identity ahead of any retained `CLAUDECODE`, and the session-lock ancestry table anchors the exact process name `omp`.
-Identity was verified live on an omp primary 2026-08-17; the full adapter - launch profile, busy source, composer, control plane - remains unverified, so never dispatch an omp crewmate yet.
-omp is deliberately not aliased to the pi family despite being a Pi fork: its config root is `~/.omp/agent` and Pi-family mechanics must be verified on omp before any transfer.
+`CLAUDECODE=1` on an omp tool process is omp's OWN compatibility export, not an inherited value, verified from a scrubbed environment on omp 17.3.5, which is why that ordering is load-bearing rather than incidental.
+omp is deliberately not aliased to the pi family despite being a Pi fork: its config root is `~/.omp/agent`, and its lifecycle events, composer shape, and busy predicate all differ from Pi's.
+omp is CREWMATE/SCOUT ONLY: its native primitives for a primary guard ARE verified to work, but no firstmate protocol is built on them, and the Pi extensions it would otherwise inherit load silently INERT on it (see `references/harness/omp.md`), so `../../../bin/fm-spawn.sh` refuses `--secondmate` on omp and an omp primary falls back to the `unknown` protocol.
 Only `FM_PI_HARNESS=pi-signed` at the launch boundary together with `PI_CODING_AGENT=true` selects Pi-signed; shared unmarked launcher ancestry remains Pi.
 `../../../bin/fm-spawn.sh` owns worker marker establishment, while the README launch command owns the signed-primary boundary.
 `../../../bin/fm-harness.sh crew` resolves `config/crew-harness`, where absent or `default` means firstmate's own harness.
@@ -92,7 +93,8 @@ A new tool remains undispatchable until the `verify` plan, its harness entry, ev
     "grok": "references/harness/grok.md",
     "kimi": "references/harness/kimi.md",
     "cursor": "references/harness/cursor.md",
-    "muse": "references/harness/muse.md"
+    "muse": "references/harness/muse.md",
+    "omp": "references/harness/omp.md"
   }
 }
 ```

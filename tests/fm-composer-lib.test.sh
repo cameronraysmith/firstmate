@@ -202,6 +202,92 @@ test_matrix_codex_dim_hint_row() {
   pass "matrix: codex's dim hint is empty when styling proves it, unknown (never pending) when it cannot"
 }
 
+test_matrix_omp_inline_bottom_box() {
+  # Real idle omp: a TWO-row rounded box whose top border carries the model,
+  # cwd, branch, and context, and whose BOTTOM border carries the input between
+  # its corner glyphs and their rule runs. The terminal cursor sits on that
+  # bottom row - a structural edge row for every other harness - so nothing in
+  # the catalogue could read it before.
+  local idle typed
+  idle=$'transcript line\n╭──  GLM-5.3 · high   /w/omp-lab   main   7.1%/1M ────╮\n╰─                                                       ─╯'
+  typed=$'transcript line\n╭──  GLM-5.3 · high   /w/omp-lab   main   7.1%/1M ────╮\n╰─ fix the login bug                                      ─╯'
+
+  assert_screen "omp idle with omp identity" empty "$CAPS_TMUX" "$idle" 2 $'omp\tidle'
+  assert_screen "omp idle while omp works" empty "$CAPS_TMUX" "$idle" 2 $'omp\tworking'
+  assert_screen "omp typed with omp identity" pending "$CAPS_TMUX" "$typed" 2 $'omp\tidle'
+  pass "matrix: omp's inline-bottom box reads empty when idle and pending when typed into"
+}
+
+test_omp_inline_bottom_requires_identity() {
+  # The identity conjunction, driven apart in every direction. Two adjacent
+  # border rows are weak evidence on their own, so losing the identity signal
+  # must cost the verdict rather than degrade it into a false empty.
+  local idle
+  idle=$'transcript line\n╭──  GLM-5.3 · high   /w/omp-lab   main   7.1%/1M ────╮\n╰─                                                       ─╯'
+
+  [ "$(fm_composer_classify_screen "$CAPS_TMUX" "$idle" 2)" = need-identity ] \
+    || fail "an identity-capable backend must be asked to probe before this shape is judged"
+  assert_screen "omp shape with an absent probe" unknown "$CAPS_TMUX" "$idle" 2 probe-absent
+  assert_screen "omp shape claimed by pi" unknown "$CAPS_TMUX" "$idle" 2 $'pi\tidle'
+  # zellij, cmux, and orca have no identity probe at all: the shape stays
+  # unreadable there rather than borrowing tmux's proof.
+  assert_screen "omp shape on an identity-less backend" unknown "$CAPS_STYLED_NOID" "$idle"
+  assert_screen "omp shape on a plain backend" unknown "$CAPS_PLAIN" "$idle"
+  pass "omp inline-bottom: no identity, a failed probe, or another agent's identity all read unknown"
+}
+
+test_omp_inline_bottom_does_not_widen_the_strict_posture() {
+  # The shapes this must NOT claim, because each one is a two-row box that is
+  # not an agent composer.
+  local decoration mismatched indented cursor_on_top
+  decoration=$'output above\n╭── Summary ──────────────╮\n╰─ 3 files changed       ─╯'
+  # Even WITH a live omp on the pane, a box the cursor is not sitting in is not
+  # the composer: the scanner only records the shape under the cursor.
+  assert_screen "a decorative two-row box below the cursor" unknown "$CAPS_TMUX" "$decoration" 1 $'omp\tidle'
+
+  # Family mismatch: a rounded top closed by a light bottom is not one box.
+  mismatched=$'╭──  GLM-5.3 ────╮\n└─                ─┘'
+  assert_screen "mismatched border families" unknown "$CAPS_TMUX" "$mismatched" 1 $'omp\tidle'
+
+  # Indent mismatch: two borders that do not belong to the same box.
+  indented=$'╭──  GLM-5.3 ────╮\n    ╰─            ─╯'
+  assert_screen "mismatched indents" unknown "$CAPS_TMUX" "$indented" 1 $'omp\tidle'
+
+  # The cursor on the TOP border is not an input row even on a real omp pane.
+  cursor_on_top=$'transcript line\n╭──  GLM-5.3 ────╮\n╰─               ─╯'
+  assert_screen "cursor on the top border" unknown "$CAPS_TMUX" "$cursor_on_top" 1 $'omp\tidle'
+  pass "omp inline-bottom: decoration, mismatched geometry, and a non-input cursor row all stay unknown"
+}
+
+test_omp_busy_signature_is_the_bracketed_esc_not_the_verb() {
+  # omp's mid-turn line is "<spinner> <model-authored status> <bracketed esc>".
+  # The status is whatever the model names the step, so only the bracket token
+  # is a signature - and the bracket pair is a THEME symbol, so all three of
+  # omp's shipped sets must match.
+  local nerd unicode ascii idle pi_style
+  nerd=' ⠏ Working… ⟨esc⟩'
+  unicode=' ⠴ Sleeping 45 seconds then echoing done ⟦esc⟧'
+  ascii=' - Running the test suite [esc]'
+  idle=' Tip: try starting your prompt with a ->'
+  pi_style=' Working...'
+
+  printf '%s\0' "$nerd" | fm_busy_lines_match omp \
+    || fail "omp's nerd-theme busy hint must match"
+  printf '%s\0' "$unicode" | fm_busy_lines_match omp \
+    || fail "omp's unicode-theme busy hint must match"
+  printf '%s\0' "$ascii" | fm_busy_lines_match omp \
+    || fail "omp's ascii-theme busy hint must match, so an ASCII terminal keeps a signature"
+  printf '%s\0' "$idle" | fm_busy_lines_match omp \
+    && fail "an idle omp row must not match the busy signature"
+  # Pi's signature is three ASCII dots; omp writes one U+2026. Borrowing the pi
+  # row would have failed silently, which is why omp carries its own.
+  printf '%s\0' "$pi_style" | fm_busy_lines_match omp \
+    && fail "pi's Working... must not satisfy omp's signature"
+  printf '%s\0' "$nerd" | fm_busy_lines_match pi \
+    && fail "omp's busy hint must not satisfy pi's signature"
+  pass "omp busy signature: the bracketed esc matches in all three themes and never borrows pi's"
+}
+
 test_matrix_muse_truecolor_glyph_survives_signal_loss() {
   # Real idle muse: truecolor `⟩` (38;2;90;160;255, luminance ~149.9) under a
   # TITLED rule. Two independent signals prove emptiness: the glyph surviving
@@ -614,6 +700,10 @@ test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
 test_matrix_codex_dim_hint_row
+test_matrix_omp_inline_bottom_box
+test_omp_inline_bottom_requires_identity
+test_omp_inline_bottom_does_not_widen_the_strict_posture
+test_omp_busy_signature_is_the_bracketed_esc_not_the_verb
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
 test_matrix_herdr_halfblock_rule_bounds_bare_wrap
