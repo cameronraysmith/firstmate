@@ -95,9 +95,10 @@
 # The LOCK/BOOTSTRAP/WAKE-QUEUE safety preamble keeps its order: it establishes
 # mutation authority and this turn's work queue before anything else is read.
 #
-# On a Pi primary, the supervision-block step also checks whether Pi's two
-# tracked primary extensions are loaded and prints a PI_WATCH_EXTENSION
-# reminder line when one is missing.
+# On an extension-model primary, the supervision-block step also checks whether
+# that harness's own two tracked primary extensions are loaded and prints a
+# reminder line when one is missing: PI_WATCH_EXTENSION for Pi and pi-signed,
+# OMP_WATCH_EXTENSION for omp.
 #
 # Why lock first: the old documented order (bootstrap, THEN lock) let a
 # SECOND concurrent session run bootstrap's mutating sweeps - converging
@@ -747,19 +748,43 @@ AFK_PRESENT=0
 X_MODE_PRESENT=0
 [ -f "$CONFIG/x-mode.env" ] && X_MODE_PRESENT=1
 
-if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
-  PI_EXT="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
-  PI_TURNEND_EXT="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
-  PI_WATCH_MARKER="$STATE/.pi-watch-extension-loaded"
-  PI_TURNEND_MARKER="$STATE/.pi-turnend-extension-loaded"
-  PI_LOCK="$STATE/.lock"
-  PI_RESTART_COMMAND=$PRIMARY_HARNESS
-  [ "$PRIMARY_HARNESS" != pi ] || PI_RESTART_COMMAND='plain pi'
-  PI_WATCH_VERSION=$(fm_pi_extension_version "$PI_EXT" || printf '')
-  PI_TURNEND_VERSION=$(fm_pi_extension_version "$PI_TURNEND_EXT" || printf '')
-  if ! fm_pi_extension_loaded "$PI_WATCH_MARKER" "$PI_WATCH_VERSION" "$PI_LOCK" \
-    || ! fm_pi_extension_loaded "$PI_TURNEND_MARKER" "$PI_TURNEND_VERSION" "$PI_LOCK"; then
-    printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
+# The extension-model primaries report whether this session actually loaded its own
+# tracked pair. fm_primary_extension_pairs (bin/fm-wake-lib.sh) owns the pair list
+# so the diagnostic and the supervision ownership proof can never disagree about
+# which files and markers belong to which harness.
+EXT_PAIRS=$(fm_primary_extension_pairs "$PRIMARY_HARNESS")
+if [ -n "$EXT_PAIRS" ]; then
+  EXT_LOCK="$STATE/.lock"
+  EXT_LOADED=1
+  EXT_WATCH_PATH=
+  EXT_TURNEND_PATH=
+  while IFS= read -r EXT_PAIR; do
+    [ -n "$EXT_PAIR" ] || continue
+    EXT_SOURCE=${EXT_PAIR%%:*}
+    EXT_MARKER=${EXT_PAIR#*:}
+    case "$EXT_SOURCE" in
+      *turnend-guard.ts) EXT_TURNEND_PATH="$FM_ROOT/$EXT_SOURCE" ;;
+      *) EXT_WATCH_PATH="$FM_ROOT/$EXT_SOURCE" ;;
+    esac
+    EXT_VERSION=$(fm_primary_extension_version "$FM_ROOT/$EXT_SOURCE" || printf '')
+    fm_primary_extension_loaded "$STATE/$EXT_MARKER" "$EXT_VERSION" "$EXT_LOCK" || EXT_LOADED=0
+  done <<EOF
+$EXT_PAIRS
+EOF
+  if [ "$EXT_LOADED" -eq 0 ]; then
+    case "$PRIMARY_HARNESS" in
+      omp)
+        # omp auto-discovers top-level .omp/extensions/*.ts with no project-trust
+        # prompt, so an unloaded pair means the session predates the current build
+        # rather than an unapproved clone.
+        printf 'OMP_WATCH_EXTENSION: not loaded - restart omp so %s and %s load for turn-end guard and background wake coverage; use -e %s -e %s if extension discovery is disabled\n' "$EXT_TURNEND_PATH" "$EXT_WATCH_PATH" "$EXT_TURNEND_PATH" "$EXT_WATCH_PATH"
+        ;;
+      *)
+        PI_RESTART_COMMAND=$PRIMARY_HARNESS
+        [ "$PRIMARY_HARNESS" != pi ] || PI_RESTART_COMMAND='plain pi'
+        printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$EXT_TURNEND_PATH" "$EXT_WATCH_PATH" "$EXT_TURNEND_PATH" "$EXT_WATCH_PATH"
+        ;;
+    esac
   fi
 fi
 "$SCRIPT_DIR/fm-supervision-instructions.sh" \
