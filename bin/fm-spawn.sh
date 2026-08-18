@@ -172,8 +172,9 @@
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
 # omp loads state/<id>.omp-ext.ts through an explicit -e path, the same
-# outside-the-worktree shape pi uses; omp is crewmate/scout only and is refused
-# for --secondmate until its primary supervision protocol exists.
+# outside-the-worktree shape pi uses. An omp PRIMARY instead auto-discovers its
+# own tracked .omp/extensions pair; omp is refused for --secondmate because that
+# launch wiring is unbuilt, not because it lacks a supervision protocol.
 # Every launch is additionally prefixed with the shared launch-boundary
 # sanitizer (bin/fm-launch-boundary-lib.sh), which clears the agent-session markers a
 # primary exports or a pane environment retains.
@@ -1315,19 +1316,16 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   exit 1
 fi
 
-# omp is verified as a CREWMATE/SCOUT adapter only for the same structural
-# reason, and the reason is worth stating because omp LOOKS like it should work:
-# it is a Pi fork whose extension API accepts firstmate's existing pi extension
-# files without error. That acceptance is the trap. omp emits no agent_settled
-# event, so the pi turn-end guard's only handler never fires, while the guard's
-# own "extension loaded" marker is still written - a silently disarmed primary
-# that reports itself healthy (verified live, omp 17.3.5). omp's native
-# equivalents are verified to exist (a session_stop hook that blocks with
-# {decision, reason}, and an idle wake through sendUserMessage), but no
-# firstmate primary protocol is built on them yet, so a secondmate is refused
-# rather than launched into supervision that cannot be armed.
+# omp runs a verified PRIMARY - its own tracked .omp/extensions pair owns the
+# turn-end block and the watcher wake - but is still refused for --secondmate,
+# because a secondmate is a separate launch surface rather than a separate
+# supervision model. A secondmate home receives its primary extensions as
+# absolute -e paths composed here (see __PITURNEND__/__PIWATCH__), and that
+# template, the seeded home's extension tree, and the remote secondmate harness
+# allowlists are none of them built or measured for omp. Refuse rather than
+# launch a secondmate whose supervision wiring has never been exercised.
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = omp ]; then
-  echo "error: omp is a verified crewmate/scout adapter only and cannot run a secondmate; its primary supervision protocol is not built yet. Select a harness verified for secondmates." >&2
+  echo "error: omp runs crewmate and scout work only; its secondmate launch wiring is not built. Select a harness verified for secondmates." >&2
   exit 1
 fi
 
