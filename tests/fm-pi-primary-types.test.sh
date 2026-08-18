@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Strict no-emit contract check for the tracked Firstmate Pi extensions.
+# Strict no-emit contract check for the tracked Firstmate primary extensions:
+# the Pi set under .pi/extensions/ and the omp pair under .omp/extensions/.
+#
+# The sandbox mirrors the repository's own directory layout instead of flattening
+# the sources, because the omp extensions import the single operational-input
+# adapter across roots as ../../.pi/extensions/lib/fm-operational-input.ts and
+# that relative path only resolves when both roots keep their real positions.
+# The omp files import no vendor module - they declare omp's API surface
+# structurally - so the installed Pi declarations below serve the Pi half alone.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-command -v npm >/dev/null 2>&1 || { echo "skip: npm not found for Pi extension typecheck"; exit 0; }
-command -v tsc >/dev/null 2>&1 || { echo "skip: tsc not found for Pi extension typecheck"; exit 0; }
+command -v npm >/dev/null 2>&1 || { echo "skip: npm not found for primary extension typecheck"; exit 0; }
+command -v tsc >/dev/null 2>&1 || { echo "skip: tsc not found for primary extension typecheck"; exit 0; }
 
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g)/@earendil-works/pi-coding-agent"}
 if [ ! -f "$PI_PACKAGE_DIR/package.json" ]; then
@@ -26,18 +34,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP_ROOT/lib" "$TMP_ROOT/node_modules/@earendil-works" "$TMP_ROOT/node_modules/@types"
-cp "$ROOT/.pi/extensions/fm-branch-supervision.ts" "$TMP_ROOT/fm-branch-supervision.ts"
-cp "$ROOT/.pi/extensions/fm-calm.ts" "$TMP_ROOT/fm-calm.ts"
-cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$TMP_ROOT/fm-primary-pi-watch.ts"
-cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/fm-primary-turnend-guard.ts"
-cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$TMP_ROOT/lib/fm-branch-dispatch.ts"
-cp "$ROOT/.pi/extensions/lib/fm-branch-model-picker.ts" "$TMP_ROOT/lib/fm-branch-model-picker.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$TMP_ROOT/lib/fm-calm-assistant-layout.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts" "$TMP_ROOT/lib/fm-calm-operational-user-layout.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$TMP_ROOT/lib/fm-calm-visibility.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$TMP_ROOT/lib/fm-calm-working-ship.ts"
-cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$TMP_ROOT/lib/fm-operational-input.ts"
+mkdir -p "$TMP_ROOT/.pi/extensions/lib" "$TMP_ROOT/.omp/extensions" \
+  "$TMP_ROOT/node_modules/@earendil-works" "$TMP_ROOT/node_modules/@types"
+cp "$ROOT/.pi/extensions/fm-branch-supervision.ts" "$TMP_ROOT/.pi/extensions/fm-branch-supervision.ts"
+cp "$ROOT/.pi/extensions/fm-calm.ts" "$TMP_ROOT/.pi/extensions/fm-calm.ts"
+cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$TMP_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
+cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
+cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$TMP_ROOT/.pi/extensions/lib/fm-branch-dispatch.ts"
+cp "$ROOT/.pi/extensions/lib/fm-branch-model-picker.ts" "$TMP_ROOT/.pi/extensions/lib/fm-branch-model-picker.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-visibility.ts"
+cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-working-ship.ts"
+cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$TMP_ROOT/.pi/extensions/lib/fm-operational-input.ts"
+cp "$ROOT/.omp/extensions/fm-primary-omp-watch.ts" "$TMP_ROOT/.omp/extensions/fm-primary-omp-watch.ts"
+cp "$ROOT/.omp/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/.omp/extensions/fm-primary-turnend-guard.ts"
 ln -s "$PI_PACKAGE_DIR" "$TMP_ROOT/node_modules/@earendil-works/pi-coding-agent"
 ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$TMP_ROOT/node_modules/@earendil-works/pi-tui"
 ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-ai" "$TMP_ROOT/node_modules/@earendil-works/pi-ai"
@@ -59,10 +70,10 @@ cat > "$TMP_ROOT/tsconfig.json" <<'JSON'
     "target": "ES2022",
     "types": ["node"]
   },
-  "include": ["*.ts", "lib/*.ts"]
+  "include": [".pi/extensions/*.ts", ".pi/extensions/lib/*.ts", ".omp/extensions/*.ts"]
 }
 JSON
 
 tsc -p "$TMP_ROOT/tsconfig.json" || exit 1
 version=$(jq -r '.version' "$PI_PACKAGE_DIR/package.json" 2>/dev/null || printf 'unknown')
-printf 'ok - tracked Pi extensions pass strict no-emit typecheck against Pi %s\n' "$version"
+printf 'ok - tracked Pi and omp primary extensions pass strict no-emit typecheck against Pi %s\n' "$version"
