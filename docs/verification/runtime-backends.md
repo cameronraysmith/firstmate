@@ -1079,23 +1079,123 @@ So `agent_end` covers manual interruption, which Claude's `Stop` hook does not, 
 A single Escape cancels a running turn and leaves the composer EMPTY, so no clear key is needed, unlike muse.
 Typing `/exit` opens a slash-autocomplete popup, and one Enter exited the application: the window was gone on the next read.
 
-### Primary supervision: primitives verified, protocol not built
+### Primary supervision
 
 Firstmate's Pi primary extensions LOAD on omp without error, because omp's loader rewrites `@earendil-works/*` specifiers onto its own bundled copies.
 That acceptance is a trap rather than a capability.
 `pi.on("agent_settled", ...)` registers silently and never fires, so the turn-end guard is inert, while the guard's own `state/.pi-turnend-extension-loaded` marker IS written - a disarmed primary that reports itself healthy.
 Verified by loading `.pi/extensions/fm-primary-turnend-guard.ts` under omp beside a witness extension: the marker appeared, the witness's `agent_end` fired, and the guard produced nothing.
 
-omp's own equivalents were verified to work:
+omp therefore has its OWN tracked pair, `.omp/extensions/fm-primary-turnend-guard.ts` and `.omp/extensions/fm-primary-omp-watch.ts`, with its own markers.
+Everything below was measured on omp 17.3.5 on 2026-08-18.
 
-- `session_stop` accepts `{ decision: "block", reason }` and forces a continuation turn. The blocked `agent_end` carried `willContinue: true` and the following `session_stop` carried `stop_hook_active: true`, the same loop guard Claude and Codex expose.
-- An extension wakes an idle session with `pi.sendUserMessage(text)` and NO `deliverAs`; the pane showed the injected message and the model answered it. `deliverAs: "followUp"` only queues while idle, which is the opposite of Pi's requirement.
+#### Extension discovery
 
-No firstmate primary protocol is built on those primitives yet, so omp has no snippet under `docs/supervision-protocols/`, `bin/fm-spawn.sh` refuses `--secondmate` on omp, and an omp primary falls back to the `unknown` protocol.
+omp auto-discovers only TOP-LEVEL `.omp/extensions/*.ts`.
+Four candidate roots were planted with identical marker-writing extensions and one plain `omp -p` run was taken:
+
+```text
+$ cat out/discovery.txt
+loaded from .omp/extensions
+```
+
+`.pi/extensions/`, `.agents/extensions/`, and `.omp/extension/` produced nothing, and a later probe confirmed a nested `.omp/extensions/lib/` file is not discovered either.
+No project-trust prompt appeared, in `-p` or interactive mode.
+The separation runs both ways - Pi does not discover `.omp/` - so neither harness can pick up the other's primary extensions by discovery, and the trap above is reachable only through an explicit `-e`.
+
+omp also loads none of `.claude/settings.json`'s hooks despite exporting `CLAUDECODE=1`.
+A scratch project registered `Stop`, `SessionStart`, and `PreToolUse` marker-writing commands; an `omp --auto-approve -p` run that made a real bash tool call fired none of them.
+The Claude Stop guard therefore cannot double-fire under omp.
+
+#### Extension API surface
+
+The API object's own keys are `pi, extension, runtime, cwd, events, logger, typebox, arktype, zod, flagValues, pendingProviderRegistrations`, and its prototype carries `on, registerTool, registerCommand, setLabel, registerShortcut, registerFlag, registerMessageRenderer, registerAssistantThinkingRenderer, getFlag, sendMessage, sendUserMessage, appendEntry, exec, getActiveTools, getAllTools, setActiveTools, getCommands, setModel, getThinkingLevel, setThinkingLevel, getServiceTiers, setServiceTier, getSessionName, setSessionName, registerProvider, unregisterProvider`.
+
+`typebox` is published on the API object, so a tool schema needs no module import.
+Of the module specifiers a Pi extension uses, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, and `typebox` all resolve; `@oh-my-pi/omp`, `oh-my-pi`, and `@earendil-works/omp` do not.
+The tracked omp extensions import none of them: they declare omp's surface structurally, because Pi's `ExtensionAPI` type describes Pi's events rather than omp's.
+A relative cross-root import DOES work and is used for the one shared operational-input adapter:
+
+```text
+enc="⁣FIRSTMATE_OP: v1 watcher: N"   # from .omp/extensions/, importing ../../.pi/extensions/lib/fm-operational-input.ts
+```
+
+`registerTool` and `registerCommand` both work with omp's default rendering, which is why the watch extension registers no custom renderers.
+`pi.sendMessage` throws `Extension runtime not initialized. Action methods cannot be called during extension loading.` at module scope, so the session-start digest is only ever injected from inside a handler.
+
+#### Lifecycle events
+
+Every event name registers without error, including `agent_settled`, which never fires.
+One completed `-p` turn:
+
+```text
+session_start -> agent_start -> context -> turn_start -> before_provider_request
+  -> turn_end -> session_stop(stop_hook_active=false) -> agent_end -> session_shutdown
+```
+
+`session_start` carries only `{type}` - there is no Pi `reason` field - and it fires exactly ONCE per omp process.
+`ctx.sessionManager.getHeader()` returns `{type, version, id, timestamp, cwd, parentSession, providerPromptCacheKey}`, so `parentSession` is direct fork evidence Pi does not supply.
+`session_compact` fires on `/compact`.
+
+A handler that returns a non-undefined value from `context` or `before_provider_request` REPLACES that payload; an early probe that returned `{}` from every event produced `422 ... {"loc":["body","model"],"msg":"Field required"}`.
+
+#### Session replacement is invisible
+
+`/new` starts a genuinely new session and emits NEITHER `session_shutdown` NOR `session_start`.
+The extension's handlers stay registered and keep firing, reporting the new session id:
+
+```text
+--- MARK-NEW ---
+{"ev":"agent_start","sid":"01a01319-962b-7000-a858-f0bb2c6df23a", ...}   # was 01a01317-0171-...
+```
+
+An omp extension is therefore scoped to the PROCESS, not to a conversation, which is why `.omp/extensions/fm-primary-omp-watch.ts` binds one generation for the life of the process instead of porting Pi's per-session generation model.
+Delivery keeps working across a replacement: a wake sent after `/new` reached the new session and the model answered it.
+
+#### Turn end: a blocking stop hook
+
+`session_stop` is Claude-shaped. Returning `{decision: "block", reason}` forces a continuation, and omp AWAITS an async handler, which is what makes spawning `bin/fm-turnend-guard.sh` from inside one viable.
+Measured with a handler that spawned a 1.5s child before returning the block:
+
+```text
+{"ev":"session_stop","stop_hook_active":false,"t":1787027437987}
+{"guardClosed":2,"stderr":"GUARDTEXT","t":1787027439499}
+{"returningBlock":true,"t":1787027439499}
+{"ev":"agent_end","willContinue":true,"t":1787027439500}
+{"ev":"session_stop","stop_hook_active":true,"t":1787027445149}
+{"ev":"agent_end","t":1787027445149}
+```
+
+The pane showed the model answering the blocked-stop reason, so the reason reaches model context; omp does not render it as pane text of its own.
+Because omp marks only the stop that FOLLOWS a block, forwarding its own `stop_hook_active` to the guard reuses the existing default-mode loop guard and bounds this to one forced continuation per turn.
+Claude's `--claude` mode is deliberately not used: it exists because Claude marks every stop after any continuation, including its own auto-arm's.
+
+`tool_call` blocking works with the same `{block: true, reason}` shape Pi uses, so the arm and cd PreToolUse seatbelts ride the same extension.
+
+#### Idle wake
+
+An extension wakes an idle session with `pi.sendUserMessage(text)` and NO options object.
+`deliverAs: "followUp"` only queues while idle, the opposite of Pi's requirement, so copying Pi's call would have produced a wake that never fired.
+Verified live in a fresh session and again after a `/new`: the injected message appeared in the pane and the model answered it.
+
+#### Standing coverage
+
+`tests/fm-omp-primary-extensions.test.sh` pins the contracts above portably against the real extension files, and `tests/fm-pi-primary-types.test.sh` strict-typechecks both tracked pairs, omp's included, despite its Pi-shaped name.
+
+`tests/fm-omp-primary-live-e2e.test.sh` (opt-in, `FM_OMP_LIVE_E2E=1`) is the live regression:
+
+```text
+ok - omp omp/17.3.5 live E2E covered the blocking turn-end guard, extension-owned watcher continuity, and process-scoped arm ownership across a session replacement
+```
+
+Phase A loads only the turn-end guard extension, so nothing in that session can arm a watcher; with one task in flight the guard is invoked twice, first with `"stop_hook_active":false` and then with `"stop_hook_active":true`, the model answers the block reason, and the turn ends.
+Phase B loads both, the model calls `fm_watch_arm_omp`, a `done:` status write closes the cycle actionable, the extension starts and ledger-links a successor before delivering the wake, the model drains and settles, the arm child survives a `/new`, and `/exit` takes both the watcher and the arm child with it.
 
 ### Refresh commands
 
 ```sh
 FM_COMPOSER_MATRIX_LIVE=1 bin/fm-test-run.sh tests/fm-composer-matrix-live-e2e.test.sh
-bin/fm-test-run.sh tests/fm-omp-harness.test.sh tests/fm-busy-adapter-wiring.test.sh tests/fm-composer-lib.test.sh tests/fm-control.test.sh
+FM_OMP_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-omp-primary-live-e2e.test.sh
+bin/fm-test-run.sh tests/fm-omp-harness.test.sh tests/fm-omp-primary-extensions.test.sh \
+  tests/fm-busy-adapter-wiring.test.sh tests/fm-composer-lib.test.sh tests/fm-control.test.sh
 ```
