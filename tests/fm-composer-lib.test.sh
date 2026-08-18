@@ -259,6 +259,26 @@ test_omp_inline_bottom_does_not_widen_the_strict_posture() {
   pass "omp inline-bottom: decoration, mismatched geometry, and a non-input cursor row all stay unknown"
 }
 
+test_omp_wrapped_input_degrades_safely() {
+  # Long input makes omp's composer GROW interior side-bordered rows, so it
+  # stops being the inline-bottom shape and becomes an ordinary box. Its top
+  # border is titled, which the shared geometry proof reads as ambiguity, so
+  # the verdict degrades to pending-unproven rather than pending.
+  # That degradation is the right answer and is deliberately not "fixed" by
+  # widening the geometry proof: the proof is what makes `empty` trustworthy
+  # for every harness, and both consumers already behave correctly here -
+  # injection defers on anything that is not empty, and the submit retry
+  # spends its budget on pending-unproven exactly as it does on pending.
+  # What must never happen is `empty`, which would let the away-mode injector
+  # type on top of a half-written message.
+  local wrapped
+  wrapped=$'╭──  GLM-5.3 · high   /w/omp-lab   main   7.1%/1M ─────────╮\n│  wrap-probe wrap-probe wrap-probe wrap-probe wrap-probe │\n╰─ wrap-probe wrap-probe                                 ─╯'
+  assert_screen "omp wrapped input" pending-unproven "$CAPS_TMUX" "$wrapped" 2 $'omp\tidle'
+  [ "$(fm_composer_classify_screen "$CAPS_TMUX" "$wrapped" 1 $'omp\tidle')" != empty ] \
+    || fail "a wrapped omp composer holding real text must never read empty"
+  pass "omp wrapped input: a grown composer degrades to pending-unproven and never to empty"
+}
+
 test_omp_busy_signature_is_the_bracketed_esc_not_the_verb() {
   # omp's mid-turn line is "<spinner> <model-authored status> <bracketed esc>".
   # The status is whatever the model names the step, so only the bracket token
@@ -703,6 +723,7 @@ test_matrix_codex_dim_hint_row
 test_matrix_omp_inline_bottom_box
 test_omp_inline_bottom_requires_identity
 test_omp_inline_bottom_does_not_widen_the_strict_posture
+test_omp_wrapped_input_degrades_safely
 test_omp_busy_signature_is_the_bracketed_esc_not_the_verb
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
