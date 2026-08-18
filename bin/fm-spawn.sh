@@ -104,7 +104,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -156,6 +156,8 @@
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
 #                  written by this script; outside the worktree to avoid pi's trust gate)
+#     __OMPEXT__   absolute path to state/<task-id>.omp-ext.ts (omp busy-state and
+#                  turn-end extension, written by this script; outside the worktree)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
@@ -169,6 +171,12 @@
 # muse installs no hook at all - its plugin engine is off in the default build - so
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
+# omp loads state/<id>.omp-ext.ts through an explicit -e path, the same
+# outside-the-worktree shape pi uses; omp is crewmate/scout only and is refused
+# for --secondmate until its primary supervision protocol exists.
+# Every launch is additionally prefixed with the shared launch-boundary
+# sanitizer (foreign_launch_markers), which clears the agent-session markers a
+# primary exports or a pane environment retains.
 # cursor installs no per-task hook either: it writes state/<id>.cursor-session to
 # bind the pane to cursor's own conversation transcript (projects root, the exact
 # workspace path cursor records in .workspace-trusted, and the conversations that
@@ -1106,7 +1114,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
+    ''|claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1188,6 +1196,18 @@ launch_template() {
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
+    # omp (oh-my-pi): a positional prompt starts the supervised interactive
+    # session, the Pi/Grok shape, so the brief rides the launch command.
+    # --auto-approve is what makes an unattended crewmate viable: omp otherwise
+    # gates every tool call behind an approval prompt (verified live on omp
+    # 17.3.5 - with the flag a bash tool call ran with no gate). The busy-state
+    # extension rides -e, an EXPLICIT path that loads regardless of omp's own
+    # discovery roots, so nothing is written into the worktree and no project
+    # trust grant is involved (omp showed no trust dialog on a never-seen
+    # worktree path). --no-extensions is deliberately NOT passed: it would also
+    # drop the operator's own omp extensions, and firstmate has no standing to
+    # disable those for a crewmate.
+    omp) printf '%s' 'omp --auto-approve __MODELFLAG____EFFORTFLAG__-e __OMPEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
     # session. --always-approve auto-approves every tool execution (verified: the
     # crewmate runs fully autonomously, no permission gate), which an unattended
@@ -1204,11 +1224,12 @@ launch_template() {
     # SECOND worktree under ~/.cursor/worktrees and would break firstmate's
     # isolation contract. The binary is resolved rather than named because
     # `cursor` is not the CLI (the installed names are cursor-agent and the
-    # legacy alias agent), and the foreign primary markers are cleared so an
-    # inherited CLAUDECODE cannot outrank cursor's own marker in a process that
-    # only reads the environment. Cursor exposes no effort flag, so the shared
+    # legacy alias agent). The foreign markers that would let an inherited
+    # CLAUDECODE outrank cursor's own are cleared by the shared launch-boundary
+    # sanitizer (foreign_launch_markers), not here, so no template carries a
+    # second copy of that set. Cursor exposes no effort flag, so the shared
     # effort axis is deliberately omitted and stays in task metadata only.
-    cursor) printf '%s' 'env -u CLAUDECODE -u OMPCODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    cursor) printf '%s' '__CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # Kimi Code rejects a positional prompt, so it launches bare and receives
     # only an absolute brief pointer after the TUI readiness gate below.
     # Its turn-end signal is a globally configured Stop hook plus a guarded
@@ -1234,8 +1255,11 @@ launch_template() {
     # plugin engine is off in the default build, so firstmate folds muse's own
     # session event log instead (bin/fm-busy-lib.sh), bound by the sidecar
     # written below. Nothing to place in the template for it.
-    # codex, opencode, and kimi are also markerless and share this inherited-marker hazard (now including OMPCODE from an omp primary); changing their verified launch boundaries belongs in follow-up work.
-    muse) printf '%s' 'env -u CLAUDECODE -u OMPCODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # The foreign-marker clearing muse needs so its ancestry-only detection is
+    # not outranked now comes from the shared launch-boundary sanitizer
+    # (foreign_launch_markers), which covers every adapter including the
+    # markerless codex, opencode, and kimi.
+    muse) printf '%s' 'XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -1284,6 +1308,22 @@ esac
 # secondmate whose supervision cycle could never be armed.
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
+  exit 1
+fi
+
+# omp is verified as a CREWMATE/SCOUT adapter only for the same structural
+# reason, and the reason is worth stating because omp LOOKS like it should work:
+# it is a Pi fork whose extension API accepts firstmate's existing pi extension
+# files without error. That acceptance is the trap. omp emits no agent_settled
+# event, so the pi turn-end guard's only handler never fires, while the guard's
+# own "extension loaded" marker is still written - a silently disarmed primary
+# that reports itself healthy (verified live, omp 17.3.5). omp's native
+# equivalents are verified to exist (a session_stop hook that blocks with
+# {decision, reason}, and an idle wake through sendUserMessage), but no
+# firstmate primary protocol is built on them yet, so a secondmate is refused
+# rather than launched into supervision that cannot be armed.
+if [ "$KIND" = secondmate ] && [ "$HARNESS" = omp ]; then
+  echo "error: omp is a verified crewmate/scout adapter only and cannot run a secondmate; its primary supervision protocol is not built yet. Select a harness verified for secondmates." >&2
   exit 1
 fi
 
@@ -1417,11 +1457,79 @@ muse_credential_present() {
   [ -s "$auth" ] || muse_worker_meta_api_key_present
 }
 
+# foreign_launch_markers: the ONE declared set of agent-session environment
+# markers firstmate clears at every launch boundary, one name per line.
+#
+# Two independent things put them there. A primary EXPORTS its own: claude sets
+# CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION, and CLAUDE_PID
+# on every tool child, and omp sets CLAUDECODE=1 of its own accord even though
+# it is not claude (verified 2026-08-17 on omp 17.3.5 from a scrubbed
+# environment, which also settles the open question left by the omp identity
+# change: the marker is omp's own compatibility export, not something inherited).
+# Separately, a pane environment RETAINS whatever the long-lived session daemon
+# was started with, and those markers survive there indefinitely.
+#
+# Leaking one is not cosmetic. A claude worker that starts with an inherited
+# CLAUDE_CODE_CHILD_SESSION silently disables its own transcript persistence and
+# is only saved when the SAME marker is also present in the tmux GLOBAL
+# environment, which claude probes as its ambient-marker escape hatch. A worker
+# on any other session backend has no such probe at all, so the loss is
+# unconditional there (verified 2026-08-17 on Claude Code 2.1.234; the pane
+# warns "Transcript saving is off - inherited CLAUDE_CODE_CHILD_SESSION marker",
+# and clearing the marker at this boundary is what makes it stop).
+#
+# The claude-family names come from claude's own declared session-scoped key
+# list rather than from guesswork, restricted to the agent-identity and
+# session-binding entries: the same list also carries SHELL, TMUX, TMPDIR, and
+# friends, which are the pane's own environment and never firstmate's to clear.
+# Operator CONFIGURATION is likewise untouched (CLAUDE_CONFIG_DIR, subagent
+# model, feature toggles) because clearing a deliberate setting would be a
+# different bug. TRACEPARENT is deliberately absent even though claude lists it:
+# firstmate propagates a task-scoped carrier through this same launch under
+# docs/trace-context.md, and unsetting it here would silently disable that.
+foreign_launch_markers() {
+  cat <<'EOF'
+CLAUDECODE
+CLAUDE_CODE_ENTRYPOINT
+CLAUDE_CODE_SESSION_ID
+CLAUDE_CODE_CHILD_SESSION
+CLAUDE_CODE_BRIDGE_SESSION_ID
+CLAUDE_CODE_MESSAGING_SOCKET
+CLAUDE_CODE_MESSAGING_TOKEN
+CLAUDE_CODE_EXECPATH
+CLAUDE_CODE_INVOKED_SKILLS
+CLAUDE_PID
+CLAUDE_EFFORT
+AI_AGENT
+OMPCODE
+PI_CODING_AGENT
+FM_PI_HARNESS
+GROK_AGENT
+CURSOR_AGENT
+CURSOR_INVOKED_AS
+EOF
+}
+
+# foreign_marker_unset_prefix: the `env -u ...` prefix built from that set.
+# Applied to EVERY adapter rather than a per-harness list, because a marker is
+# foreign to the harness that set it too: a claude worker launched from a claude
+# primary inherits exactly the same session bindings as one launched from omp.
+foreign_marker_unset_prefix() {
+  local name out='env'
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    out="$out -u $name"
+  done <<EOF
+$(foreign_launch_markers)
+EOF
+  printf '%s ' "$out"
+}
+
 model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse)
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -1456,6 +1564,21 @@ effort_flag_for_harness() {
     pi|pi-signed)
       # Pi 0.80.6 accepts the full shared effort vocabulary, including max, through
       # its --thinking flag.
+      case "$effort" in
+        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+      esac
+      ;;
+    omp)
+      # omp 17.3.5 --thinking documents off|minimal|low|medium|high|xhigh|max|auto,
+      # so the whole shared vocabulary maps straight across. The allowlist is not
+      # cosmetic here: unlike grok, which rejects an out-of-range level with a
+      # usage error, omp accepts ANY string and silently falls back to the model
+      # default (verified live: --thinking bogus resolved to high), so a typo
+      # would launch a differently-configured worker with no failure anywhere.
+      # The level omp finally applies is additionally clamped to what the SELECTED
+      # MODEL advertises in `omp models` - glm-5.3 publishes low,high,max and
+      # resolved medium to low and xhigh to high - which is omp's own capability
+      # mapping and deliberately not second-guessed here.
       case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
@@ -2387,7 +2510,7 @@ if [ "$KIND" != secondmate ]; then
       ;;
   esac
   case "$HARNESS" in
-    claude*|opencode*|pi|pi-signed)
+    claude*|opencode*|pi|pi-signed|omp)
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
@@ -2509,6 +2632,50 @@ export default function (pi: any) {
   pi.on("agent_settled", (_event: any, ctx: any) => {
     if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
     return busyEvent("idle", "agent-settled");
+  });
+  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+}
+EOF
+      ;;
+    omp)
+      # Written OUTSIDE the worktree for the same reason pi's is: an explicit -e
+      # path loads without any project-local file and without a trust grant.
+      # Cleaned by teardown.
+      #
+      # omp is NOT pi here, despite the shared extension API. Pi's pair is
+      # agent_start plus agent_settled-confirmed-by-ctx.isIdle(); omp emits no
+      # agent_settled at all, and its ctx.isIdle() is still false AT agent_end
+      # because the settle completes after the event (verified live, omp 17.3.5),
+      # so the pi predicate would never report idle. omp's own terminal signal is
+      # agent_end's willContinue flag: omp sets willContinue true at every site
+      # that has already scheduled an automatic continuation - auto-retry,
+      # compaction continuation, a TTSR abort, and a session_stop hook that
+      # blocked - and leaves it unset for the one settle that really ends the
+      # run. An interrupt takes the same terminal path (a single Escape produced
+      # agent_end with willContinue unset), so unlike Claude's Stop hook this
+      # source covers manual cancellation.
+      cat > "$STATE/$ID.omp-ext.ts" <<EOF
+// Firstmate semantic busy-state events + turn-end notification; written by
+// fm-spawn under the contract owned by bin/fm-busy-lib.sh.
+// "agent_start" -> busy when an agent loop begins.
+// "agent_end" -> idle only when omp did not already schedule a continuation;
+// willContinue true means the run is still going and must stay busy.
+// "turn_end" fires at every inner turn boundary (one LLM response plus its
+// tool calls) and stays a wake NOTIFICATION touch for the watcher, never
+// current-state truth.
+import { execFile } from "node:child_process";
+const busyEvent = (state: string, event: string) =>
+  new Promise<void>((resolve) => {
+    execFile("$FM_ROOT/bin/fm-busy-event.sh", [
+      "apply", "$STATE_REAL", "$ID", state,
+      "--gen", "$BUSY_GEN", "--source", "omp-ext", "--event", event,
+    ], () => resolve());
+  });
+export default function (pi: any) {
+  pi.on("agent_start", () => busyEvent("busy", "agent-start"));
+  pi.on("agent_end", (event: any) => {
+    if (event && event.willContinue) return;
+    return busyEvent("idle", "agent-end");
   });
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
@@ -2776,6 +2943,7 @@ fi
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
+sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
@@ -2787,6 +2955,7 @@ LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
+LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
@@ -2795,11 +2964,7 @@ case "$HARNESS" in
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
-case "$HARNESS" in
-  claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS $LAUNCH"
-    ;;
-esac
+LAUNCH="$(foreign_marker_unset_prefix)$LAUNCH"
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
 # back to the default ~/.claude store even when firstmate itself runs under a
