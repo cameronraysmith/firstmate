@@ -36,6 +36,7 @@ A single Escape mid-turn takes the same terminal path, so this source covers man
 Two adjacent border rows are weak evidence on their own, so `../../../bin/fm-composer-lib.sh` gates the inline-bottom shape on the tmux foreground-process identity probe naming `omp`, the same conjunction Pi's separated shape uses.
 Unlike Pi it ignores the identity's STATUS, because a real bordered container makes the content read meaningful without it.
 Backends with no identity probe (zellij, cmux, orca) therefore read an omp pane `unknown` rather than borrowing tmux's proof.
+Long input grows interior rows and turns the composer into an ordinary box whose titled top border reads as geometry ambiguity, so a wrapped omp composer reads `pending-unproven`; that is a safe degradation, because injection defers on anything that is not `empty` and the submit retry treats it exactly like `pending`.
 The delivery busy token is the bracketed `esc` from omp's `interruptHint()` in all three of its shipped symbol sets (`⟨esc⟩`, `⟦esc⟧`, `[esc]`); the spinner VERB beside it is model-authored and changes mid-turn, so it is never matched.
 
 ## Pi extensions load on omp and are silently inert
