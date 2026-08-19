@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|omp|atomic|grok|kimi|cursor|muse|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -33,7 +33,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 detect_own() {
   # Layer 1: environment markers for verified harnesses.
   # Keep marker detection before ancestry detection as an explicit precedence rule.
-  # Claude, Pi, omp, Grok, and Cursor set verified markers of their own; codex,
+  # Claude, Pi, omp, atomic, Grok, and Cursor set verified markers of their own; codex,
   # opencode, Kimi, and Muse are markerless, so a foreign marker retained in a terminal
   # multiplexer's stored environment can silently misidentify one of them before
   # ancestry is consulted. This is a precedence hazard, not evidence that
@@ -59,6 +59,22 @@ detect_own() {
   # and roots its config at ~/.omp/agent, so Pi-family mechanics must be
   # verified on omp before any of them transfer.
   [ "${OMPCODE:-}" = "1" ] && { echo omp; return; }
+  # atomic (a Pi fork) derives its marker from its app name rather than
+  # hard-coding it, so an atomic session sets ATOMIC_CODING_AGENT=true and
+  # deliberately never sets PI_CODING_AGENT (verified live, atomic 0.9.13;
+  # packages/coding-agent/src/cli.ts sets both this marker and AI_AGENT from
+  # ATOMIC_AI_AGENT="atomic"). It is tested BEFORE claude because atomic passes
+  # an inherited CLAUDECODE straight through, the same ordering cure cursor and
+  # omp needed, and BEFORE pi because atomic writes PI_SESSION_* compatibility
+  # aliases but never the pi identity marker, so both markers together mean a pi
+  # parent leaking into an atomic child rather than a pi session.
+  # The AI_AGENT conjunct is what makes the REVERSE direction correct: the
+  # *_CODING_AGENT markers are sticky under nesting, so a pi or claude worker
+  # launched under atomic still carries ATOMIC_CODING_AGENT, but AI_AGENT is
+  # rewritten by every harness that publishes it and the innermost one wins.
+  if [ "${ATOMIC_CODING_AGENT:-}" = "true" ] && [ "${AI_AGENT:-}" = "atomic" ]; then
+    echo atomic; return
+  fi
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   if [ "${PI_CODING_AGENT:-}" = "true" ]; then
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
@@ -99,6 +115,10 @@ detect_own() {
       # oh-my-pi. Exact name only, deliberately never a *omp* glob, so
       # unrelated commands such as composer can never be misread as omp.
       omp) echo omp; return ;;
+      # atomic sets process.title to its app name, so the live process name is
+      # exactly "atomic" for both the host and its engine child. Anchored, never
+      # a *atomic* glob, so unrelated commands cannot be misread as this harness.
+      atomic) echo atomic; return ;;
       # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
       # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
       # name carries the version and CHANGES on every auto-update. Match the stable
@@ -115,6 +135,7 @@ detect_own() {
           *codex*) echo codex; return ;;
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
+          *atomic*) echo atomic; return ;;
           *" pi "*|*/pi) echo pi; return ;;
         esac ;;
     esac
