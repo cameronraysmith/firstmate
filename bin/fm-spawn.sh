@@ -104,7 +104,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|omp|atomic|grok|kimi|cursor|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -167,6 +167,11 @@
 #                  written by this script; outside the worktree to avoid pi's trust gate)
 #     __OMPEXT__   absolute path to state/<task-id>.omp-ext.ts (omp busy-state and
 #                  turn-end extension, written by this script; outside the worktree)
+#     __ATOMICBIN__ quoted concrete atomic executable path resolved from PATH
+#     __ATOMICEXT__ absolute path to state/<task-id>.atomic-ext.ts (atomic busy-state
+#                  and turn-end extension, written by this script; outside the worktree)
+#     __ATOMICSESSIONID__ the per-launch atomic session id this spawn pins, so the
+#                  session transcript filename is deterministic (see below)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
@@ -187,6 +192,15 @@
 # Every launch is additionally prefixed with the shared launch-boundary
 # sanitizer (bin/fm-launch-boundary-lib.sh), which clears the agent-session markers a
 # primary exports or a pane environment retains.
+# atomic (a Pi fork) loads state/<id>.atomic-ext.ts through an explicit -e path,
+# the same outside-the-worktree shape pi uses, and additionally writes
+# state/<id>.atomic-session to bind the pane to the ONE session transcript this
+# launch creates: -na alone makes atomic ignore project-local extensions, which
+# is what keeps a worktree's own .pi/extensions out of the worker and keeps the
+# blocking trust dialog away from a never-seen worktree path. The model axis is
+# the only one that needs two flags: the canonical provider/id pair is SPLIT into
+# --provider and --model, because on atomic only --provider pins a provider.
+# atomic is crewmate/scout only and is refused for --secondmate.
 # cursor installs no per-task hook either: it writes state/<id>.cursor-session to
 # bind the pane to cursor's own conversation transcript (projects root, the exact
 # workspace path cursor records in .workspace-trusted, and the conversations that
@@ -1237,7 +1251,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse)
+    ''|claude|codex|opencode|pi|pi-signed|omp|atomic|grok|kimi|cursor|muse)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1265,7 +1279,12 @@ shell_quote() {
   printf "'"
 }
 
-resolve_pi_executable() {
+# Resolve a launch executable NAME to the concrete absolute path this spawn will
+# both probe and launch. Shared by the pi family and atomic: a crewmate pane is
+# created by a long-lived session daemon whose PATH is not firstmate's, so a bare
+# name in a launch template can resolve to a different install - or to nothing -
+# than the one a preflight just approved.
+resolve_launch_executable() {
   local candidate dir
   candidate=$(type -P -- "$1" 2>/dev/null) || return 1
   [ -x "$candidate" ] || return 1
@@ -1285,6 +1304,70 @@ pi_supports_tui_mode() {
   local executable=$1 help
   help=$("$executable" --help 2>&1) || return 1
   printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--tui-mode([[:space:]=]|$)'
+}
+
+# firstmate's model axis is ALWAYS a quoted provider/id pair - "anthropic/claude-opus-5",
+# "zai/glm-5.3" - never a bare id. The provider is never implied, never inferred
+# from the id, and never left to a runtime's own resolution order, because that
+# order is a property of each runtime and they do not agree: on atomic a bare
+# `claude-sonnet-4.5` resolves to github-copilot, which has no credential on this
+# host, and the worker dies at startup (verified 2026-08-19, atomic 0.9.13).
+#
+# The split is on the FIRST slash only. A provider's own ids may contain slashes -
+# openrouter publishes `~anthropic/claude-sonnet-latest` - so
+# "openrouter/~anthropic/claude-sonnet-latest" is provider openrouter and id
+# `~anthropic/claude-sonnet-latest`, not a malformed string.
+#
+# Refusing rather than guessing is the point: a bare id would otherwise reach a
+# runtime that resolves it somewhere firstmate never chose. Only the arms that
+# have been verified against their runtime consume this today (atomic splits it,
+# omp takes it verbatim); converting the remaining arms is filed separately as
+# fm-dispatch-canonical-model-form.
+canonical_model_split() {  # <model> -> "<provider><TAB><id>"
+  local model=$1 provider id
+  case "$model" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+  provider=${model%%/*}
+  id=${model#*/}
+  [ -n "$provider" ] && [ -n "$id" ] || return 1
+  printf '%s\t%s\n' "$provider" "$id"
+}
+
+# True when atomic's own catalog publishes this exact provider/id pair.
+# `atomic --list-models` prints a header row and then one whitespace-separated
+# `<provider> <model> <context> ...` row per model, and it lists ONLY providers
+# that currently hold a usable credential (verified 2026-08-19: the five
+# authenticated providers appear and google, openai, github-copilot, and
+# amazon-bedrock do not), so a match is evidence of both a real model and a
+# reachable credential. It needs no network.
+atomic_catalog_has_model() {  # <provider> <id>  (catalog on stdin)
+  awk -v provider="$1" -v id="$2" '
+    NR == 1 { next }
+    $1 == provider && $2 == id { found = 1 }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+atomic_list_models() {  # <path>
+  local runner=
+  if command -v timeout >/dev/null 2>&1; then runner=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then runner=gtimeout
+  fi
+  [ -n "$runner" ] || return 1
+  "$runner" "${FM_ATOMIC_PROBE_TIMEOUT:-20}" "$1" --list-models 2>/dev/null
+}
+
+# The session id this launch pins, and the whole reason the transcript filename
+# is deterministic. atomic's id charset is
+# [A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?, so the task id is sanitized rather
+# than trusted, and a per-launch suffix keeps a RELAUNCH from producing a second
+# transcript with the same id that nothing could tell apart.
+atomic_session_id() {  # <task-id>
+  local sanitized
+  sanitized=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._-' '-')
+  printf 'fm-%s-%s' "$sanitized" "$(date +%s)$$"
 }
 
 # The verified launch command per adapter. The knowledge half of each adapter
@@ -1331,6 +1414,29 @@ launch_template() {
     # drop the operator's own omp extensions, and firstmate has no standing to
     # disable those for a crewmate.
     omp) printf '%s' 'omp --auto-approve __MODELFLAG____EFFORTFLAG__-e __OMPEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # atomic: a Pi fork, so a positional prompt starts the supervised interactive
+    # session and the brief rides the launch command. Every flag here was measured
+    # on atomic 0.9.13, 2026-08-19.
+    # There is NO approval flag and none is needed: atomic executes tools with no
+    # gate at all (a non-interactive run executed a bash tool unattended), so there
+    # is no --dangerously-skip-permissions equivalent to look for.
+    # -na/--no-approve is what makes the launch safe rather than permissive. It
+    # makes atomic IGNORE project-local files for the run, and atomic scans BOTH
+    # .atomic/ and .pi/ at the project root, so without it a worktree carrying a
+    # .pi/extensions tree - firstmate's own repo, most sharply - would load the
+    # operator's primary supervision extensions into a crewmate and arm a second
+    # supervisor. It also keeps atomic's blocking five-option trust dialog away
+    # from a task worktree path it has never seen. -ne/--no-extensions would do
+    # both too, but it is the blunt instrument: it disables discovery entirely,
+    # including the operator's own extensions, and firstmate has no standing to
+    # turn those off for a crewmate.
+    # The busy-state extension still loads, because an EXPLICIT -e path is not a
+    # project-local file: verified with -na and an -e path outside the project.
+    # --session-id pins the session transcript's FILENAME (the interactive host
+    # regenerates the header id but keeps the filename), which is what makes the
+    # per-task interrupt acknowledgement in bin/fm-control-lib.sh able to find
+    # exactly one transcript without reimplementing atomic's cwd slug.
+    atomic) printf '%s' '__ATOMICBIN__ -na __MODELFLAG____EFFORTFLAG__--session-id __ATOMICSESSIONID__ -e __ATOMICEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
     # session. --always-approve auto-approves every tool execution (verified: the
     # crewmate runs fully autonomously, no permission gate), which an unattended
@@ -1449,9 +1555,23 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = omp ]; then
   exit 1
 fi
 
+# atomic is refused for --secondmate on omp's reason, not muse's, and the
+# difference matters. muse CANNOT be a primary: its hook dialect rejects the
+# handlers primary supervision is built on. atomic has the full primary
+# capability surface - it is a Pi fork whose extension API is pi's, and pi is
+# already a verified secondmate harness - but a secondmate is a separate LAUNCH
+# surface: the seeded home's extension tree, the secondmate launch template, and
+# the remote secondmate allowlists are none of them built or measured for atomic.
+# The refusal is therefore about unbuilt wiring and is expected to lift with its
+# own evidence, rather than being a capability verdict.
+if [ "$KIND" = secondmate ] && [ "$HARNESS" = atomic ]; then
+  echo "error: atomic runs crewmate and scout work only; its secondmate launch wiring is not built. Select a harness verified for secondmates." >&2
+  exit 1
+fi
+
 case "$HARNESS" in
   pi|pi-signed)
-    PI_BIN=$(resolve_pi_executable "$HARNESS") || {
+    PI_BIN=$(resolve_launch_executable "$HARNESS") || {
       echo "error: $HARNESS executable not found on PATH; install it or select a different verified harness" >&2
       exit 1
     }
@@ -1461,6 +1581,42 @@ case "$HARNESS" in
     fi
     LAUNCH=${LAUNCH//__PITUIMODE__/$PI_TUI_MODE}
     LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
+    ;;
+  atomic)
+    # Resolved once here so the preflight probes exactly the binary the pane will
+    # launch. A missing install refuses before endpoint creation rather than
+    # leaving a pane whose command-not-found reads to a supervisor as a wedge.
+    ATOMIC_BIN=$(resolve_launch_executable atomic) || {
+      echo "error: atomic executable not found on PATH; install it or select a different verified harness" >&2
+      exit 1
+    }
+    # Pinned here, before anything can fail on the model axis, because both the
+    # launch command and the per-task interrupt-ack binding must carry the SAME id.
+    ATOMIC_SESSION_ID=$(atomic_session_id "$ID")
+    if [ -n "$MODEL" ] && [ "$MODEL" != default ]; then
+      ATOMIC_SPLIT=$(canonical_model_split "$MODEL") || {
+        echo "error: atomic requires the canonical provider/id model form, for example 'anthropic/claude-opus-5'; '$MODEL' carries no provider. On atomic only --provider pins a provider, and a bare id resolves through atomic's own order to whichever provider sorts first - verifiably a different vendor, or one with no credential." >&2
+        exit 1
+      }
+      IFS=$(printf '\t') read -r ATOMIC_PROVIDER ATOMIC_MODEL_ID <<EOF
+$ATOMIC_SPLIT
+EOF
+      # A KNOWN provider plus an unmatched id is the case that must be caught
+      # here: atomic only WARNS, synthesizes a custom model id, launches, and
+      # then dies on the provider's 404 (verified 2026-08-19 with
+      # --provider anthropic --model claude-sonnet-4.5). From firstmate's side
+      # that is a worker that started and died for no visible reason.
+      # An unreadable catalog does not refuse the spawn, matching cursor's
+      # preflight: a probe that cannot answer is not evidence of a bad model.
+      if ATOMIC_MODELS=$(atomic_list_models "$ATOMIC_BIN"); then
+        if ! printf '%s\n' "$ATOMIC_MODELS" | atomic_catalog_has_model "$ATOMIC_PROVIDER" "$ATOMIC_MODEL_ID"; then
+          echo "error: atomic model '$ATOMIC_MODEL_ID' is not published for provider '$ATOMIC_PROVIDER' by '$ATOMIC_BIN --list-models'; choose a provider/id pair that command lists. That catalog lists only providers holding a usable credential, so an absent pair may also mean this provider is not authenticated here." >&2
+          exit 1
+        fi
+      else
+        echo "warning: '$ATOMIC_BIN --list-models' could not be read, so model '$MODEL' was not preflighted; the launch proceeds unverified" >&2
+      fi
+    fi
     ;;
   cursor)
     # `cursor` is not the CLI name, and the legacy alias `agent` is far too
@@ -1580,9 +1736,27 @@ muse_credential_present() {
 }
 
 model_flag_for_harness() {
-  local harness=$1 model=$2
+  local harness=$1 model=$2 provider id split
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
+    # atomic is the one adapter that needs TWO flags for the model axis. Passing
+    # the canonical provider/id string to --model alone would NOT pin the
+    # provider: when the prefix names a known provider whose ids do not match the
+    # remainder, atomic falls through to a bare-id lookup across every provider,
+    # which verifiably lands on a different vendor. Only --provider is a hard pin,
+    # so the canonical form is split and both flags are emitted. The spawn
+    # preflight above has already refused a model with no provider prefix; this
+    # refuses too rather than silently dropping the axis.
+    atomic)
+      split=$(canonical_model_split "$model") || return 1
+      IFS=$(printf '\t') read -r provider id <<EOF
+$split
+EOF
+      [ -n "$provider" ] && [ -n "$id" ] || return 1
+      printf -- '--provider %s --model %s ' "$(shell_quote "$provider")" "$(shell_quote "$id")"
+      ;;
+    # omp takes the canonical form verbatim: its own help documents the
+    # provider/id shape in --model and calls --provider legacy and dispreferred.
     claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
@@ -1633,6 +1807,25 @@ effort_flag_for_harness() {
       # MODEL advertises in `omp models` - glm-5.3 publishes low,high,max and
       # resolved medium to low and xhigh to high - which is omp's own capability
       # mapping and deliberately not second-guessed here.
+      case "$effort" in
+        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+      esac
+      ;;
+    atomic)
+      # atomic 0.9.13 --thinking accepts off|minimal|low|medium|high|xhigh|max
+      # (VALID_THINKING_LEVELS, all seven accepted live), so firstmate's whole
+      # vocabulary maps 1:1 and off/minimal simply sit below it.
+      # The allowlist does real work: an out-of-range value does NOT fail the
+      # launch, it prints a yellow warning, leaves the level unset, and proceeds on
+      # the settings default with exit 0, so a typo would silently launch a
+      # differently-configured worker.
+      # atomic then CLAMPS the accepted level to the selected model's supported
+      # set with no diagnostic, and the clamp walks UP as well as down - a
+      # requested medium runs at high on kimi-coding/k3. Firstmate passes the
+      # request and does not treat an accepted --thinking as proof of the level
+      # that ran; whether the ladder should be gated against the model's
+      # advertised levels is a captain decision (atomic-effort-clamp), not
+      # something to defeat here.
       case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
@@ -2653,7 +2846,7 @@ if [ "$KIND" != secondmate ]; then
       ;;
   esac
   case "$HARNESS" in
-    claude*|opencode*|pi|pi-signed|omp)
+    claude*|opencode*|pi|pi-signed|omp|atomic)
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
@@ -2823,6 +3016,63 @@ export default function (pi: any) {
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF
+      ;;
+    atomic)
+      # Written OUTSIDE the worktree for the same reason pi's and omp's are: an
+      # explicit -e path loads with no project-local file and no trust grant, and
+      # under -na it is the ONLY extension that loads (verified 2026-08-19 on
+      # atomic 0.9.13: -na with an -e path outside the project loaded it, while a
+      # planted project-local .pi/extensions file was ignored).
+      #
+      # atomic IS pi here, and that was measured rather than assumed, because omp
+      # is the counterexample that makes the assumption unsafe. A real turn on
+      # atomic emitted agent_start, then agent_end, then agent_settled with
+      # ctx.isIdle() true - so the pi predicate reports idle exactly where it
+      # should, unlike omp, whose settle completes after its terminal event and
+      # leaves isIdle() false. agent_settled is therefore the terminal signal and
+      # agent_end is deliberately NOT used: it fires before the settle completes.
+      cat > "$STATE/$ID.atomic-ext.ts" <<EOF
+// Firstmate semantic busy-state events + turn-end notification; written by
+// fm-spawn under the contract owned by bin/fm-busy-lib.sh.
+// Semantic state: "agent_start" -> busy when a low-level agent run begins;
+// "agent_settled" -> idle only when ctx.isIdle() confirms atomic will not
+// continue automatically - auto-retries, auto-compaction retries, tool loops,
+// and queued continuations all keep the run un-settled, and a settle that
+// raced another extension's fresh run keeps state busy via isIdle().
+// "turn_end" fires at every inner turn boundary (one LLM response plus its
+// tool calls) and stays a wake NOTIFICATION touch for the watcher, never
+// current-state truth.
+import { execFile } from "node:child_process";
+const busyEvent = (state: string, event: string) =>
+  new Promise<void>((resolve) => {
+    execFile("$FM_ROOT/bin/fm-busy-event.sh", [
+      "apply", "$STATE_REAL", "$ID", state,
+      "--gen", "$BUSY_GEN", "--source", "atomic-ext", "--event", event,
+    ], () => resolve());
+  });
+export default function (pi: any) {
+  pi.on("agent_start", () => busyEvent("busy", "agent-start"));
+  pi.on("agent_settled", (_event: any, ctx: any) => {
+    if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
+    return busyEvent("idle", "agent-settled");
+  });
+  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+}
+EOF
+      # The interrupt-acknowledgement binding, and the only reason this adapter
+      # can claim a cancellation at all: atomic appends an assistant record
+      # carrying stopReason "aborted" to its session transcript when a turn is
+      # cancelled (verified live), which almost no other adapter here supplies.
+      # The sidecar pins the sessions root resolved NOW - so a later HOME change
+      # cannot re-point an already-running task at a different tree - plus the
+      # session id this launch pinned, whose per-launch suffix is what makes the
+      # transcript filename match exactly one file across relaunches.
+      # bin/fm-control-lib.sh owns the read.
+      {
+        printf 'sessions_root=%s\n' "${HOME:-}/.atomic/agent/sessions"
+        printf 'session_id=%s\n' "$ATOMIC_SESSION_ID"
+        printf 'workspace_root=%s\n' "$WT"
+      } > "$STATE/$ID.atomic-session"
       ;;
     codex*)
       # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
@@ -3121,6 +3371,7 @@ sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
+sq_atomicext=$(shell_quote "$STATE/$ID.atomic-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
@@ -3133,11 +3384,16 @@ LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
+LAUNCH=${LAUNCH//__ATOMICEXT__/$sq_atomicext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 case "$HARNESS" in
   pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
+  atomic)
+    LAUNCH=${LAUNCH//__ATOMICBIN__/"$(shell_quote "$ATOMIC_BIN")"}
+    LAUNCH=${LAUNCH//__ATOMICSESSIONID__/"$(shell_quote "$ATOMIC_SESSION_ID")"}
+    ;;
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
