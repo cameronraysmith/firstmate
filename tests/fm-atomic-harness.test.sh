@@ -22,6 +22,7 @@
 # atomic is not a spawnable adapter yet, and the marker set is applied to EVERY
 # adapter rather than a per-harness list, so a leak is a leak whichever worker
 # inherits it.
+# shellcheck disable=SC2016 # single quotes are deliberate: $$ and $1 expand inside the fixture child, not here
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
