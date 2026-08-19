@@ -48,30 +48,40 @@ printf '%s\n' "$p"
 SH
 chmod +x "$TMP_ROOT/ancestry-probe.sh"
 
+# Detection reads the AMBIENT environment, so a case that sets only the markers
+# it cares about inherits whatever primary the suite itself runs under - and an
+# omp or cursor primary's own marker outranks atomic's, which made these cases
+# pass under claude and fail under omp. Every case therefore starts from a
+# scrubbed marker set and adds back exactly what it is asserting.
+harness_env() {  # <VAR=value...> <command...>
+  env -u ATOMIC_CODING_AGENT -u AI_AGENT -u CLAUDECODE -u OMPCODE \
+    -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    -u CURSOR_AGENT -u CURSOR_INVOKED_AS "$@"
+}
+
 test_atomic_marker_outranks_retained_claudecode_and_pi() {
   local out
-  out=$(ATOMIC_CODING_AGENT=true AI_AGENT=atomic "$HARNESS")
+  out=$(harness_env ATOMIC_CODING_AGENT=true AI_AGENT=atomic "$HARNESS")
   [ "$out" = atomic ] || fail "atomic's own markers must detect atomic, got '$out'"
-  out=$(ATOMIC_CODING_AGENT=true AI_AGENT=atomic CLAUDECODE=1 "$HARNESS")
+  out=$(harness_env ATOMIC_CODING_AGENT=true AI_AGENT=atomic CLAUDECODE=1 "$HARNESS")
   [ "$out" = atomic ] || fail "a retained CLAUDECODE must not outrank atomic, got '$out'"
-  out=$(ATOMIC_CODING_AGENT=true AI_AGENT=atomic PI_CODING_AGENT=true "$HARNESS")
+  out=$(harness_env ATOMIC_CODING_AGENT=true AI_AGENT=atomic PI_CODING_AGENT=true "$HARNESS")
   [ "$out" = atomic ] || fail "a leaked PI_CODING_AGENT must not outrank atomic, got '$out'"
   pass "fm-harness: atomic's markers outrank a retained claude or pi marker"
 }
 
 test_inherited_atomic_marker_never_claims_a_nested_worker() {
   local out
-  out=$(env -u AI_AGENT ATOMIC_CODING_AGENT=true CLAUDECODE=1 "$HARNESS")
+  out=$(harness_env ATOMIC_CODING_AGENT=true CLAUDECODE=1 "$HARNESS")
   [ "$out" = claude ] \
     || fail "a claude worker carrying an inherited ATOMIC_CODING_AGENT must read as claude, got '$out'"
-  out=$(ATOMIC_CODING_AGENT=true AI_AGENT=claude-code_2-1-234_agent CLAUDECODE=1 "$HARNESS")
+  out=$(harness_env ATOMIC_CODING_AGENT=true AI_AGENT=claude-code_2-1-234_agent CLAUDECODE=1 "$HARNESS")
   [ "$out" = claude ] \
     || fail "AI_AGENT names the innermost harness, so this must read as claude, got '$out'"
-  out=$(env -u CLAUDECODE ATOMIC_CODING_AGENT=true AI_AGENT=pi PI_CODING_AGENT=true "$HARNESS")
+  out=$(harness_env ATOMIC_CODING_AGENT=true AI_AGENT=pi PI_CODING_AGENT=true "$HARNESS")
   [ "$out" = pi ] \
     || fail "a pi worker launched under atomic must read as pi, got '$out'"
-  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u CURSOR_AGENT \
-    -u CURSOR_INVOKED_AS -u OMPCODE ATOMIC_CODING_AGENT=1 AI_AGENT=atomic "$HARNESS")
+  out=$(harness_env ATOMIC_CODING_AGENT=1 AI_AGENT=atomic "$HARNESS")
   [ "$out" != atomic ] || fail "an inexact ATOMIC_CODING_AGENT value must not claim the atomic identity"
   pass "fm-harness: an inherited atomic marker alone never claims a nested worker"
 }
