@@ -3,7 +3,7 @@ name: harness-adapters
 description: >-
   Agent-only reference for firstmate harness operations.
   Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
-  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, muse, and omp.
+  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, muse, omp, and atomic.
 user-invocable: false
 metadata:
   internal: true
@@ -44,11 +44,12 @@ omp (oh-my-pi) sets `OMPCODE=1` and keeps none of Pi's own markers, so `../../..
 `CLAUDECODE=1` on an omp tool process is omp's OWN compatibility export, not an inherited value, verified from a scrubbed environment on omp 17.3.5, which is why that ordering is load-bearing rather than incidental.
 omp is deliberately not aliased to the pi family despite being a Pi fork: its config root is `~/.omp/agent`, and its lifecycle events, composer shape, and busy predicate all differ from Pi's.
 omp runs a verified PRIMARY through its own tracked extension pair, but `../../../bin/fm-spawn.sh` still refuses `--secondmate` on omp: a secondmate home receives its primary extensions as absolute `-e` paths composed at launch, and neither that template nor the remote secondmate allowlists are built or measured for omp.
-atomic (a Pi fork) derives its marker from its own app name and sets `ATOMIC_CODING_AGENT=true` alongside `AI_AGENT=atomic`, and it deliberately never writes `PI_CODING_AGENT`, so `../../../bin/fm-harness.sh` reports `atomic` ahead of any retained `CLAUDECODE` or leaked Pi marker, and the session-lock ancestry table anchors the exact process name `atomic`.
-The `AI_AGENT` conjunct is what keeps the reverse direction correct: the `*_CODING_AGENT` markers are sticky under nesting, so a claude or pi worker launched under atomic inherits `ATOMIC_CODING_AGENT` while `AI_AGENT` still names its own harness.
-Identity was verified live on atomic 0.9.13, 2026-08-18; the full adapter - launch profile, busy source, composer, control plane - remains unverified, so never dispatch an atomic crewmate yet.
 omp uses its OWN tracked pair, `.omp/extensions/fm-primary-turnend-guard.ts` plus `.omp/extensions/fm-primary-omp-watch.ts`, auto-discovered from `.omp/extensions/` with no trust step; its guard BLOCKS the turn through omp's `session_stop` instead of forcing a follow-up, and its arm cycle is owned per omp PROCESS rather than per session.
 Never point an omp primary at the Pi pair: they load on omp and never fire (see `references/harness/omp.md`).
+atomic (a Pi fork) derives its marker from its own app name and sets `ATOMIC_CODING_AGENT=true` alongside `AI_AGENT=atomic`, and it deliberately never writes `PI_CODING_AGENT`, so `../../../bin/fm-harness.sh` reports `atomic` ahead of any retained `CLAUDECODE` or leaked Pi marker, and the session-lock ancestry table anchors the exact process name `atomic`, which it matches through `argv[0]` because the nix launcher's `comm` is `node`.
+The `AI_AGENT` conjunct is what keeps the reverse direction correct: the `*_CODING_AGENT` markers are sticky under nesting, so a claude or pi worker launched under atomic inherits `ATOMIC_CODING_AGENT` while `AI_AGENT` still names its own harness.
+atomic is deliberately not aliased to the pi family either: its config root is `~/.atomic/agent`, it renamed Pi's `grep` tool to `search`, and it scans `.pi/` in addition to its own tree, which is a hazard rather than an inheritance (see `references/harness/atomic.md`).
+atomic is CREWMATE/SCOUT ONLY: its extension API is Pi's and the capability is there, but no firstmate primary protocol is built on it, so `../../../bin/fm-spawn.sh` refuses `--secondmate` on atomic rather than launching supervision that cannot be armed.
 Only `FM_PI_HARNESS=pi-signed` at the launch boundary together with `PI_CODING_AGENT=true` selects Pi-signed; shared unmarked launcher ancestry remains Pi.
 `../../../bin/fm-spawn.sh` owns worker marker establishment, while the README launch command owns the signed-primary boundary.
 `../../../bin/fm-harness.sh crew` resolves `config/crew-harness`, where absent or `default` means firstmate's own harness.
@@ -99,7 +100,8 @@ A new tool remains undispatchable until the `verify` plan, its harness entry, ev
     "kimi": "references/harness/kimi.md",
     "cursor": "references/harness/cursor.md",
     "muse": "references/harness/muse.md",
-    "omp": "references/harness/omp.md"
+    "omp": "references/harness/omp.md",
+    "atomic": "references/harness/atomic.md"
   }
 }
 ```
