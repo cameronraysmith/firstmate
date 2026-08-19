@@ -659,6 +659,35 @@ test_local_only_merged_to_local_main_allows() {
   pass "local-only worktree with work merged into local main is torn down (no regression)"
 }
 
+# Every adapter's per-task wiring must be removed by teardown, not just the ones
+# whose files live in the worktree. atomic writes two files into the home's state
+# directory - the busy extension and the interrupt-ack session binding - and omp
+# shipped its own equivalent as a follow-up FIX commit after finding exactly this
+# leak, so the pairing is asserted rather than assumed.
+test_teardown_removes_atomic_per_task_state_files() {
+  local case_dir rc wt_head
+  case_dir=$(make_case atomic-state-files)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "atomic work"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  printf 'ext\n' > "$case_dir/state/task-x1.atomic-ext.ts"
+  printf 'sessions_root=%s\nsession_id=fm-x1\nworkspace_root=%s\n' \
+    "$case_dir/sessions" "$case_dir/wt" > "$case_dir/state/task-x1.atomic-session"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "atomic-state-files: teardown should succeed on landed work"
+  assert_absent "$case_dir/state/task-x1.atomic-ext.ts" \
+    "teardown left atomic's per-task busy extension behind"
+  assert_absent "$case_dir/state/task-x1.atomic-session" \
+    "teardown left atomic's interrupt-ack session binding behind"
+  pass "teardown removes atomic's per-task extension and session binding"
+}
+
 test_no_mistakes_origin_remote_allows() {
   local case_dir rc
   case_dir=$(make_case nm-origin)
@@ -2794,6 +2823,7 @@ test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_teardown_removes_atomic_per_task_state_files
 test_no_mistakes_origin_remote_allows
 test_fast_forward_landed_branch_allows
 test_no_mistakes_truly_unpushed_refuses
