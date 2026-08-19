@@ -63,7 +63,7 @@ fm_control_verb_allowed() {  # <verb>
 # than guessed at, exactly as a spawn on it would be.
 fm_control_harness_supported() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse) return 0 ;;
+    claude|codex|opencode|pi|pi-signed|omp|atomic|grok|kimi|cursor|muse) return 0 ;;
   esac
   return 1
 }
@@ -81,6 +81,7 @@ fm_control_harness_family() {  # <recorded-harness>
     pi) printf 'pi' ;;
     pi-signed) printf 'pi-signed' ;;
     omp) printf 'omp' ;;
+    atomic) printf 'atomic' ;;
     claude*) printf 'claude' ;;
     codex*) printf 'codex' ;;
     opencode*) printf 'opencode' ;;
@@ -92,20 +93,23 @@ fm_control_harness_family() {  # <recorded-harness>
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse and omp are crewmate/scout
-# adapters only, for different reasons. muse has no primary supervision protocol
-# at all. omp now has one - its own tracked .omp/extensions pair - but the
-# secondmate LAUNCH is a separate unwired surface: a secondmate home's extensions
-# are passed by absolute path at launch, and neither that template nor the remote
-# secondmate paths are built or verified for omp. bin/fm-spawn.sh refuses a
-# --secondmate launch on either. The control plane asks this BEFORE it stops
-# anything, so an incompatible relaunch target is refused while the current agent
-# is still running rather than after it has been stopped.
+# Which task kinds an adapter is verified to run. muse, omp, and atomic are
+# crewmate/scout adapters only, for different reasons. muse has no primary
+# supervision protocol at all. omp now has one - its own tracked .omp/extensions
+# pair - but the secondmate LAUNCH is a separate unwired surface: a secondmate
+# home's extensions are passed by absolute path at launch, and neither that
+# template nor the remote secondmate paths are built or verified for omp. atomic
+# is in omp's position rather than muse's: it has the full primary capability
+# surface, being a Pi fork whose extension API is pi's, but the same secondmate
+# launch surface is unbuilt for it. bin/fm-spawn.sh refuses a --secondmate launch
+# on all three. The control plane asks this BEFORE it stops anything, so an
+# incompatible relaunch target is refused while the current agent is still
+# running rather than after it has been stopped.
 fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse|omp) [ "$kind" != secondmate ] || return 1 ;;
+    muse|omp|atomic) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
@@ -114,9 +118,15 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
 # whose Esc only moves focus to the scrollback; grok cancels on Ctrl+C.
 # omp cancels on a single Escape: the running tool closed with
 # `[Command cancelled]` and the agent settled (verified live, omp 17.3.5).
+# atomic cancels on a single Escape too: the pane printed `Request aborted`, the
+# running tool closed with `Command aborted`, and the composer returned to its
+# prompt row (verified live, atomic 0.9.13). A SECOND Escape is deliberately not
+# sent: on an idle empty composer atomic's default double-Escape action opens the
+# session-tree overlay, so a "press it twice to be safe" interrupt could park a
+# modal over an idle worker.
 fm_control_interrupt_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|muse) printf 'Escape' ;;
+    claude|codex|opencode|pi|pi-signed|omp|atomic|kimi|cursor|muse) printf 'Escape' ;;
     grok) printf 'C-c' ;;
     *) return 1 ;;
   esac
@@ -127,25 +137,32 @@ fm_control_interrupt_key() {  # <harness>
 fm_control_interrupt_repeat() {  # <harness>
   case "${1-}" in
     opencode) printf '2' ;;
-    claude|codex|pi|pi-signed|omp|grok|kimi|cursor|muse) printf '1' ;;
+    claude|codex|pi|pi-signed|omp|atomic|grok|kimi|cursor|muse) printf '1' ;;
     *) return 1 ;;
   esac
 }
 
 # The key that must follow the interrupt key to leave the composer empty, or
-# nothing when the adapter needs none. muse is the one verified adapter that
-# RESTORES the cancelled prompt into its composer as real bright text, so an
-# interrupt is not complete until Ctrl+U has cleared it; leaving it there would
-# make the next submitted line - a steer, or this plane's own exit command -
-# concatenate onto it. cursor and omp were both checked for exactly that
-# behaviour and do NOT repollute: after a single Escape cursor's composer shows
-# only the `Add a follow-up` placeholder and omp's returns to an empty input
-# row, so neither needs a clear key. Prints the key or nothing;
-# a harness with no verified mechanics returns nonzero, matching the tables
-# above.
+# nothing when the adapter needs none. muse and atomic are the verified adapters
+# that RESTORE text into the composer as real bright text, so an interrupt is not
+# complete until Ctrl+U has cleared it; leaving it there would make the next
+# submitted line - a steer, or this plane's own exit command - concatenate onto
+# it. The two restore different text, and atomic's case is the one firstmate hits
+# routinely: a steer submitted while the worker is BUSY is queued, and atomic puts
+# every queued message back into the editor when the turn is cancelled (verified
+# live on atomic 0.9.13 - a queued steer line reappeared in the composer after a
+# single Escape and the pane classified `pending` until Ctrl+U, which returned it
+# to `empty`). atomic does not restore the in-flight prompt itself, so an
+# interrupt with nothing queued needs no clear - but this plane cannot know
+# whether a steer was queued, so it always clears.
+# cursor and omp were both checked for the same behaviour and do NOT repollute:
+# after a single Escape cursor's composer shows only the `Add a follow-up`
+# placeholder and omp's returns to an empty input row, so neither needs a clear
+# key. Prints the key or nothing; a harness with no verified mechanics returns
+# nonzero, matching the tables above.
 fm_control_interrupt_clear_key() {  # <harness>
   case "${1-}" in
-    muse) printf 'C-u' ;;
+    muse|atomic) printf 'C-u' ;;
     claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor) ;;
     *) return 1 ;;
   esac
@@ -155,9 +172,17 @@ fm_control_interrupt_clear_key() {  # <harness>
 # willContinue unset, the same terminal path a completed run takes - but it is a
 # pushed record rather than an adapter-observable acknowledgement this plane can
 # read back at the moment it delivers the key, so it claims none, like cursor.
+#
+# atomic is the second adapter after muse that can supply a real one. It appends
+# an assistant record carrying `"stopReason":"aborted"` to its own session
+# transcript when a turn is cancelled, and that record is APPENDED, so the claim
+# is made against bytes written after the offset this plane captured before it
+# delivered the key - a prior aborted turn in the same transcript can never be
+# mistaken for this one (verified live, atomic 0.9.13).
 fm_control_interrupt_ack_source() {  # <harness>
   case "${1-}" in
     muse) printf 'muse-session-terminal' ;;
+    atomic) printf 'atomic-session-aborted' ;;
     # cursor's transcript DOES type an aborted close, but its write latency
     # after an interrupt was measured as variable - sometimes seconds, sometimes
     # not within 20 - so a cancellation claim built on it would be unreliable.
@@ -167,12 +192,71 @@ fm_control_interrupt_ack_source() {  # <harness>
   esac
 }
 
+# --- atomic interrupt-acknowledgement binding --------------------------------
+#
+# atomic writes one JSON-lines transcript per session under
+# <sessions-root>/<cwd-slug>/<timestamp>_<session-id>.jsonl. bin/fm-spawn.sh
+# pins the session id at launch and records it, with the sessions root it
+# resolved then, in state/<id>.atomic-session; the id carries a per-launch suffix
+# so a relaunch cannot leave two transcripts this cannot tell apart. Matching on
+# the recorded id means atomic's own cwd-slug algorithm is never reimplemented
+# here, and a slug change upstream cannot silently break the binding.
+fm_control_atomic_binding_path() {  # <state-dir> <id>
+  printf '%s/%s.atomic-session' "$1" "$2"
+}
+
+fm_control_atomic_binding_field() {  # <state-dir> <id> <key>
+  local path value
+  path=$(fm_control_atomic_binding_path "$1" "$2")
+  [ -f "$path" ] || return 1
+  value=$(awk -F= -v key="$3" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$path") || return 1
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
+}
+
+# The ONE transcript this task's launch created, or nonzero. Zero matches means
+# the session has not written its file yet: atomic creates it only once the first
+# assistant message exists. Two or more means the binding is ambiguous, which
+# must never be resolved by guessing.
+fm_control_atomic_session_file() {  # <state-dir> <id>
+  local root session_id match='' count=0 candidate
+  root=$(fm_control_atomic_binding_field "$1" "$2" sessions_root) || return 1
+  session_id=$(fm_control_atomic_binding_field "$1" "$2" session_id) || return 1
+  [ -d "$root" ] || return 1
+  for candidate in "$root"/*/*_"$session_id".jsonl; do
+    [ -f "$candidate" ] || continue
+    match=$candidate
+    count=$((count + 1))
+  done
+  [ "$count" -eq 1 ] || return 1
+  printf '%s' "$match"
+}
+
+fm_control_atomic_transcript_size() {  # <file>
+  local size
+  [ -f "$1" ] || return 1
+  size=$(wc -c < "$1" 2>/dev/null) || return 1
+  printf '%s' "${size//[[:space:]]/}"
+}
+
+# True when the bytes appended to <file> after <offset> carry an aborted
+# assistant record. Both tokens must be on the SAME line, which is one JSON
+# object, so a tool result that merely quoted the phrase cannot satisfy it.
+fm_control_atomic_aborted_since() {  # <file> <offset>
+  local file=$1 offset=$2
+  [ -f "$file" ] || return 1
+  case "$offset" in ''|*[!0-9]*) return 1 ;; esac
+  tail -c "+$((offset + 1))" "$file" 2>/dev/null \
+    | grep '"stopReason":"aborted"' \
+    | grep -q '"role":"assistant"'
+}
+
 # The command that exits the agent from its own composer.
 fm_control_exit_command() {  # <harness>
   case "${1-}" in
     claude|opencode|grok|kimi|cursor|muse) printf '/exit' ;;
     codex|pi|pi-signed) printf '/quit' ;;
-    omp) printf '/exit' ;;
+    omp|atomic) printf '/exit' ;;
     *) return 1 ;;
   esac
 }
@@ -220,6 +304,12 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
     opencode) printf '%s\n' "$wt/.opencode/plugins/fm-busy-state.js" ;;
     pi|pi-signed) printf '%s\n' "$state/$id.pi-ext.ts" ;;
     omp) printf '%s\n' "$state/$id.omp-ext.ts" ;;
+    atomic)
+      printf '%s\n' "$state/$id.atomic-ext.ts"
+      # The interrupt-ack binding is per-incarnation: a relaunch AWAY from atomic
+      # must retire it so no retired launch's session id outlives its agent.
+      printf '%s\n' "$state/$id.atomic-session"
+      ;;
     grok)
       printf '%s\n' "$wt/.fm-grok-turnend"
       printf '%s\n' "$state/$id.grok-turnend-token"

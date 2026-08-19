@@ -1279,3 +1279,185 @@ FM_OMP_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-omp-primary-live-e2e.test.sh
 bin/fm-test-run.sh tests/fm-omp-harness.test.sh tests/fm-omp-primary-extensions.test.sh \
   tests/fm-busy-adapter-wiring.test.sh tests/fm-composer-lib.test.sh tests/fm-control.test.sh
 ```
+
+## atomic
+
+atomic is a Pi fork with its own identity, config root (`~/.atomic/agent`), and tool naming, but with Pi's extension API intact.
+Everything below was verified live on 2026-08-19 against `atomic 0.9.13` on macOS arm64, tmux 3.6a on an isolated private socket, in a scratch project outside any fleet project.
+The earlier identity work verified detection, fleet-lock ancestry, and launch-boundary sanitization only; this record covers the launch profile, busy source, composer, and control plane for crewmate and scout work.
+
+### Launch profile axes
+
+`atomic --help` documents `--thinking <level>` with `off, minimal, low, medium, high, xhigh, max`, and `--list-models [search]` as the model discovery surface.
+
+The model axis needs both flags, because `--model` alone does not pin a provider.
+A known provider with an unmatched id only warns, then dies at the first request:
+
+```text
+$ atomic -na --provider anthropic --model claude-sonnet-4.5 --thinking off -p "say OK"
+Warning: Model "claude-sonnet-4.5" not found for provider "anthropic". Using custom model id.
+404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet-4.5"},...}
+```
+
+To firstmate that is a worker that launched and died for no visible reason, so `bin/fm-spawn.sh` preflights the resolved pair against the catalog and refuses before endpoint creation.
+A model string with no provider prefix is refused outright, because atomic resolves a bare id through its own order rather than firstmate's intent.
+
+`--list-models` prints a header row and then whitespace-separated `<provider> <model> <context> <max-out> <thinking> <images>` rows, needs no network, and lists ONLY providers holding a usable credential:
+
+```text
+$ atomic --list-models | head -3
+provider      model                     context  max-out  thinking  images
+anthropic     claude-fable-5            1M       128K     yes       yes
+anthropic     claude-haiku-4-5          200K     64K      yes       yes
+
+$ atomic --list-models | awk 'NR>1{print $1}' | sort -u | tr '\n' ' '
+anthropic kimi-coding openai-codex openrouter zai
+
+$ atomic --offline --list-models | wc -l
+382
+```
+
+google, openai, github-copilot, and amazon-bedrock hold no credential on this host and appear in no row, so a catalog match is evidence of both a real model and a reachable provider.
+A provider's own ids may contain slashes (`openrouter  ~anthropic/claude-sonnet-latest`), which is why the canonical `provider/id` split in `bin/fm-spawn.sh` splits on the FIRST slash only.
+
+### Extension loading under the trust flags
+
+A project-local `.pi/extensions` file is loaded when the run trusts project-local files and ignored when it does not, so `-na` is what fences a worktree's Pi tree off from a crewmate.
+Measured in a scratch project holding `.pi/extensions/boom.ts` (a throwing extension), with a separate good extension at an absolute path outside the project, using the offline no-token harness (`--model zzz/nonexistent` fails AFTER extension loading is reported):
+
+```text
+$ atomic --offline -na -e /tmp/lab/ext-ok.ts --model zzz/nonexistent -p x
+FM_EXT_LOADED
+Error: Model "zzz/nonexistent" not found. Use --list-models to see available models.
+
+$ atomic --offline -na --model zzz/nonexistent -p x
+Error: Model "zzz/nonexistent" not found. Use --list-models to see available models.
+
+$ atomic --offline -a --model zzz/nonexistent -p x
+Error: Failed to load extension ".../proj/.pi/extensions/boom.ts": Failed to load extension: PROJECT_LOCAL_LOADED
+Error: Model "zzz/nonexistent" not found. Use --list-models to see available models.
+
+$ atomic --offline -na -e /tmp/lab/ext-bad.ts --model zzz/nonexistent -p x
+Error: Failed to load extension "/tmp/lab/ext-bad.ts": Extension does not export a valid factory function: /tmp/lab/ext-bad.ts
+```
+
+So an explicit `-e` path outside the project loads under `-na`, a project-local file does not, and a broken extension is reported rather than ignored.
+That last line is also the cheapest atomic-side regression harness available: extension loading is reported before model resolution, so the pair of errors is deterministic and costs no model tokens.
+
+### Trust dialog
+
+A bare interactive launch in a project folder atomic has not been trusted blocks on a five-option dialog whose first and preselected option is a PERSISTENT trust:
+
+```text
+ Trust project folder?
+ /private/tmp/atomlab/proj
+ This allows atomic to load .atomic settings and resources, install missing project packages, and execute project extensions.
+ → Trust
+   Trust parent folder (/private/tmp/atomlab)
+   Trust (this session only)
+   Do not trust
+   Do not trust (this session only)
+ ↑↓ navigate  enter select  esc/ctrl+c cancel
+```
+
+The same launch with `-na` showed no dialog and reached its composer.
+Accepting the dialog would write a disposable task worktree into `~/.atomic/agent/trust.json` permanently, which is the second reason the launch template carries `-na`.
+
+### Busy state
+
+atomic emits `agent_settled` and `ctx.isIdle()` is TRUE there, so Pi's predicate transfers unchanged - the opposite of omp, and the reason it was measured rather than assumed.
+One completed turn, from an extension loaded with `-e` on a real `anthropic/claude-haiku-4-5` call:
+
+```text
+agent_start
+turn_end
+agent_end willContinue=undefined
+agent_settled isIdleType=function isIdle=true
+```
+
+`agent_end` fires BEFORE the settle completes, so it is deliberately not the terminal signal; `agent_settled` confirmed by `ctx.isIdle()` is, source `atomic-ext`.
+
+### Rendered busy token, delivery only
+
+atomic's mid-turn footer is the bare literal `esc to interrupt`, and it REPLACES the model/cwd row rather than sitting beside it:
+
+```text
+# mid-turn
+esc to interrupt
+# after the turn, same row
+(anthropic) claude-haiku-4-5 low • /private/tmp/atomlab/proj
+```
+
+Pi's `Working...` signature must not be borrowed: atomic's spinner text is randomized from a whimsical set, so the Pi token would never match, and omp's bracketed `esc` does not match atomic's unbracketed phrase either.
+This row is a DELIVERY guard only; the recorded worker state comes from the busy source above.
+
+### Composer
+
+atomic draws Pi's separated region - an input row between two full-width rules - but with claude's `❯` agent glyph on the input row, so the shared classifier proves it through the bare-glyph rule and needs no identity gate.
+Verified live against the real `fm_tmux_composer_state` on a running atomic pane: an idle composer read `empty`, a composer holding restored text read `pending`, and `C-u` returned it to `empty`, while `fm_tmux_composer_identity` returned nonzero throughout.
+
+`ps -o comm=` cannot identify atomic on this build, which is why no identity arm was added:
+
+```text
+$ ps -o pid=,pgid=,tpgid=,comm= -t ttys028
+94172 94172 94172 zsh
+94175 94172 94172 node
+$ ps -o comm=,args= -p 94175
+node atomic
+```
+
+The nix launcher `exec`s node and atomic's `process.title` rewrite lands in `argv[0]`.
+`bin/fm-session-lock-lib.sh`'s ancestry reads both `comm` and `argv[0]`, so identity detection is unaffected; `fm_tmux_composer_identity` reads `comm` only, so an `atomic)` arm there would never match.
+
+### Control plane
+
+A single Escape cancels a running turn and leaves the agent running; the pane printed `Took 11s`, `Request aborted`, and returned to its prompt row.
+A steer submitted while the worker was BUSY is queued, and the cancel RESTORES it into the composer as real text, so an interrupt needs `C-u`:
+
+```text
+# queued during the turn, then Escape
+❯ FMSTEER-QUEUED-LINE
+# after C-u
+❯
+```
+
+That restored text classified `pending` and `C-u` returned the pane to `empty`, so the clear is verified through the real classifier rather than by eye.
+A second Escape is never sent: atomic's default double-Escape action on an idle empty composer opens the session-tree overlay.
+
+`/exit` submitted on one Enter despite the 228-entry slash popup, and the pane survived:
+
+```text
+To resume this session: atomic --session 01a01b91-ee67-7ed8-aec5-ed6d9090ec83
+SHELL_ALIVE
+```
+
+#### Interrupt acknowledgement
+
+A cancelled turn appends an aborted assistant record to the session transcript, which is what `fm_control_interrupt_ack_source` claims for atomic:
+
+```text
+{"type":"message",...,"message":{"role":"toolResult",...,"content":[{"type":"text","text":"Command aborted"}],"isError":true}}
+{"type":"message",...,"message":{"role":"assistant","content":[],...,"stopReason":"aborted",...,"errorMessage":"Request aborted"}}
+```
+
+The transcript filename carries the `--session-id` this launch pinned even though the interactive host regenerates the header id, which is what makes the per-task binding deterministic:
+
+```text
+$ ls ~/.atomic/agent/sessions/--private-tmp-atomlab-proj--/
+2026-08-19T19-49-03-025Z_fm-probe-001.jsonl
+```
+
+The file appears only once the first assistant message exists, so an interrupt before that has nothing to read and the claim is reported `unconfirmed`.
+
+### Standing coverage
+
+`tests/fm-atomic-adapter.test.sh` pins this layer portably, `tests/fm-atomic-harness.test.sh` owns identity, and `tests/fm-atomic-adapter-live-e2e.test.sh` (opt-in, `FM_ATOMIC_LIVE_E2E=1`) is the live regression for the facts above that only real atomic can answer.
+
+### Refresh commands
+
+```sh
+FM_ATOMIC_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-atomic-adapter-live-e2e.test.sh
+FM_COMPOSER_MATRIX_LIVE=1 bin/fm-test-run.sh tests/fm-composer-matrix-live-e2e.test.sh
+bin/fm-test-run.sh tests/fm-atomic-adapter.test.sh tests/fm-atomic-harness.test.sh \
+  tests/fm-busy-adapter-wiring.test.sh tests/fm-composer-lib.test.sh tests/fm-control.test.sh
+```
