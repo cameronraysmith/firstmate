@@ -205,6 +205,9 @@ Cursor delivery confirmation is verified on tmux and Herdr only.
 On Zellij, cmux, and Orca a Cursor steer lands, but `fm-send` reports delivery unconfirmed and exits non-zero because their shared submit core does not consult the busy footer; [runtime backend verification](verification/runtime-backends.md#cursor-agent-cli) owns the evidence and transcript-state boundary.
 muse is verified for crewmate and scout launches ONLY, and `fm-spawn.sh` refuses it for a secondmate, because muse ships no usable hook surface for a primary session's turn-end supervision; [`docs/verification/muse.md`](verification/muse.md) owns that evidence.
 muse also needs a worker-reachable credential before spawning, and the portable fleet path is the `<config>/muse/auth.json` credential stored by `muse login`, because a caller-only `META_API_KEY` does not cross a long-lived backend daemon.
+atomic is likewise verified for crewmate and scout launches ONLY, and `fm-spawn.sh` refuses it for a secondmate: its extension API is Pi's and the capability is there, but the secondmate launch surface is unbuilt for it, so the refusal is about unbuilt wiring rather than a missing capability.
+An atomic launch always carries `-na`, which makes atomic ignore project-local files: atomic scans `.pi/` as well as its own `.atomic/`, so without it a worktree carrying a `.pi/extensions` tree would load those extensions into the worker, and a task worktree atomic has never seen would block on its trust dialog.
+atomic also needs the model written in the canonical `provider/id` form described under crew dispatch profiles below, because only `--provider` pins a provider there; `fm-spawn.sh` refuses a bare id and preflights the pair against `atomic --list-models`, which lists only providers holding a usable credential.
 New harnesses get verified through a supervised trial task before joining the set.
 The verified adapter evidence - each harness's busy-state source, interrupt and exit behavior, skill-invocation syntax, and per-harness quirks - lives in [`.agents/skills/harness-adapters/SKILL.md`](../.agents/skills/harness-adapters/SKILL.md).
 The executable interrupt and exit mechanics live in [`bin/fm-control-lib.sh`](../bin/fm-control-lib.sh), and [`docs/agent-control.md`](agent-control.md) owns their lifecycle-control architecture.
@@ -270,6 +273,9 @@ Both `use` and the optional top-level `default` accept either one profile object
 The single-object form stays fully backward-compatible, and every profile needs `harness`.
 Profile `model` and `effort` fields and rule `why` are optional.
 An omitted model or effort means the selected harness uses its own default for that axis.
+A profile `model` is written in the canonical `provider/id` form - `"anthropic/claude-opus-5"`, `"zai/glm-5.3"` - never a bare id, so a recorded model means the same thing tomorrow as today.
+Resolution order is a property of each runtime and they do not agree: on atomic a bare `claude-sonnet-4.5` resolves to a provider with no credential on the host and the worker dies at startup.
+Each adapter then does what its own runtime requires with that string: atomic splits it into `--provider` and `--model`, omp accepts the combined form verbatim, and the remaining adapters still take the value as written pending their own verification.
 Every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
 If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 If a selected profile carries an effort value the chosen harness does not accept, `fm-spawn.sh` records the requested `effort=` in task meta for traceability but omits the launch flag, and bootstrap reports the invalid harness/effort pair as a `CREW_DISPATCH` diagnostic when it is visible in the file.
