@@ -48,15 +48,15 @@ test_omp_marker_outranks_retained_claudecode() {
   [ "$out" = omp ] || fail "OMPCODE with a retained CLAUDECODE must detect omp, got '$out'"
   out=$(OMPCODE=1 "$HARNESS")
   [ "$out" = omp ] || fail "OMPCODE alone must detect omp, got '$out'"
-  out=$(env -u OMPCODE CLAUDECODE=1 "$HARNESS")
+  out=$(env -u OMPCODE -u ATOMIC_CODING_AGENT CLAUDECODE=1 "$HARNESS")
   [ "$out" = claude ] || fail "CLAUDECODE without OMPCODE must still detect claude, got '$out'"
-  out=$(OMPCODE=true CLAUDECODE=1 "$HARNESS")
+  out=$(env -u ATOMIC_CODING_AGENT OMPCODE=true CLAUDECODE=1 "$HARNESS")
   [ "$out" = claude ] || fail "an inexact OMPCODE value must not claim the omp identity, got '$out'"
   pass "fm-harness: omp's exact marker outranks a retained CLAUDECODE"
 }
 
 test_omp_ancestry_is_the_exact_process_name() {
-  out=$(env -u CLAUDECODE -u OMPCODE -u PI_CODING_AGENT -u GROK_AGENT \
+  out=$(env -u CLAUDECODE -u OMPCODE -u ATOMIC_CODING_AGENT -u PI_CODING_AGENT -u GROK_AGENT \
     "$OMP_BIN_DIR/omp" -c 'r=$("$1"); printf "%s" "$r"' _ "$HARNESS")
   [ "$out" = omp ] || fail "fm-harness.sh under an omp-named ancestor reported '$out', expected omp"
   pass "fm-harness: omp ancestry is detected through the exact process name"
