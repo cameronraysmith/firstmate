@@ -369,20 +369,38 @@ prepare_interrupt_ack() {
       [ -n "$INTERRUPT_ACK_LOG" ] || return 0
       INTERRUPT_ACK_RUN=$(fm_busy_muse_active_run_id "$INTERRUPT_ACK_LOG" 2>/dev/null || true)
       ;;
+    atomic-session-aborted)
+      # INTERRUPT_ACK_RUN carries the transcript's byte length BEFORE the key is
+      # delivered, which is what scopes the claim to this interrupt: atomic
+      # APPENDS its aborted record, so only bytes after this offset can answer.
+      INTERRUPT_ACK_LOG=$(fm_control_atomic_session_file "$STATE" "$ID" 2>/dev/null || true)
+      [ -n "$INTERRUPT_ACK_LOG" ] || return 0
+      INTERRUPT_ACK_RUN=$(fm_control_atomic_transcript_size "$INTERRUPT_ACK_LOG" 2>/dev/null || true)
+      ;;
   esac
 }
 
 interrupt_cancel_claim() {
   local elapsed=0 terminal=
   case "$INTERRUPT_ACK_SOURCE:$INTERRUPT_ACK_RUN" in
-    muse-session-terminal:?*) ;;
+    muse-session-terminal:?*|atomic-session-aborted:?*) ;;
     *) printf 'unconfirmed'; return 0 ;;
   esac
   while :; do
-    terminal=$(fm_busy_muse_run_terminal "$INTERRUPT_ACK_LOG" "$INTERRUPT_ACK_RUN" 2>/dev/null || true)
-    case "$terminal" in
-      cancelled) printf 'confirmed'; return 0 ;;
-      ?*) printf 'unconfirmed'; return 0 ;;
+    case "$INTERRUPT_ACK_SOURCE" in
+      atomic-session-aborted)
+        if fm_control_atomic_aborted_since "$INTERRUPT_ACK_LOG" "$INTERRUPT_ACK_RUN"; then
+          printf 'confirmed'
+          return 0
+        fi
+        ;;
+      *)
+        terminal=$(fm_busy_muse_run_terminal "$INTERRUPT_ACK_LOG" "$INTERRUPT_ACK_RUN" 2>/dev/null || true)
+        case "$terminal" in
+          cancelled) printf 'confirmed'; return 0 ;;
+          ?*) printf 'unconfirmed'; return 0 ;;
+        esac
+        ;;
     esac
     awk -v e="$elapsed" -v t="$SETTLE_WAIT" 'BEGIN{exit !(e < t)}' || break
     sleep "$POLL"
