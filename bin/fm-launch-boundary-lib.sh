@@ -34,8 +34,18 @@
 # SHELL, TMUX, TMPDIR, and friends, which are the pane's own environment and
 # never firstmate's to clear. Operator CONFIGURATION is likewise untouched
 # (CLAUDE_CONFIG_DIR, subagent model, feature toggles), because clearing a
-# deliberate setting would be a different bug. TRACEPARENT is deliberately
-# absent even though claude lists it: firstmate propagates a task-scoped
+# deliberate setting would be a different bug. The atomic entries follow the
+# same split: atomic's identity marker, its session bindings, and the
+# PI_SESSION_* compatibility aliases it writes for those same bindings all
+# belong here, and the alias has to go with the canonical name or the leak
+# simply survives under its other spelling. ATOMIC_REASONING_LEVEL and its
+# PI_REASONING_LEVEL alias are the analogue of CLAUDE_EFFORT, already in the
+# set. ATOMIC_PROVIDER, ATOMIC_MODEL and their aliases are deliberately absent:
+# they are neither identity nor session binding, and atomic rewrites them per
+# tool call rather than inheriting them as ambient state.
+# ATOMIC_SKIP_VERSION_CHECK is operator configuration exported by the local
+# wrapper, never an identity marker. TRACEPARENT is deliberately absent even
+# though claude lists it: firstmate propagates a task-scoped
 # carrier through this same launch under docs/trace-context.md, and unsetting
 # it here would silently disable that.
 #
@@ -57,7 +67,14 @@ CLAUDE_PID
 CLAUDE_EFFORT
 AI_AGENT
 OMPCODE
+ATOMIC_CODING_AGENT
+ATOMIC_SESSION_ID
+ATOMIC_SESSION_FILE
 PI_CODING_AGENT
+PI_SESSION_ID
+PI_SESSION_FILE
+ATOMIC_REASONING_LEVEL
+PI_REASONING_LEVEL
 FM_PI_HARNESS
 GROK_AGENT
 CURSOR_AGENT
