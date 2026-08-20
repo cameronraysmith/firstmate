@@ -627,6 +627,7 @@ It runs crewmate and scout work only; `bin/fm-spawn.sh` refuses `--secondmate` o
 | Binary | `atomic` from `PATH`, resolved to an absolute path so the model preflight probes exactly what the pane launches; a missing install refuses the spawn. The nix launcher `exec`s `node`, so the LIVE process name is `node` with `argv[0]` rewritten to `atomic` - see "There is no process-name identity" below. |
 | Launch | A positional prompt, the Pi/Grok shape, so the brief rides the launch command. |
 | Models | The canonical `provider/id` pair is SPLIT into `--provider <provider> --model <id>`, and the provider prefix is load-bearing rather than decorative: `--model provider/id` does NOT pin a provider, and a bare id resolves through atomic's own order to whichever provider sorts first. `bin/fm-spawn.sh` refuses a model with no provider prefix and preflights the pair against `atomic --list-models`. |
+| Control liveness on herdr | atomic is absent from herdr's `agent start --kind` list, so its registry always answers `agent_not_found` for an atomic pane and the recovery-grade classifier would read a live worker `dead`. `bin/backends/herdr.sh` therefore consults firstmate's own evidence - a generation-bound busy record from `atomic-ext`, or the pane's foreground process naming the atomic executable - and reports `alive` on positive proof only; every herdr-registerable harness and every evidence-free read keeps its prior classification. See "Herdr's registry cannot see atomic" below. |
 | Busy state | The firstmate-owned per-task extension's `agent_start` (busy) and `agent_settled` confirmed by `ctx.isIdle()` (idle), source `atomic-ext` - Pi's predicate, measured on atomic rather than assumed. |
 | Exit command | `/exit`; one Enter submits it even though a 228-entry slash popup is open. The pane survives and prints `To resume this session: atomic --session <headerId>`. |
 | Interrupt | Single Escape, followed by `C-u`: atomic restores every message QUEUED during the turn into the composer as real text, which is exactly what a firstmate steer sent to a busy worker becomes. Never send a second Escape - on an idle empty composer atomic's default double-Escape action opens the session-tree overlay. `bin/fm-control-lib.sh` DOES claim a cancellation here, from the transcript record below. |
@@ -674,6 +675,15 @@ The effort clamp is silent and bidirectional: a requested `medium` runs at `high
 Firstmate passes the request and records it; whether the ladder should be gated against each model's advertised levels is `atomic-effort-clamp`.
 And atomic loads the OPERATOR's `~/.pi/agent/AGENTS.md` resources into every session, which `-na` does not touch because it is a HOME-level resource rather than a project-local file.
 That is muse's foreign-personal-context shape without muse's kill switch, and it is not resolved here.
+
+### Herdr's registry cannot see atomic
+
+`herdr agent start --kind` accepts exactly pi, claude, codex, gemini, cursor, devin, agy, cline, omp, mastracode, opencode, copilot, kimi, kiro, droid, amp, grok, hermes, kilo, qodercli, and maki (read from the installed herdr 0.8.0 client's `agent start --help`, 2026-08-19); atomic is not a kind, so herdr can never register an atomic pane and `agent get` always answers `agent_not_found`.
+Reproduced live the same day: a working atomic crewmate on the herdr backend - spinner running, `fm-crew-state.sh` reporting `working ... harness busy (atomic-ext)` - read as `dead`, so `fm-control.sh` interrupt refused a provably live agent.
+The fix lives in the classifier, not in any verb: when the registry answers `agent_not_found` AND the recorded harness is one herdr structurally cannot register, firstmate's own positive evidence may carry `alive`.
+`dead` and `missing` still license relaunching, so the fallback demands positive proof - a current-generation busy record from the harness's own adapter, or the foreground process group naming the recorded harness's executable - and everything else keeps refusing.
+muse is absent from the same kind list but no muse-on-herdr worker has ever been exercised, so it deliberately does not inherit the fallback.
+
 
 `docs/verification/runtime-backends.md` "atomic" owns the dated commands and output.
 The standing regressions are `tests/fm-atomic-harness.test.sh` (identity) and `tests/fm-atomic-adapter.test.sh` (this layer), plus the opt-in live guards `tests/fm-atomic-adapter-live-e2e.test.sh` and `tests/fm-composer-matrix-live-e2e.test.sh`.
