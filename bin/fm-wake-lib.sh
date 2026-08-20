@@ -68,18 +68,45 @@ fm_pid_identity() {
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
 }
 
+# Print the path's mtime in whole seconds since the epoch, or fail. Validating
+# the answer is the point: satisfying the dialect probe only proves the format
+# flag is accepted, not that the field came back, so a stat can still answer
+# with a filesystem dump, a wrong field, or nothing at all. Every caller feeds
+# this straight into arithmetic, where an empty answer is read as epoch zero and
+# renders a just-written file as decades stale, and a non-numeric one aborts the
+# expression and leaves the caller comparing an empty value as an integer.
 fm_path_mtime() {
+  local mtime
   if fm_stat_is_gnu; then
-    stat -c %Y "$1" 2>/dev/null
+    mtime=$(stat -c %Y "$1" 2>/dev/null) || return 1
   else
-    stat -f %m "$1" 2>/dev/null
+    mtime=$(stat -f %m "$1" 2>/dev/null) || return 1
   fi
+  case "$mtime" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$mtime"
 }
 
+# Age of a path in whole seconds, for callers comparing it against a grace.
+# Total by construction: it prints exactly one non-negative integer on every
+# path, so no caller can be handed an empty value to compare. The sentinel
+# stands for "no usable mtime" and sits far past every grace in the fleet, so an
+# unmeasurable path reads as stale and drives callers toward repair instead of
+# toward trusting it. That direction is wrong for exactly one caller,
+# fm_lock_mid_acquire_is_fresh, which measures the mtime itself and says why.
 fm_path_age() {
-  local path=$1 m
-  m=$(fm_path_mtime "$path") || { echo 999999; return; }
-  echo $(( $(date +%s) - m ))
+  local path=$1 unmeasured=999999 mtime now age
+  mtime=$(fm_path_mtime "$path") || { echo "$unmeasured"; return; }
+  now=$(date +%s)
+  case "$now" in
+    ''|*[!0-9]*) echo "$unmeasured"; return ;;
+  esac
+  age=$((now - mtime))
+  # A future mtime already read as fresh against every grace, so clamping keeps
+  # the printed figure sane without moving any verdict.
+  [ "$age" -ge 0 ] || age=0
+  echo "$age"
 }
 
 # fm_watcher_lock_unheld <state>
@@ -446,17 +473,39 @@ fm_lock_remove_path() {
   rmdir "$lockdir" 2>/dev/null
 }
 
+# Is this lock still mid-acquire - inside the window between the lock path
+# existing and its owner publishing a pid, where an empty pid is expected rather
+# than evidence of a dead owner?
+#
+# The verdict rests entirely on the lock path's own age, so an age that cannot be
+# measured is not evidence in either direction, and the two ways of having no
+# age answer differently. Absence is determinate: a lock path that is gone holds
+# nothing, so no one can be mid-acquire on it and the caller is free to proceed.
+# An unmeasurable age on a lock path that EXISTS is the indeterminate case, and
+# the only answer there that cannot break the singleton is to leave the lock
+# alone - declining costs a retry, while stealing a lock whose owner is still
+# publishing hands two processes the same lock. Callers wait rather than steal
+# for as long as the age stays unreadable, which is the intended trade.
 fm_lock_mid_acquire_is_fresh() {
-  local lockdir=$1 pid=$2 mid_acquire_stale
+  local lockdir=$1 pid=$2 mid_acquire_stale mtime now
   case "$pid" in
-    ''|*[!0-9]*)
-      mid_acquire_stale=$FM_LOCK_STALE_AFTER
-      [ "$mid_acquire_stale" -lt 2 ] && mid_acquire_stale=2
-      [ "$(fm_path_age "$lockdir")" -lt "$mid_acquire_stale" ]
-      return
-      ;;
+    ''|*[!0-9]*) ;;
+    *) return 1 ;;
   esac
-  return 1
+  mid_acquire_stale=$FM_LOCK_STALE_AFTER
+  case "$mid_acquire_stale" in
+    ''|*[!0-9]*) mid_acquire_stale=2 ;;
+  esac
+  [ "$mid_acquire_stale" -lt 2 ] && mid_acquire_stale=2
+  if ! mtime=$(fm_path_mtime "$lockdir"); then
+    [ -e "$lockdir" ] || [ -L "$lockdir" ] || return 1
+    return 0
+  fi
+  now=$(date +%s)
+  case "$now" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$((now - mtime))" -lt "$mid_acquire_stale" ]
 }
 
 fm_lock_recheck_stale_owner() {
@@ -737,6 +786,16 @@ fm_lock_try_acquire() {
     return 0
   fi
 
+  # Only a lock path that EXISTS can be stolen, and the steal path below
+  # recurses into "$lockdir.steal". When creation failed for an environmental
+  # reason instead of contention - the parent directory is gone, unwritable, or
+  # out of space - every level of that chain fails identically, so the recursion
+  # never terminates: it exhausts the shell's stack and kills the process with
+  # SIGSEGV rather than reporting an unavailable lock.
+  if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
+    return 1
+  fi
+
   # Compare against ${BASHPID:-$$} inline, never via a command substitution:
   # $() forks a subshell whose BASHPID is not this frame's pid.
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
@@ -828,9 +887,19 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# A lock already recorded to THIS process is not contention, and waiting on it
+# can never end: a single-threaded shell cannot reach its own release while it is
+# blocked here. That state is reachable whenever a signal trap exits out of a
+# critical section into cleanup that re-enters the same lock, so treat the
+# caller's precondition - this process holds the lock - as already satisfied.
+# fm_lock_try_acquire is the non-blocking probe and keeps reporting a self-held
+# lock as unavailable.
 fm_lock_acquire_wait() {
   local lockdir=$1
   while ! fm_lock_try_acquire "$lockdir"; do
+    if [ -n "${FM_LOCK_HELD_PID:-}" ] && [ "$FM_LOCK_HELD_PID" = "${BASHPID:-$$}" ]; then
+      return 0
+    fi
     sleep 0.1
   done
 }
