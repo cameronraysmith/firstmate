@@ -35,13 +35,8 @@ trap cleanup EXIT
 
 mkdir -p "$TMP_ROOT/.pi/extensions/lib" "$TMP_ROOT/.omp/extensions" \
   "$TMP_ROOT/node_modules/@earendil-works" "$TMP_ROOT/node_modules/@types"
-cp "$ROOT/.pi/extensions/fm-calm.ts" "$TMP_ROOT/.pi/extensions/fm-calm.ts"
 cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$TMP_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-assistant-layout.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-visibility.ts"
-cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$TMP_ROOT/.pi/extensions/lib/fm-calm-working-ship.ts"
 cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$TMP_ROOT/.pi/extensions/lib/fm-operational-input.ts"
 cp "$ROOT/.omp/extensions/fm-primary-omp-watch.ts" "$TMP_ROOT/.omp/extensions/fm-primary-omp-watch.ts"
 cp "$ROOT/.omp/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/.omp/extensions/fm-primary-turnend-guard.ts"
