@@ -20,6 +20,7 @@ It runs crewmate and scout work only; `../../../bin/fm-spawn.sh` refuses `--seco
 | Autonomy | No flag, and none exists to look for: atomic executes tools with NO approval gate at all. |
 | Trust dialog | A BLOCKING five-option `Trust project folder?` dialog on any project folder atomic has not been trusted with, whose first and preselected option is a PERSISTENT trust. `-na` suppresses it entirely, which is what firstmate relies on - accepting it with Enter would write a disposable task worktree into atomic's persistent `~/.atomic/agent/trust.json`. |
 | Primary supervision | None built. Crewmate and scout only; `--secondmate` refused, on omp's unbuilt-wiring reason rather than muse's incapability. |
+| Control liveness on herdr | atomic is absent from herdr's `agent start --kind` list, so its registry always answers `agent_not_found` for an atomic pane and the recovery-grade classifier would read a live worker `dead`. `../../../bin/backends/herdr.sh` therefore consults firstmate's own evidence - a generation-bound busy record from `atomic-ext`, or the pane's foreground process naming the atomic executable - and reports `alive` on positive proof only; every herdr-registerable harness and every evidence-free read keeps its prior classification. See "Herdr's registry cannot see atomic" below. |
 | Environment marker | `ATOMIC_CODING_AGENT=true` plus `AI_AGENT=atomic`, and never `PI_CODING_AGENT`. See "Detection" above; the `AI_AGENT` conjunct is what keeps a nested worker from being misread. |
 | Composer | Pi's separated region - an input row between two full-width rules - but atomic draws claude's `❯` agent glyph on that row, so the shared classifier proves it through the bare-glyph rule and needs NO identity gate, unlike pi and omp. |
 | Model flag | `--provider <provider> --model <id>`, split from the canonical `provider/id` pair. Only `--provider` hard-pins a provider, and `--provider <known> --model <unmatched>` merely warns, launches, and then dies on a provider 404, so `../../../bin/fm-spawn.sh` preflights the pair against `atomic --list-models` and refuses before endpoint creation. |
@@ -55,6 +56,14 @@ That costs identity DETECTION nothing, because `../../../bin/fm-session-lock-lib
 But `fm_tmux_composer_identity` reads `comm` only, so atomic gets NO arm there - and it needs none, because its composer carries the `❯` glyph, which is positive container proof on its own.
 Do not add a `comm`-based identity arm for atomic on the strength of the process-title rewrite: it would never match while reading like a working signal.
 The live guard asserts the pairing directly (identity probe returns nothing, verdict is still `empty`), so a future atomic that drops the glyph for pi's glyph-less region fails loudly instead of degrading to `unknown`.
+
+## Herdr's registry cannot see atomic
+
+`herdr agent start --kind` accepts exactly pi, claude, codex, gemini, cursor, devin, agy, cline, omp, mastracode, opencode, copilot, kimi, kiro, droid, amp, grok, hermes, kilo, qodercli, and maki (read from the installed herdr 0.8.0 client's `agent start --help`, 2026-08-19); atomic is not a kind, so herdr can never register an atomic pane and `agent get` always answers `agent_not_found`.
+Reproduced live the same day: a working atomic crewmate on the herdr backend - spinner running, `../../../bin/fm-crew-state.sh` reporting `working ... harness busy (atomic-ext)` - read as `dead`, so `../../../bin/fm-control.sh` interrupt refused a provably live agent.
+The fix lives in the classifier, not in any verb: when the registry answers `agent_not_found` AND the recorded harness is one herdr structurally cannot register, firstmate's own positive evidence may carry `alive`.
+`dead` and `missing` still license relaunching, so the fallback demands positive proof - a current-generation busy record from the harness's own adapter, or the foreground process group naming the recorded harness's executable - and everything else keeps refusing.
+muse is absent from the same kind list but no muse-on-herdr worker has ever been exercised, so it deliberately does not inherit the fallback.
 
 ## Two captain decisions this adapter deliberately does not settle
 
