@@ -3,7 +3,7 @@ name: harness-adapters
 description: >-
   Agent-only reference for firstmate harness operations.
   Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
-  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, muse, and omp.
+  Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, cursor, muse, omp, and atomic.
 user-invocable: false
 metadata:
   internal: true
@@ -49,9 +49,9 @@ If the captain asks for a new harness, propose verifying it first: spawn a trivi
 omp (oh-my-pi) sets `OMPCODE=1` and keeps none of Pi's own markers, so `bin/fm-harness.sh` reports its own `omp` identity ahead of any retained `CLAUDECODE`, and the session-lock ancestry table anchors the exact process name `omp`.
 `CLAUDECODE=1` on an omp tool process is omp's OWN compatibility export, not an inherited value, verified from a scrubbed environment on omp 17.3.5, which is why that ordering is load-bearing rather than incidental.
 omp is deliberately not aliased to the pi family despite being a Pi fork: its config root is `~/.omp/agent`, and its lifecycle events, composer shape, and busy predicate all differ from Pi's.
-atomic (a Pi fork) derives its marker from its own app name and sets `ATOMIC_CODING_AGENT=true` alongside `AI_AGENT=atomic`, and it deliberately never writes `PI_CODING_AGENT`, so `bin/fm-harness.sh` reports `atomic` ahead of any retained `CLAUDECODE` or leaked Pi marker, and the session-lock ancestry table anchors the exact process name `atomic`.
+atomic (a Pi fork) derives its marker from its own app name and sets `ATOMIC_CODING_AGENT=true` alongside `AI_AGENT=atomic`, and it deliberately never writes `PI_CODING_AGENT`, so `bin/fm-harness.sh` reports `atomic` ahead of any retained `CLAUDECODE` or leaked Pi marker, and the session-lock ancestry table anchors the exact process name `atomic`, which it matches through `argv[0]` because the nix launcher's `comm` is `node`.
 The `AI_AGENT` conjunct is what keeps the reverse direction correct: the `*_CODING_AGENT` markers are sticky under nesting, so a claude or pi worker launched under atomic inherits `ATOMIC_CODING_AGENT` while `AI_AGENT` still names its own harness.
-Identity was verified live on atomic 0.9.13, 2026-08-18; the full adapter - launch profile, busy source, composer, control plane - remains unverified, so never dispatch an atomic crewmate yet.
+atomic is deliberately not aliased to the pi family either: its config root is `~/.atomic/agent`, it renamed Pi's `grep` tool to `search`, and it scans `.pi/` in addition to its own tree, which is a hazard rather than an inheritance (see the atomic section below).
 Within the Pi family, only the exact launch-boundary marker `FM_PI_HARNESS=pi-signed` alongside `PI_CODING_AGENT=true` selects the signed identity; unmarked shared launcher ancestry remains `pi`.
 `bin/fm-harness.sh crew` resolves the effective crewmate harness from `config/crew-harness` (absent or `default` -> own).
 `bin/fm-harness.sh secondmate` resolves the secondmate-launch harness through the chain `config/secondmate-harness` -> `config/crew-harness` -> own, so an unset `config/secondmate-harness` matches the crew harness.
@@ -73,6 +73,7 @@ Kimi is outside the primary turn-end guard scope, while `docs/turnend-guard.md` 
 muse is CREWMATE/SCOUT ONLY and has no primary integration at all: its plugin engine (its only hook surface) is disabled in the default build, and its Claude-compatible hook dialect names `asyncRewake` and model reawakening as explicitly unsupported, which is exactly what a firstmate primary's turn-end supervision needs.
 `bin/fm-spawn.sh` refuses a `--secondmate` launch on muse for that reason.
 omp runs a verified PRIMARY through its own tracked extension pair, but `bin/fm-spawn.sh` still refuses `--secondmate` on omp: a secondmate home receives its primary extensions as absolute `-e` paths composed at launch, and neither that template nor the remote secondmate allowlists are built or measured for omp.
+atomic is CREWMATE/SCOUT ONLY for a different reason again: its extension API is Pi's and the capability is there, but no firstmate primary protocol is built on it, so `bin/fm-spawn.sh` refuses `--secondmate` on atomic rather than launching supervision that cannot be armed.
 cursor HAS a full hooks system: 20 lifecycle events configurable at project scope in `.cursor/hooks.json`, plus a Claude-Code compatibility name map that also loads `<project>/.claude/settings.json`.
 Its `stop` step cannot block - exit 2 there is a silent no-op - so `bin/fm-turnend-guard-cursor.sh` parks the turn boundary on the watcher and returns one bounded `followup_message` instead.
 Because Cursor loads the tracked Claude settings too, every Claude-shaped entrypoint whose event Cursor covers stands down on a Cursor-delivered payload.
@@ -143,6 +144,7 @@ The supported launch-profile flags below are verified locally; each row records 
 | kimi | `--model <model>` | none | Verified 2026-07-25 on Kimi Code CLI 0.29.1. |
 | cursor | `--model <model>` | none | Verified 2026-08-11 on Cursor Agent CLI 2026.08.11-e8db854. No effort flag exists, so firstmate records the requested effort in task metadata and omits it from the launch. Validate ids against `cursor-agent --list-models` rather than assuming a low/medium/high family: the live catalog carries only `-high` Grok ids. |
 | muse | `--model <model>` | `--reasoning-effort <low\|medium\|high\|xhigh>`, and `ultra` only for an explicit `max` | Verified 2026-08-05 on Muse Code 0.1.0-R708.1. The flag accepts `none\|minimal\|low\|medium\|high\|xhigh\|ultra` and defaults to `high`. `ultra` is muse's max-class level, so it is reachable only through an explicit captain `max`, never from the generic fallback; `none` and `minimal` sit below the shared vocabulary and stay unreachable. |
+| atomic | `--provider <provider> --model <id>`, split from the canonical `provider/id` pair | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-08-19 on atomic 0.9.13. `--thinking` accepts `off\|minimal\|low\|medium\|high\|xhigh\|max`, so the shared vocabulary maps across. Two hazards, both silent: an out-of-range LEVEL is accepted with a warning and falls back to the settings default with exit 0, and the accepted level is then CLAMPED to the selected model's supported set in either direction (a requested `medium` ran at `high` on `kimi-coding/k3`). The MODEL axis is the dangerous one: only `--provider` hard-pins a provider, and `--provider <known> --model <unmatched>` merely warns, launches, and then dies on a provider 404, so `fm-spawn` preflights the pair against `atomic --list-models` and refuses before endpoint creation. |
 
 The concrete `harness` field owns adapter identity independently of the model provider: `harness=pi` with `model=xai/grok-*` is Pi using xAI, not `harness=grok`, and does not require Grok CLI login; `harness=grok` remains the standalone Grok Build CLI adapter.
 Likewise, `harness=cursor` with `model=cursor-grok-4.5-*` is Cursor Agent CLI routing a Grok model, not the xAI Grok Build `grok` harness.
@@ -163,6 +165,7 @@ Use the discovery surface in the current authenticated environment because suppo
 | grok | Run `grok models`, which lists the models available to the current Grok installation and account. |
 | kimi | Run `kimi provider list --json`, which lists the current provider and model configuration. |
 | cursor | Run `cursor-agent --list-models` (or the legacy `agent --list-models`), which lists the ids available to the current Cursor account. `cursor` is not the CLI name. |
+| atomic | Run `atomic --list-models [search]`, which prints `<provider> <model> <context> <max-out> <thinking> <images>` rows. It lists ONLY providers that currently hold a usable credential, so an absent pair can mean either an unknown model or an unauthenticated provider; it needs no network. |
 
 For an unfamiliar harness or model namespace, establish support and provider identity from that harness's authoritative CLI help, model listing, or current documentation rather than guessing from a name or prefix.
 A listing that reaches the account and does not contain the model is concrete evidence the model is unsupported: block that candidate and quote the result.
@@ -181,6 +184,7 @@ Natural language is acceptable if uncertain.
 - codex: `$<skill>`, for example `$no-mistakes`; `/<skill>` is claude-only and codex rejects it as "Unrecognized command".
 - opencode: no separate verified skill invocation beyond normal slash-command behavior; use natural language if the exact skill command is uncertain.
 - pi and pi-signed: no separate verified skill invocation beyond normal command behavior; use natural language if the exact skill command is uncertain.
+- atomic: no verified skill invocation. A slash popup exists with 228 entries, but firstmate's skills are not among them (`/no-mis` matched nothing), so use natural language naming the skill.
 - omp: `/<skill>`. Typing `/` opens a slash-autocomplete popup, but one Enter submitted `/exit` and exited the application, so no popup settle is scoped to omp; the shared submit retry remains the safety net if a future argument-taking command behaves like grok's.
 - grok: `/<skill>`, for example `/no-mistakes` (same form as claude). Verified end to end: grok discovers the user-level `no-mistakes` skill, `/no-mistakes` invokes it, and grok drives a real `no-mistakes axi run`. Like codex's `$`/`/` popups, typing `/<skill>` opens grok's slash-autocomplete, so a too-fast Enter selects the popup entry instead of sending, and for an argument-taking command (like `/no-mistakes`'s optional task-first argument) that first Enter only expands the popup selection into an argument-hint placeholder rather than submitting - a genuine second Enter is required (see the grok section below for the 2026-07-03 incident and fix). `fm_tmux_submit_core`'s retried Enter (used by `fm-send` on the tmux backend) handles this through the shared structural composer classifier; the herdr backend needed a dedicated fix (`fm_backend_herdr_composer_state`, docs/herdr-backend.md) because its prior delta-based verification false-positived on that same popup-close content change.
 - kimi: `/<skill>`, for example `/no-mistakes`.
@@ -611,3 +615,65 @@ Wakes use `pi.sendUserMessage(content)` with NO options object.
 
 `docs/verification/runtime-backends.md` "omp (oh-my-pi)" owns the dated commands and output.
 The standing regressions are `tests/fm-omp-primary-extensions.test.sh` and, opt-in, `tests/fm-omp-primary-live-e2e.test.sh`; the omp pair is strict-typechecked by `tests/fm-pi-primary-types.test.sh` despite that file's Pi-shaped name.
+
+## atomic (VERIFIED CREWMATE AND SCOUT 2026-08-19 on tmux, atomic 0.9.13)
+
+atomic is a Pi fork, and unlike omp its extension API really is Pi's: the same events fire and the Pi busy predicate works unchanged.
+That similarity is the hazard, because atomic scans `.pi/` as well as `.atomic/`, so the launch has to fence Pi's tree off deliberately.
+It runs crewmate and scout work only; `bin/fm-spawn.sh` refuses `--secondmate` on atomic because that launch wiring is unbuilt, and no `docs/supervision-protocols/` protocol exists for it yet, so a firstmate primary detected as atomic falls back to the `unknown` protocol.
+
+| Fact | Value |
+|---|---|
+| Binary | `atomic` from `PATH`, resolved to an absolute path so the model preflight probes exactly what the pane launches; a missing install refuses the spawn. The nix launcher `exec`s `node`, so the LIVE process name is `node` with `argv[0]` rewritten to `atomic` - see "There is no process-name identity" below. |
+| Launch | A positional prompt, the Pi/Grok shape, so the brief rides the launch command. |
+| Models | The canonical `provider/id` pair is SPLIT into `--provider <provider> --model <id>`, and the provider prefix is load-bearing rather than decorative: `--model provider/id` does NOT pin a provider, and a bare id resolves through atomic's own order to whichever provider sorts first. `bin/fm-spawn.sh` refuses a model with no provider prefix and preflights the pair against `atomic --list-models`. |
+| Busy state | The firstmate-owned per-task extension's `agent_start` (busy) and `agent_settled` confirmed by `ctx.isIdle()` (idle), source `atomic-ext` - Pi's predicate, measured on atomic rather than assumed. |
+| Exit command | `/exit`; one Enter submits it even though a 228-entry slash popup is open. The pane survives and prints `To resume this session: atomic --session <headerId>`. |
+| Interrupt | Single Escape, followed by `C-u`: atomic restores every message QUEUED during the turn into the composer as real text, which is exactly what a firstmate steer sent to a busy worker becomes. Never send a second Escape - on an idle empty composer atomic's default double-Escape action opens the session-tree overlay. `bin/fm-control-lib.sh` DOES claim a cancellation here, from the transcript record below. |
+| Skill invocation | No verified slash form. A slash popup exists (228 entries), but `/no-mis` matched nothing, so firstmate's skills are not commands there; use natural language naming the skill, as with pi. |
+| Autonomy | No flag, and none exists to look for: atomic executes tools with NO approval gate at all. |
+| Trust dialog | A BLOCKING five-option `Trust project folder?` dialog on any project folder atomic has not been trusted with, whose first and preselected option is a PERSISTENT trust. `-na` suppresses it entirely, which is what firstmate relies on - accepting it with Enter would write a disposable task worktree into atomic's persistent `~/.atomic/agent/trust.json`. |
+| Primary supervision | None built. Crewmate and scout only; `--secondmate` refused, on omp's unbuilt-wiring reason rather than muse's incapability. |
+| Environment marker | `ATOMIC_CODING_AGENT=true` plus `AI_AGENT=atomic`, and never `PI_CODING_AGENT`. See "Detection" above; the `AI_AGENT` conjunct is what keeps a nested worker from being misread. |
+| Composer | Pi's separated region - an input row between two full-width rules - but atomic draws claude's `❯` agent glyph on that row, so the shared classifier proves it through the bare-glyph rule and needs NO identity gate, unlike pi and omp. |
+| Effort | `--thinking`; see the [launch-profile-axes table](#launch-profile-axes) for the mapping and the silent-clamp hazard. |
+| Resume | `atomic --continue`, or `atomic --session <exact .jsonl path>`. NOT `--session-id`: the interactive host forwards `--session <path>` to its engine child, which mints a fresh header id, so a later launch with the same `--session-id` finds nothing and starts a second session. |
+
+### -na is a safety flag, not a permissiveness flag
+
+atomic scans BOTH `.atomic/` and `.pi/` for project-local extensions, at the project root and in the home directory, by deliberate legacy-compatibility design.
+A crewmate whose worktree carries a `.pi/extensions` tree - firstmate's own repo most sharply - would therefore load the operator's primary supervision extensions into a worker and arm a second supervisor.
+`-na`/`--no-approve` makes atomic ignore project-local files for the run, which closes that and the trust dialog in one flag: verified live with a planted project-local `.pi/extensions` file that loaded under `-a` and was ignored under `-na`.
+`-ne`/`--no-extensions` would close it too, but it is the blunt instrument - it disables discovery entirely, including the operator's own extensions, and firstmate has no standing to disable those for a crewmate.
+The busy extension is unaffected either way, because an EXPLICIT `-e` path outside the project is not a project-local file (verified: `-na` with an `-e` path in `state/` loaded it).
+
+### The busy predicate IS Pi's, and that was measured
+
+A real turn emitted `agent_start`, then `agent_end`, then `agent_settled` with `ctx.isIdle()` returning true, so Pi's predicate reports idle exactly where it should.
+`agent_end` is deliberately NOT the terminal signal: it fires before the settle completes.
+This is the opposite of omp, whose settle completes after its terminal event and leaves `isIdle()` false, and the difference is the reason no adapter here may borrow another Pi fork's predicate without measuring it.
+
+### The interrupt acknowledgement, and its one blind spot
+
+atomic appends an assistant record carrying `"stopReason":"aborted"` (with `"errorMessage":"Request aborted"`) to its own JSON-lines session transcript when a turn is cancelled.
+`bin/fm-spawn.sh` pins the session id at launch, so the transcript filename is deterministic, and records it with the sessions root in `state/<id>.atomic-session`; `bin/fm-control-lib.sh` owns the read.
+The claim is scoped by BYTE OFFSET rather than by content: the control plane captures the transcript's length before it delivers Escape and accepts only a record appended after that point, so a prior aborted turn in the same transcript can never be mistaken for this one.
+The blind spot is the first turn: atomic does not create the transcript until the first assistant message exists, so an interrupt before that has no file to read and the claim is reported `unconfirmed` rather than guessed.
+
+### The composer needs no process identity, and could not have one from `comm`
+
+On the nix-installed build `ps -o comm=` reports `node`, not `atomic`: the launcher `exec`s node, and atomic's own `process.title` rewrite lands in `argv[0]`, which is what `ps -o args=` shows (measured live on atomic 0.9.13; `#{pane_current_command}` is no better).
+That costs identity DETECTION nothing, because `bin/fm-session-lock-lib.sh`'s ancestry walk reads both fields and matches the anchored `^atomic$` through `argv[0]`.
+But `fm_tmux_composer_identity` reads `comm` only, so atomic gets NO arm there - and it needs none, because its composer carries the `❯` glyph, which is positive container proof on its own.
+Do not add a `comm`-based identity arm for atomic on the strength of the process-title rewrite: it would never match while reading like a working signal.
+The live guard asserts the pairing directly (identity probe returns nothing, verdict is still `empty`), so a future atomic that drops the glyph for pi's glyph-less region fails loudly instead of degrading to `unknown`.
+
+### Two captain decisions this adapter deliberately does not settle
+
+The effort clamp is silent and bidirectional: a requested `medium` runs at `high` on `kimi-coding/k3`.
+Firstmate passes the request and records it; whether the ladder should be gated against each model's advertised levels is `atomic-effort-clamp`.
+And atomic loads the OPERATOR's `~/.pi/agent/AGENTS.md` resources into every session, which `-na` does not touch because it is a HOME-level resource rather than a project-local file.
+That is muse's foreign-personal-context shape without muse's kill switch, and it is not resolved here.
+
+`docs/verification/runtime-backends.md` "atomic" owns the dated commands and output.
+The standing regressions are `tests/fm-atomic-harness.test.sh` (identity) and `tests/fm-atomic-adapter.test.sh` (this layer), plus the opt-in live guards `tests/fm-atomic-adapter-live-e2e.test.sh` and `tests/fm-composer-matrix-live-e2e.test.sh`.
