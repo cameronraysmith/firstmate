@@ -63,7 +63,7 @@ fm_control_verb_allowed() {  # <verb>
 # than guessed at, exactly as a spawn on it would be.
 fm_control_harness_supported() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) return 0 ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse) return 0 ;;
   esac
   return 1
 }
@@ -80,6 +80,7 @@ fm_control_harness_family() {  # <recorded-harness>
   case "${1-}" in
     pi) printf 'pi' ;;
     pi-signed) printf 'pi-signed' ;;
+    omp) printf 'omp' ;;
     claude*) printf 'claude' ;;
     codex*) printf 'codex' ;;
     opencode*) printf 'opencode' ;;
@@ -91,26 +92,31 @@ fm_control_harness_family() {  # <recorded-harness>
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse is a crewmate/scout
-# adapter only: it has no primary supervision protocol, and bin/fm-spawn.sh
-# refuses a --secondmate launch on it. The control plane
-# asks this BEFORE it stops anything, so an incompatible relaunch target is
-# refused while the current agent is still running rather than after it has
-# been stopped.
+# Which task kinds an adapter is verified to run. muse and omp are crewmate/scout
+# adapters only, for different reasons. muse has no primary supervision protocol
+# at all. omp now has one - its own tracked .omp/extensions pair - but the
+# secondmate LAUNCH is a separate unwired surface: a secondmate home's extensions
+# are passed by absolute path at launch, and neither that template nor the remote
+# secondmate paths are built or verified for omp. bin/fm-spawn.sh refuses a
+# --secondmate launch on either. The control plane asks this BEFORE it stops
+# anything, so an incompatible relaunch target is refused while the current agent
+# is still running rather than after it has been stopped.
 fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse) [ "$kind" != secondmate ] || return 1 ;;
+    muse|omp) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
 
 # The key that cancels a running turn. Escape for every adapter except grok,
 # whose Esc only moves focus to the scrollback; grok cancels on Ctrl+C.
+# omp cancels on a single Escape: the running tool closed with
+# `[Command cancelled]` and the agent settled (verified live, omp 17.3.5).
 fm_control_interrupt_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|kimi|cursor|muse) printf 'Escape' ;;
+    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|muse) printf 'Escape' ;;
     grok) printf 'C-c' ;;
     *) return 1 ;;
   esac
@@ -121,7 +127,7 @@ fm_control_interrupt_key() {  # <harness>
 fm_control_interrupt_repeat() {  # <harness>
   case "${1-}" in
     opencode) printf '2' ;;
-    claude|codex|pi|pi-signed|grok|kimi|cursor|muse) printf '1' ;;
+    claude|codex|pi|pi-signed|omp|grok|kimi|cursor|muse) printf '1' ;;
     *) return 1 ;;
   esac
 }
@@ -131,19 +137,24 @@ fm_control_interrupt_repeat() {  # <harness>
 # RESTORES the cancelled prompt into its composer as real bright text, so an
 # interrupt is not complete until Ctrl+U has cleared it; leaving it there would
 # make the next submitted line - a steer, or this plane's own exit command -
-# concatenate onto it. cursor was checked for exactly that behaviour and does
-# NOT repollute: after a single Escape its composer shows only the `Add a
-# follow-up` placeholder, so it needs no clear key. Prints the key or nothing;
+# concatenate onto it. cursor and omp were both checked for exactly that
+# behaviour and do NOT repollute: after a single Escape cursor's composer shows
+# only the `Add a follow-up` placeholder and omp's returns to an empty input
+# row, so neither needs a clear key. Prints the key or nothing;
 # a harness with no verified mechanics returns nonzero, matching the tables
 # above.
 fm_control_interrupt_clear_key() {  # <harness>
   case "${1-}" in
     muse) printf 'C-u' ;;
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor) ;;
     *) return 1 ;;
   esac
 }
 
+# omp's own busy source DOES close on an interrupt - agent_end fires with
+# willContinue unset, the same terminal path a completed run takes - but it is a
+# pushed record rather than an adapter-observable acknowledgement this plane can
+# read back at the moment it delivers the key, so it claims none, like cursor.
 fm_control_interrupt_ack_source() {  # <harness>
   case "${1-}" in
     muse) printf 'muse-session-terminal' ;;
@@ -151,7 +162,7 @@ fm_control_interrupt_ack_source() {  # <harness>
     # after an interrupt was measured as variable - sometimes seconds, sometimes
     # not within 20 - so a cancellation claim built on it would be unreliable.
     # Normal turn completion is prompt, which is what the busy fold depends on.
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) printf 'none' ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor) printf 'none' ;;
     *) return 1 ;;
   esac
 }
@@ -161,6 +172,7 @@ fm_control_exit_command() {  # <harness>
   case "${1-}" in
     claude|opencode|grok|kimi|cursor|muse) printf '/exit' ;;
     codex|pi|pi-signed) printf '/quit' ;;
+    omp) printf '/exit' ;;
     *) return 1 ;;
   esac
 }
@@ -207,6 +219,7 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
     claude) printf '%s\n' "$wt/.claude/settings.local.json" ;;
     opencode) printf '%s\n' "$wt/.opencode/plugins/fm-busy-state.js" ;;
     pi|pi-signed) printf '%s\n' "$state/$id.pi-ext.ts" ;;
+    omp) printf '%s\n' "$state/$id.omp-ext.ts" ;;
     grok)
       printf '%s\n' "$wt/.fm-grok-turnend"
       printf '%s\n' "$state/$id.grok-turnend-token"
