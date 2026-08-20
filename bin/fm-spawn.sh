@@ -275,6 +275,7 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+HERDR_SESSION_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -282,6 +283,7 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+HERDR_SESSION_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -298,6 +300,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      herdr-session) HERDR_SESSION_ARG=$a; HERDR_SESSION_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -321,6 +324,8 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --herdr-session) want_value=herdr-session ;;
+    --herdr-session=*) HERDR_SESSION_ARG=${a#--herdr-session=}; HERDR_SESSION_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -787,12 +792,67 @@ spawn_abort_cleanup() {
 }
 trap spawn_abort_cleanup EXIT
 
+# spawn_herdr_target_session: the exact Herdr session this spawn places its
+# worker in, printed on stdout. Refuses (non-zero, message already on stderr)
+# rather than guessing.
+#
+# A crewmate or scout is partitioned by PROJECT, selected from the project
+# registry, so the captain watches one project's workers in one window. A
+# secondmate is not a worker but another orchestrator the captain talks to
+# directly, so it joins the orchestrators' reserved session.
+#
+# Neither branch reads HERDR_SESSION. The injected value describes wherever the
+# LAUNCHING process was created, not where this session runs, so inheriting it
+# placed workers in a stale session that no herdr query could contradict
+# (bin/backends/herdr.sh fm_backend_herdr_ambient_claimed_session).
+#
+# --herdr-session is the separate, explicit channel for a caller that KNOWS the
+# session and is not merely passing its own environment along. It is not the
+# ambient variable above and is not subject to that distrust: an argument is
+# stated by the caller, an environment variable is inherited from whatever
+# created it. The remote secondmate control plane is the caller that needs it,
+# because bin/fm-remote-secondmate-control.sh pins every remote secondmate to
+# the reserved fm-remote session and enforces that pin on the recorded endpoint;
+# routing one to the orchestrators' session instead makes the launch refuse.
+spawn_herdr_target_session() {
+  if [ "$HERDR_SESSION_SET" = 1 ]; then
+    if [ -z "$HERDR_SESSION_ARG" ]; then
+      echo "error: --herdr-session requires a non-empty session name" >&2
+      return 1
+    fi
+    printf '%s\n' "$HERDR_SESSION_ARG"
+    return 0
+  fi
+  if [ "$KIND" = secondmate ]; then
+    printf '%s\n' "$FM_BACKEND_HERDR_ORCHESTRATOR_SESSION"
+    return 0
+  fi
+  "$FM_ROOT/bin/fm-project-mode.sh" --session "$PROJ_NAME"
+}
+
+# spawn_herdr_warn_stale_ambient_claim: surface a PROVEN-stale injected Herdr
+# identity once, at the only moment an operator is watching a spawn.
+#
+# Diagnostics only. Placement is already decided by the registry above and this
+# never changes it; the warning exists because a stale environment silently
+# misroutes every OTHER herdr tool the operator runs by hand, and no herdr query
+# reports it (bin/fm-herdr-whereami.sh is the standalone detector). Nothing is
+# printed for an absent claim or for evidence that could not be read, so only a
+# claim disproved by this process's own ancestry ever reaches the operator.
+spawn_herdr_warn_stale_ambient_claim() {
+  local claimed_pane=${HERDR_PANE_ID:-} claimed_session
+  [ -n "$claimed_pane" ] || return 0
+  claimed_session=$(fm_backend_herdr_ambient_claimed_session)
+  [ "$(fm_backend_herdr_ambient_claim_verdict "$claimed_session" "$claimed_pane")" = not-mine ] || return 0
+  echo "warning: this process's injected herdr identity is stale - it claims pane '$claimed_pane' in session '$claimed_session', but that pane's shell is not one of its own ancestors. This spawn is unaffected because its session came from the project registry, but a bare 'herdr' command run by hand here will address '$claimed_session'; run bin/fm-herdr-whereami.sh to locate this process's real pane." >&2
+}
+
 # One bounded lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
 spawn_herdr_presentation_order_lock_acquire() {
   local session=${1:-} attempt lock_path
-  [ -n "$session" ] || session=$(fm_backend_herdr_session)
+  [ -n "$session" ] || return 1
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
   attempt=0
@@ -1641,6 +1701,11 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
+# How a spawn names its project for every registry lookup it makes: the standing
+# delivery-posture notice below and, for the herdr backend, the worker's target
+# session. One derivation, so a project cannot be registered for one and missed
+# by the other.
+PROJ_NAME=$(basename "$PROJ_ABS")
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
@@ -1657,7 +1722,6 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 # line. A spawn that disagrees would launch a worker whose instructions and whose
 # recorded task delivery differ, which is the exact drift this contract prevents.
 if [ "$KIND" = ship ]; then
-  PROJ_NAME=$(basename "$PROJ_ABS")
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   if [ -z "$BRIEF_MODE" ]; then
     echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
@@ -1896,10 +1960,14 @@ case "$BACKEND" in
       HERDR_LABEL_HOME=$PROJ_ABS
       HERDR_LAUNCHER_RELATIONSHIP=other-home
     fi
+    # Placement is decided BEFORE anything is created, read, or locked, so every
+    # herdr call this spawn makes addresses the same deliberately chosen session
+    # and a project with no recorded session creates nothing at all.
+    HERDR_SES=$(spawn_herdr_target_session) || exit 1
+    spawn_herdr_warn_stale_ambient_claim
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
-    if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
-      HERDR_SES=$(fm_backend_herdr_session)
+    if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE" "$HERDR_SES"; then
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
@@ -1974,7 +2042,7 @@ case "$BACKEND" in
             HERDR_PROJECTION_ID=$(fm_backend_herdr_projection_journal_create "$STATE" "$ID") || exit 1
             HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID")
             if ! FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_create_task \
-              "$PROJ_ABS" "$HERDR_PROJECTION_LABEL" "$W"; then
+              "$HERDR_SES" "$PROJ_ABS" "$HERDR_PROJECTION_LABEL" "$W"; then
               if [ "${FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE:-0}" = 1 ]; then
                 HERDR_PROJECTION_ABORT_CLEANUP=1
                 HERDR_PROJECTION_ABORT_SESSION=$FM_BACKEND_HERDR_PROJECTION_SESSION
@@ -2016,7 +2084,7 @@ case "$BACKEND" in
       fi
     fi
     if [ "$HERDR_PROJECTED" -ne 1 ]; then
-      HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS" "$HERDR_LAUNCHER_RELATIONSHIP") || exit 1
+      HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$HERDR_SES" "$PROJ_ABS" "$HERDR_LAUNCHER_RELATIONSHIP") || exit 1
       # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
       # (the second field empty when this call ADOPTED a pre-existing workspace
       # rather than creating a fresh one). Split on the guaranteed single tab
