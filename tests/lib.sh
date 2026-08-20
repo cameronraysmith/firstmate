@@ -130,8 +130,17 @@ fm_test_file_mtime() {
 
 # --- reporters --------------------------------------------------------------
 
+# fail <msg> [detail]: report a failed assertion and stop the file. The optional
+# detail is printed under the TAP line, so an assertion that already captured a
+# child's output hands it over here instead of losing it to the exit - the next
+# line of the caller never runs. It is keyed on the argument count rather than on
+# emptiness, so a child that printed nothing stays distinguishable from an
+# assertion that carried nothing.
 fail() {
   printf 'not ok - %s\n' "$1" >&2
+  if [ "$#" -gt 1 ]; then
+    printf '%s\n%s\n' '--- output ---' "$2" >&2
+  fi
   exit 1
 }
 
@@ -476,22 +485,25 @@ fm_write_secondmate_meta() {
 assert_contains() {
   case "$1" in
     *"$2"*) : ;;
-    *) fail "$3 (missing: '$2')"$'\n'"--- output ---"$'\n'"$1" ;;
+    *) fail "$3 (missing: '$2')" "$1" ;;
   esac
 }
 
 # assert_not_contains <haystack> <needle> <msg>
 assert_not_contains() {
   case "$1" in
-    *"$2"*) fail "$3 (unexpected: '$2')"$'\n'"--- output ---"$'\n'"$1" ;;
+    *"$2"*) fail "$3 (unexpected: '$2')" "$1" ;;
     *) : ;;
   esac
 }
 
-# expect_code <expected> <actual> <label>
+# expect_code <expected> <actual> <label> [detail]: the optional detail is the
+# captured output of whatever produced <actual>, forwarded to fail so a wrong
+# exit code names what went wrong instead of only reporting the number.
 expect_code() {
   local expected=$1 actual=$2 label=$3
-  [ "$actual" = "$expected" ] || fail "$label: expected exit $expected, got $actual"
+  shift 3
+  [ "$actual" = "$expected" ] || fail "$label: expected exit $expected, got $actual" "$@"
 }
 
 # assert_grep <pattern> <file> <msg>: fixed-string grep must match in <file>.
