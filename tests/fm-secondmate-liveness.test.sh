@@ -18,6 +18,10 @@
 #     inventory omits the exact window, regardless of display-message fallback.
 #   - The Herdr classifier preserves the proven husk mapping while separating a
 #     missing pane from an existing agent-less pane.
+#   - The Herdr classifier's unregisterable-harness fallback: an agent_not_found
+#     pane whose recorded harness herdr structurally cannot register is alive on
+#     firstmate's own positive evidence, while every herdr-registerable harness
+#     and every evidence-free read keeps its exact prior classification.
 #   - fm_backend_agent_alive preserves the older three-state compatibility view.
 #   - bin/fm-bootstrap.sh's secondmate_liveness_sweep recovers only dead or
 #     missing endpoints, keeps successful recovery and already-live results
@@ -176,6 +180,120 @@ test_herdr_agent_state_preserves_husk_classifier() {
   [ "$out" = dead ] || fail "the Herdr compatibility view should keep a no-agent husk dead, got '$out'"
 
   pass "fm_backend_herdr_agent_state: preserves missing/no-agent/live/unknown husk behavior"
+}
+
+# make_herdr_fallback_case <name> <harness>: a case dir whose meta records
+# <harness> on a herdr endpoint, plus a driver script that sources the real
+# fm-backend.sh and herdr adapter, replaces only fm_backend_herdr_cli with a
+# canned-response fake (pane present, agent get -> agent_not_found, and a
+# process-info body naming $FM_FAKE_FG_NAME/$FM_FAKE_FG_ARGV0 in the
+# foreground group), and prints the classifier's verdict for the meta. The
+# busy record and gen sidecars are written per assertion by the caller.
+make_herdr_fallback_case() {
+  local name=$1 harness=$2 case_dir state
+  case_dir="$TMP_ROOT/$name"
+  state="$case_dir/state"
+  mkdir -p "$state"
+  printf 'harness=%s\nbackend=herdr\nwindow=fmtest:w1:p2\n' "$harness" \
+    > "$state/task1.meta"
+  cat > "$case_dir/driver.sh" <<SH
+#!/usr/bin/env bash
+. "$ROOT/bin/fm-backend.sh"
+. "$ROOT/bin/backends/herdr.sh"
+fm_backend_herdr_cli() {
+  local session=\$1; shift
+  case "\$1 \$2" in
+    "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}' "\$3" ;;
+    "agent get") printf '{"error":{"code":"agent_not_found"}}' ;;
+    "pane process-info") printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":101,"foreground_process_group_id":202,"foreground_processes":[{"pid":202,"name":"%s","argv0":"%s"}]}}}' "\$4" "\$FM_FAKE_FG_NAME" "\$FM_FAKE_FG_ARGV0" ;;
+  esac
+}
+fm_backend_herdr_agent_state 'fmtest:w1:p2' "\$1"
+SH
+  chmod +x "$case_dir/driver.sh"
+  printf '%s' "$case_dir"
+}
+
+herdr_fallback_verdict() {  # <case-dir> <fg-name> <fg-argv0> <meta-arg>
+  local case_dir=$1
+  FM_FAKE_FG_NAME="$2" FM_FAKE_FG_ARGV0="$3" \
+    bash "$case_dir/driver.sh" "$4"
+}
+
+write_busy_record() {  # <state-dir> <gen> <record-gen> <state> <source>
+  printf '%s\n' "$2" > "$1/task1.busy-gen"
+  printf 'v1 gen=%s seq=1 state=%s source=%s event=agent_start ts=1755640000\n' \
+    "$3" "$4" "$5" > "$1/task1.busy-state"
+}
+
+test_herdr_agent_state_unregisterable_fallback() {
+  local case_dir out state
+
+  case_dir=$(make_herdr_fallback_case herdr-fallback-atomic atomic)
+  state="$case_dir/state"
+
+  # A generation-bound busy record from atomic's own adapter is firstmate's
+  # evidence the worker is mid-turn; herdr cannot see it at all.
+  write_busy_record "$state" g7 g7 busy atomic-ext
+  out=$(herdr_fallback_verdict "$case_dir" zsh -zsh "$state/task1.meta")
+  [ "$out" = alive ] || fail "an atomic task with a live busy record should classify alive, got '$out'"
+
+  # The pane's foreground process naming the harness executable, by basename
+  # and by install-path component, with no busy record at all.
+  rm -f "$state/task1.busy-state" "$state/task1.busy-gen"
+  out=$(herdr_fallback_verdict "$case_dir" atomic /etc/profiles/per-user/crs58/bin/atomic "$state/task1.meta")
+  [ "$out" = alive ] || fail "an atomic foreground process should classify alive, got '$out'"
+  out=$(herdr_fallback_verdict "$case_dir" 0.9.13 /nix/store/x-atomic-0.9.13/bin/atomic "$state/task1.meta")
+  [ "$out" = alive ] || fail "an atomic install path in argv0 should classify alive, got '$out'"
+
+  # The VERIFIED live nix-launcher shape: comm reports node, and atomic's
+  # process-title rewrite lands in argv[0] (harness-adapters skill, atomic
+  # 0.9.13), so identity must come from the argv0 field.
+  out=$(herdr_fallback_verdict "$case_dir" node atomic "$state/task1.meta")
+  [ "$out" = alive ] || fail "the process-title rewrite in argv0 must carry atomic's identity when comm is node, got '$out'"
+
+  # No positive evidence keeps the recovery-licensing dead verdict: no record
+  # and a shell foreground, a foreground naming a DIFFERENT harness, an idle
+  # record, a stale-generation record, and a record from another adapter's
+  # source all refuse.
+  out=$(herdr_fallback_verdict "$case_dir" zsh -zsh "$state/task1.meta")
+  [ "$out" = dead ] || fail "an evidence-free atomic pane must stay dead, got '$out'"
+  out=$(herdr_fallback_verdict "$case_dir" claude /x/claude "$state/task1.meta")
+  [ "$out" = dead ] || fail "a stranger's claude foreground must not prove this atomic task alive, got '$out'"
+  write_busy_record "$state" g7 g7 idle atomic-ext
+  out=$(herdr_fallback_verdict "$case_dir" zsh -zsh "$state/task1.meta")
+  [ "$out" = dead ] || fail "an idle record is not liveness evidence, got '$out'"
+  write_busy_record "$state" g7 g6 busy atomic-ext
+  out=$(herdr_fallback_verdict "$case_dir" zsh -zsh "$state/task1.meta")
+  [ "$out" = dead ] || fail "a stale-generation record is not liveness evidence, got '$out'"
+  write_busy_record "$state" g7 g7 busy pi-ext
+  out=$(herdr_fallback_verdict "$case_dir" zsh -zsh "$state/task1.meta")
+  [ "$out" = dead ] || fail "a foreign adapter's busy record must not prove this atomic task alive, got '$out'"
+  rm -f "$state/task1.busy-state" "$state/task1.busy-gen"
+
+  # No meta supplied keeps today's verdict for every caller that passes none.
+  out=$(herdr_fallback_verdict "$case_dir" atomic /x/atomic '')
+  [ "$out" = dead ] || fail "a no-meta call must keep the no-agent -> dead mapping, got '$out'"
+
+  pass "fm_backend_herdr_agent_state: firstmate evidence carries an unregisterable-harness pane alive"
+}
+
+test_herdr_agent_state_registerable_harness_unchanged() {
+  local case_dir out state
+
+  # claude is a herdr-registerable kind, so even every piece of firstmate
+  # evidence at once must keep the exact current no-agent -> dead verdict the
+  # recovery paths license on.
+  case_dir=$(make_herdr_fallback_case herdr-fallback-claude claude)
+  state="$case_dir/state"
+  write_busy_record "$state" g8 g8 busy claude-hook
+  out=$(herdr_fallback_verdict "$case_dir" claude /x/claude "$state/task1.meta")
+  [ "$out" = dead ] || fail "a registerable harness must keep no-agent -> dead despite busy and process evidence, got '$out'"
+  rm -f "$state/task1.busy-state" "$state/task1.busy-gen"
+  out=$(herdr_fallback_verdict "$case_dir" claude /x/claude "$state/task1.meta")
+  [ "$out" = dead ] || fail "a registerable harness without evidence must keep no-agent -> dead, got '$out'"
+
+  pass "fm_backend_herdr_agent_state: herdr-registerable harnesses keep their exact classification"
 }
 
 # --- unit level: the generic dispatchers ------------------------------------
@@ -543,6 +661,8 @@ test_sweep_noop_with_no_secondmate_meta() {
 test_tmux_agent_state_classifies
 test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
+test_herdr_agent_state_unregisterable_fallback
+test_herdr_agent_state_registerable_harness_unchanged
 test_agent_state_dispatcher_and_compatibility
 test_sweep_respawns_confirmed_dead_secondmate
 test_sweep_leaves_alive_secondmate_untouched
