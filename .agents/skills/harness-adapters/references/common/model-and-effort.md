@@ -8,6 +8,10 @@ Add `references/common/dispatch.md` for configured profile precedence.
 `../../../bin/fm-spawn.sh` accepts concrete `--harness`, `--model`, and `--effort` values selected at intake; scripts never parse natural-language dispatch rules.
 The tool reference records verified flags, accepted values, omission behavior, and discovery.
 
+The model axis is written canonically as one quoted `provider/id` pair everywhere (`../../../docs/configuration.md` "Crew dispatch profiles" owns that schema), and `../../../bin/fm-spawn.sh`'s `model_flag_for_harness` is the single translation point into each runtime's accepted form: the id alone for a bare-id runtime, the combined pair verbatim for a pair-native one, and atomic's two-flag split.
+A bare value without a slash reaches a bare-id runtime unchanged - it is that runtime's own native form - and atomic still refuses it outright.
+grok, kimi, and muse were unverifiable on the 2026-08-19 host (no installed binary), so their arms keep the verbatim passthrough until each is verified against its own installed CLI.
+
 Effort precedence is a per-task captain instruction, then applicable dispatch profile or secondmate pin, then the fallback below.
 Never replace either higher-precedence value.
 Use the fallback only when neither specifies effort.

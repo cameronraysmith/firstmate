@@ -11,7 +11,7 @@ Verified on 2026-06-11 with codex-cli 0.139.0 unless a fact gives a newer versio
 | Interrupt | Single Escape. |
 | Skill invocation | `$<skill>`, for example `$no-mistakes`; `/<skill>` is Claude-only and Codex rejects it as "Unrecognized command". |
 | Resume | `codex resume <session-id>`, using the id printed on quit. |
-| Model flag | `--model <model>`. |
+| Model flag | `--model <id>`, the canonical `provider/id` prefix stripped. Re-verified 2026-08-19 on codex-cli 0.148.0: `-m/--model <MODEL>` takes a bare id everywhere (its own config example is `-c model="o3"`) and exposes no provider prefix or `--provider` flag. |
 | Effort flag | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'`, verified on codex-cli 0.142.1 whose installed schema contains `model_reasoning_effort`, active config uses it, and bundled catalog advertises only these four values while omitting `max`. |
 | Model discovery | Open the current interactive session's `/model` picker. |
 

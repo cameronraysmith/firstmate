@@ -15,7 +15,7 @@ Launch shape: `grok --always-approve "$(cat <brief>)"`.
 | Autonomy | `--always-approve`, footer `· always-approve`, verified unattended; `--permission-mode bypassPermissions` is stronger equivalent. |
 | Marker | `GROK_AGENT=1` on child or tool processes in 0.2.73 and no `CLAUDECODE`; a 1.0.0 hook instead had `GROK_HOOK_EVENT`, `GROK_HOOK_NAME`, `GROK_SESSION_ID`, and `GROK_WORKSPACE_ROOT` without `GROK_AGENT`, so ancestry guarantees identity. |
 | Resume | `grok --resume <session-id>`, or `grok -c` / `--continue` for cwd latest; `--fork-session` creates a new id. |
-| Model | `--model <model>`; discover current account models with `grok models`. |
+| Model | `--model <model>`; discover current account models with `grok models`. Canonical `provider/id` translation was unverifiable on the 2026-08-19 host (no installed binary), so this arm passes the canonical value verbatim until it is verified against an installed grok CLI. |
 | Effort | `--reasoning-effort <low\|medium\|high>`, alias `--effort`; version 0.2.99 rejects `xhigh` and `max` with `use one of: high, medium, low`; `references/common/model-and-effort.md` owns fallback and unsupported-value handling. |
 
 Reliable Grok rules must account for hook markers as well as the child fast path.

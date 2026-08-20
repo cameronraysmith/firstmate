@@ -9,7 +9,7 @@ The router owns Muse's task-kind boundary.
 |---|---|
 | Binary | Absolute `muse` from `PATH`, refused if absent; launcher `~/.local/bin/muse` execs versioned `muse-bin-<version>`, so live process name changes on update. |
 | Launch | Positional instructions, like Grok or Pi. |
-| Models | `--model <model>`; only provider `meta`. |
+| Models | `--model <model>`; only provider `meta`. Canonical `provider/id` translation was unverifiable on the 2026-08-19 host (no installed binary), so this arm passes the canonical value verbatim until it is verified against an installed muse CLI. |
 | Busy | Durable session event log folded by `../../../bin/fm-busy-lib.sh`; no hook or plugin writer, arming, or seeded busy record. |
 | Exit | `/exit`, one Enter; prints `To continue this session, run muse resume <session-uuid>`. |
 | Interrupt | Single Escape records `terminal: cancelled` and restores bright prompt text, so control follows with `Ctrl+U`; the legacy typed key path uses the same clear table. |
