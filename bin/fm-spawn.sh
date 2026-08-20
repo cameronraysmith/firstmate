@@ -1207,7 +1207,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: backend '$BACKEND' has no recovery-grade agent-state classifier, so a relaunch cannot prove the previous agent exited; refusing rather than risking two agents in one endpoint" >&2
     exit 1
   }
-  RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
+  RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET" "$RELAUNCH_META")
   [ "$RELAUNCH_STATE" = dead ] || {
     echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
     exit 1
@@ -1626,9 +1626,27 @@ EOF
     # command-not-found the supervisor would read as a wedged worker.
     CURSOR_BIN=$(fm_cursor_resolve_binary) || exit 1
     if [ -n "$MODEL" ] && [ "$MODEL" != default ]; then
+      # The catalog lists the bare ids cursor's own --model accepts, and the
+      # launch arm below translates the canonical provider/id pair to exactly
+      # that bare id, so the preflight must check the translated id: checking
+      # the canonical pair would refuse every provider-qualified model a
+      # catalog legitimately publishes. A model with no slash is already the
+      # bare form and is checked unchanged.
+      CURSOR_MODEL_ID=$MODEL
+      case "$MODEL" in
+        */*)
+          CURSOR_SPLIT=$(canonical_model_split "$MODEL") || {
+            echo "error: cursor model '$MODEL' is not a canonical provider/id pair (empty provider or id around its slash); pass for example 'anthropic/claude-sonnet-4.5' or a bare id" >&2
+            exit 1
+          }
+          IFS=$(printf '\t') read -r _ CURSOR_MODEL_ID <<EOF
+$CURSOR_SPLIT
+EOF
+          ;;
+      esac
       if CURSOR_MODELS=$(fm_cursor_list_models "$CURSOR_BIN"); then
-        if ! printf '%s\n' "$CURSOR_MODELS" | fm_cursor_catalog_has_model "$MODEL"; then
-          echo "error: Cursor model '$MODEL' is not available from '$CURSOR_BIN --list-models'; choose an id listed by that command or omit --model" >&2
+        if ! printf '%s\n' "$CURSOR_MODELS" | fm_cursor_catalog_has_model "$CURSOR_MODEL_ID"; then
+          echo "error: Cursor model '$CURSOR_MODEL_ID' is not available from '$CURSOR_BIN --list-models'; choose an id listed by that command or omit --model" >&2
           exit 1
         fi
       fi
@@ -1755,9 +1773,42 @@ EOF
       [ -n "$provider" ] && [ -n "$id" ] || return 1
       printf -- '--provider %s --model %s ' "$(shell_quote "$provider")" "$(shell_quote "$id")"
       ;;
-    # omp takes the canonical form verbatim: its own help documents the
-    # provider/id shape in --model and calls --provider legacy and dispreferred.
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|muse)
+    # Bare-id runtimes: their --model accepts an alias or full model name with
+    # NO provider prefix, so the canonical pair's provider is stripped and the
+    # id alone is passed. Verified on this host's installed CLIs (2026-08-19):
+    # claude 2.1.235 documents "an alias for the latest model (e.g. 'fable',
+    # 'opus', or 'sonnet') or a model's full name"; codex-cli 0.148.0 documents
+    # -m/--model <MODEL> with a bare id everywhere (its own config example is
+    # -c model="o3") and has no provider-prefixed model syntax; cursor-agent
+    # documents "Model to use (e.g., gpt-5, sonnet-4-thinking)". A model with
+    # no slash is passed unchanged: a bare id is exactly these runtimes' own
+    # native form, so a value recorded before the canonical-model decision
+    # keeps launching instead of being refused or double-translated.
+    claude|codex|cursor)
+      case "$model" in
+        */*)
+          split=$(canonical_model_split "$model") || return 1
+          IFS=$(printf '\t') read -r provider id <<EOF
+$split
+EOF
+          [ -n "$id" ] || return 1
+          printf -- '--model %s ' "$(shell_quote "$id")"
+          ;;
+        *) printf -- '--model %s ' "$(shell_quote "$model")" ;;
+      esac
+      ;;
+    # Pair-native runtimes: --model itself takes provider/model. Verified on
+    # this host's installed CLIs (2026-08-19): opencode documents "-m, --model
+    # model to use in the format of provider/model"; pi 0.84.2 documents
+    # --model 'supports "provider/id"'; omp 17.x documents the combined shape
+    # ('"openai/gpt-5.2"') and calls its separate --provider flag legacy.
+    # pi-signed launches the same pi engine through its own executable and
+    # shares pi's verified --model surface (harness-adapters skill, verified
+    # 2026-07-27 on pi and pi-signed 0.82.0). grok, kimi, and muse are NOT
+    # verified on this host (no installed binary), so they keep today's
+    # verbatim passthrough rather than a guessed translation; each needs its
+    # own installed-CLI verification before its arm changes.
+    opencode|pi|pi-signed|omp|grok|kimi|muse)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac

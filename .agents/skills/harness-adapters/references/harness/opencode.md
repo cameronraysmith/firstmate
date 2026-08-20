@@ -11,7 +11,7 @@ Verified on 2026-06-11 across versions 1.15.7 through 1.17.6, with busy-queue be
 | Interrupt | Double Escape; it is known to be flaky while a long shell command runs, so use `../../../bin/fm-control.sh <task-id> relaunch` for a wedged pane. |
 | Skill invocation | No separate verified form beyond normal slash-command behavior; use natural language when the exact command is uncertain. |
 | Resume | Relaunch with `--continue` to resume the most recent session for the current directory, then send the next instruction after the TUI is ready because `--prompt` does not auto-submit alongside `--continue`. |
-| Model flag | `--model <provider/model>`. |
+| Model flag | `--model <provider/model>`, pair-native, so the canonical pair passes verbatim. Re-verified 2026-08-19: `--help` documents "-m, --model model to use in the format of provider/model". |
 | Effort flag | None for Firstmate's interactive `opencode --prompt` launch verified on 1.17.6; `opencode run` has `--variant`, but that is not this path. |
 | Model discovery | Run `opencode models [provider]` to list available provider/model identifiers. |
 | Trust dialog | None. |

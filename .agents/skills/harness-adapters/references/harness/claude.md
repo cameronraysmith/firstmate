@@ -10,7 +10,7 @@ Busy hooks verified 2026-07-28 on Claude Code 2.1.220.
 | Exit | `/exit`. |
 | Interrupt | Single Escape. |
 | Skill | `/<skill>`, for example `/no-mistakes`. |
-| Model | `--model <model>`; discover through the interactive `/model` picker, with alias or full-name shape documented by `claude --help`. |
+| Model | `--model <id>`, the canonical `provider/id` prefix stripped; discover through the interactive `/model` picker, with alias or full-name shape documented by `claude --help`. Model form re-verified 2026-08-19 on Claude Code 2.1.235: `--help` documents "an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name" with no provider prefix. |
 | Effort | `--effort <low\|medium\|high\|xhigh\|max>`, verified on 2.1.196. |
 
 Fresh-worktree or first-machine launch may show trust or bypass-permissions confirmation.

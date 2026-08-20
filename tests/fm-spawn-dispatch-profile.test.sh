@@ -549,8 +549,12 @@ test_cursor_failed_catalog_probe_does_not_block_spawn() {
   rec=$(make_spawn_case profile-cursor-catalog-unreachable cursor "$id")
   read_case_record "$rec"
 
-  FM_TEST_CURSOR_LIST_STATUS=124 \
-    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+  # The 124 prefix sits INSIDE the substitution on purpose: `VAR=x out=$(cmd)`
+  # on a bare assignment statement persists VAR in this shell (unlike a
+  # command prefix), and run_ship_spawn would then forward the leaked 124 into
+  # every LATER cursor spawn's catalog probe, silently fail-opening them.
+  out=$(FM_TEST_CURSOR_LIST_STATUS=124 \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
       --model cursor-catalog-unreachable)
   status=$?
   expect_code 0 "$status" "cursor spawn should fail open when the bounded catalog query fails"
@@ -559,6 +563,95 @@ test_cursor_failed_catalog_probe_does_not_block_spawn() {
     "failed catalog lookup incorrectly removed the requested model"
   assert_meta_profile "$HOME_DIR/state/$id.meta" cursor cursor-catalog-unreachable default
   pass "cursor preserves the requested model when its live catalog is unreachable"
+}
+
+# The model axis is always written canonically as provider/id; each launch arm
+# translates that into its own runtime's accepted form. The bare-id runtimes
+# (claude, codex, cursor) must receive the id alone, the pair-native runtimes
+# (opencode, pi, omp) the combined form verbatim. Cursor additionally
+# preflights the TRANSLATED id against its bare-id catalog, so a canonical
+# model whose id is published must pass and one whose id is not must be
+# refused naming the id.
+test_canonical_model_form_translates_per_harness() {
+  local rec id out status launch
+
+  id=profile-claude-canonical-z9a
+  rec=$(make_spawn_case profile-claude-canonical claude "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model anthropic/claude-opus-5)
+  status=$?
+  expect_code 0 "$status" "claude spawn with a canonical model should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--model 'claude-opus-5'" \
+    "claude must receive the bare id, not the canonical pair"
+  assert_not_contains "$launch" "--model 'anthropic/claude-opus-5'" \
+    "claude's --model has no provider prefix; the canonical pair must be stripped"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude anthropic/claude-opus-5 default
+
+  id=profile-claude-openrouter-z9a2
+  rec=$(make_spawn_case profile-claude-openrouter claude "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model 'openrouter/~anthropic/claude-sonnet-latest')
+  status=$?
+  expect_code 0 "$status" "claude spawn with a nested-slash canonical model should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--model '~anthropic/claude-sonnet-latest'" \
+    "the canonical split must take the first slash only, keeping a provider's own slashes in the id"
+
+  id=profile-codex-canonical-z9b
+  rec=$(make_spawn_case profile-codex-canonical codex "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model openai/gpt-5.2-codex)
+  status=$?
+  expect_code 0 "$status" "codex spawn with a canonical model should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--model 'gpt-5.2-codex'" \
+    "codex must receive the bare id, not the canonical pair"
+  assert_not_contains "$launch" "--model 'openai/gpt-5.2-codex'" \
+    "codex's -m/--model takes a bare id; the canonical pair must be stripped"
+
+  id=profile-cursor-canonical-z9c
+  rec=$(make_spawn_case profile-cursor-canonical cursor "$id")
+  read_case_record "$rec"
+  out=$(FM_TEST_CURSOR_MODELS="Available models
+claude-sonnet-4.5 - Claude Sonnet 4.5" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+      --model anthropic/claude-sonnet-4.5)
+  status=$?
+  expect_code 0 "$status" "cursor spawn with a catalog-published canonical model should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--model 'claude-sonnet-4.5'" \
+    "cursor must receive the translated bare id its catalog publishes"
+  assert_not_contains "$launch" "--model 'anthropic/claude-sonnet-4.5'" \
+    "cursor's --model takes bare ids; the canonical pair must be stripped"
+
+  id=profile-cursor-canonical-absent-z9d
+  rec=$(make_spawn_case profile-cursor-canonical-absent cursor "$id")
+  read_case_record "$rec"
+  out=$(FM_TEST_CURSOR_MODELS="Available models
+claude-sonnet-4.5 - Claude Sonnet 4.5" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+      --model anthropic/claude-opus-4.8)
+  status=$?
+  expect_code 1 "$status" "cursor spawn should refuse a canonical model whose id is not published"
+  assert_contains "$out" "Cursor model 'claude-opus-4.8' is not available" \
+    "the cursor refusal must name the translated bare id, not the canonical pair"
+
+  id=profile-omp-canonical-z9e
+  rec=$(make_spawn_case profile-omp-canonical omp "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model zai/glm-5.3)
+  status=$?
+  expect_code 0 "$status" "omp spawn with a canonical model should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--model 'zai/glm-5.3'" \
+    "omp takes the canonical pair verbatim; nothing must be stripped"
+
+  pass "canonical provider/id model form translates to each runtime's accepted shape"
 }
 
 test_opencode_threads_model_and_ignores_effort_axis() {
@@ -815,6 +908,7 @@ test_grok_omits_invalid_xhigh_reasoning_effort
 test_cursor_threads_model_workspace_and_omits_effort_axis
 test_cursor_refuses_model_absent_from_live_catalog
 test_cursor_failed_catalog_probe_does_not_block_spawn
+test_canonical_model_form_translates_per_harness
 test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
