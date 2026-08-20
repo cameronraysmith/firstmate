@@ -85,6 +85,21 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # through fm_transition_policy - it never re-encodes the mapping.
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
+# Shared harness-process identity (bin/fm-session-lock-lib.sh): the
+# unregisterable-harness liveness fallback below resolves a pane's foreground
+# process through fm_harness_path_name, the fleet's single owner of "which
+# verified harness does this executable path name". Side-effect-free on
+# source, like the two libraries above.
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-session-lock-lib.sh"
+# The busy-state contract library (bin/fm-busy-lib.sh), a leaf with no source
+# dependencies of its own: the unregisterable-harness liveness fallback below
+# reads the per-task busy record through its fm_busy_record_read and
+# fm_busy_source_trusted primitives, so the evidence is available to every
+# caller of the classifier rather than only the scripts that happen to source
+# the busy lib themselves.
+# shellcheck source=bin/fm-busy-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-busy-lib.sh"
 
 # shellcheck source=bin/fm-stat-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-stat-lib.sh"
@@ -2029,17 +2044,136 @@ fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
   esac
 }
 
+# fm_backend_herdr_harness_unregisterable: 0 exactly when <harness> is one
+# firstmate launches that herdr's agent registry structurally cannot register.
+# `herdr agent start --kind` accepts exactly pi, claude, codex, gemini, cursor,
+# devin, agy, cline, omp, mastracode, opencode, copilot, kimi, kiro, droid,
+# amp, grok, hermes, kilo, qodercli, and maki (verified on the installed
+# herdr 0.8.0 client's `agent start --help`, 2026-08-19), and `agent get`
+# answers agent_not_found for anything running in a pane that was never
+# registered through it, so a live worker on an unlisted harness is
+# structurally invisible to the registry. atomic is the live-reproduced case
+# (2026-08-19: a working atomic crewmate, spinner running, extension reporting
+# busy, `agent get` -> agent_not_found, so every control verb refused a
+# provably live agent). muse is absent from the same kind list too, but no
+# muse-on-herdr worker has ever been exercised, so it stays unlisted rather
+# than inheriting atomic's fallback by assumption.
+FM_BACKEND_HERDR_UNREGISTERABLE_HARNESSES='atomic'
+
+fm_backend_herdr_harness_unregisterable() {  # <harness>
+  case " $FM_BACKEND_HERDR_UNREGISTERABLE_HARNESSES " in
+    *" ${1:-} "*) return 0 ;;
+  esac
+  return 1
+}
+
+# fm_backend_herdr_unregisterable_busy_evidence: 0 when this task's busy record
+# positively proves a turn in flight for the recorded harness. The record is
+# firstmate's own evidence, not herdr's: generation-bound to this launch
+# incarnation and source-bound to the harness's own adapter by
+# bin/fm-busy-lib.sh's read and trust primitives, so a valid busy verdict means
+# the worker firstmate launched is running a turn herdr cannot see. Anything
+# else - no record, a stale generation, an untrusted source, an idle verdict -
+# is not liveness evidence.
+fm_backend_herdr_unregisterable_busy_evidence() {  # <harness> <state-dir> <id>
+  local out state source
+  out=$(fm_busy_record_read "$2" "$3" 2>/dev/null) || return 1
+  state=${out%% *}
+  out=${out#* }
+  source=${out%% *}
+  [ "$state" = busy ] || return 1
+  fm_busy_source_trusted "$1" "$source"
+}
+
+# fm_backend_herdr_unregisterable_process_evidence: 0 when the pane's
+# foreground process group positively names the recorded harness's own
+# executable. herdr's `pane process-info` reports the same foreground group the
+# idle-shell proof reads (fm_backend_herdr_pane_idle_shell_sample); a member's
+# name or argv[0] identifies the harness either by an exact executable basename
+# or through fm_harness_path_name's whole-path-component match, and must name
+# THIS task's recorded harness rather than merely any verified harness, so a
+# stranger's agent pane can never stand in for this worker. Scoping to the
+# foreground group is what keeps the negative direction honest: a harness
+# process left behind in an otherwise idle pane is not reported. An unreadable
+# or malformed process-info read refuses.
+fm_backend_herdr_unregisterable_process_evidence() {  # <session> <pane_id> <harness>
+  local session=$1 pane_id=$2 harness=$3 info names name base
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg pane "$pane_id" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+    and (.result.process_info.foreground_processes | type) == "array"
+  ' >/dev/null 2>&1 || return 1
+  names=$(printf '%s' "$info" | jq -r '
+    .result.process_info.foreground_processes[]
+    | [(.name // ""), ((.argv0 // .argv[0] // ""))]
+    | .[]
+    | select(type == "string" and length > 0)
+  ' 2>/dev/null) || return 1
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    base=${name##*/}
+    base=${base#-}
+    if [ "$base" = "$harness" ]; then return 0; fi
+    if [ "$(fm_harness_path_name "$name" 2>/dev/null || true)" = "$harness" ]; then
+      return 0
+    fi
+  done <<EOF
+$names
+EOF
+  return 1
+}
+
+# fm_backend_herdr_unregisterable_harness_live: the one gate the recovery-grade
+# classifier consults before reporting an agent_not_found pane alive. Returns 0
+# ONLY when every leg holds: the caller supplied the task's meta record, its
+# recorded harness is one herdr structurally cannot register, and firstmate's
+# own evidence - a generation-bound busy record from the harness's own adapter,
+# or the pane's foreground process naming the harness executable - positively
+# proves the launched worker live. A herdr-registerable harness never reaches
+# the evidence legs at all, so its classification is byte-identical to before;
+# an unregisterable harness without positive evidence keeps `dead`, so the
+# recovery-licensing states stay exactly as narrow as they were.
+fm_backend_herdr_unregisterable_harness_live() {  # <session> <pane_id> <meta-file>
+  local session=$1 pane_id=$2 meta=$3 harness id state_dir
+  command -v fm_meta_get >/dev/null 2>&1 || return 1
+  [ -n "$meta" ] && [ -f "$meta" ] || return 1
+  harness=$(fm_meta_get "$meta" harness)
+  [ -n "$harness" ] || return 1
+  fm_backend_herdr_harness_unregisterable "$harness" || return 1
+  id=${meta##*/}
+  id=${id%.meta}
+  [ -n "$id" ] || return 1
+  state_dir=$(dirname -- "$meta")
+  fm_backend_herdr_unregisterable_busy_evidence "$harness" "$state_dir" "$id" && return 0
+  fm_backend_herdr_unregisterable_process_evidence "$session" "$pane_id" "$harness" && return 0
+  return 1
+}
+
 # fm_backend_herdr_agent_state: recovery-grade state for the same session-start
 # sweep as the tmux classifier. It reuses the husk classifier rather than
 # creating a second Herdr state machine: a structurally gone pane is `missing`,
-# a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
-# unexpected or failed API read is `unreadable`.
-fm_backend_herdr_agent_state() {  # <target>
-  local target=$1
+# a registered agent is `alive`, and an unexpected or failed API read is
+# `unreadable`. A confirmed agent-less pane is `dead` - except when the caller
+# supplies the task's meta record and its recorded harness is one herdr
+# structurally cannot register, where agent_not_found is herdr's blind spot
+# rather than evidence of absence and firstmate's own positive evidence may
+# carry the verdict (fm_backend_herdr_unregisterable_harness_live). Every other
+# no-agent pane keeps `dead`.
+fm_backend_herdr_agent_state() {  # <target> [<meta-file>]
+  local target=$1 meta=${2:-} pane_state
   fm_backend_herdr_parse_target "$target" || { printf 'unreadable'; return 0; }
-  case "$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+  pane_state=$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  case "$pane_state" in
     dead) printf 'missing' ;;
-    no-agent) printf 'dead' ;;
+    no-agent)
+      if fm_backend_herdr_unregisterable_harness_live \
+           "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$meta"; then
+        printf 'alive'
+      else
+        printf 'dead'
+      fi
+      ;;
     live) printf 'alive' ;;
     *) printf 'unreadable' ;;
   esac

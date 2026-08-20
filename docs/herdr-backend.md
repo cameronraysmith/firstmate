@@ -297,6 +297,7 @@ This prevents closing the workspace's last tab before a replacement exists.
 The generic Herdr agent-liveness probe reuses the same classifier.
 A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
+The one exception is a harness herdr structurally cannot register - atomic is absent from `agent start --kind` - whose live worker always answers `agent_not_found`: for exactly that recorded harness, the classifier accepts firstmate's own positive evidence (a validated busy record from the harness's adapter, or the pane's foreground process naming the harness executable) and reports `alive`, while every registerable harness and every evidence-free read keeps the verdict above; [bin/backends/herdr.sh](../bin/backends/herdr.sh) owns the gate.
 
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.

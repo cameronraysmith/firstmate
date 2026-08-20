@@ -792,7 +792,7 @@ secondmate_liveness_one() {  # <meta> <id>
   backend=$(fm_backend_of_meta "$meta")
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
-  agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
+  agent_state=$(fm_backend_agent_state "$backend" "$target" "$meta" 2>/dev/null) || agent_state=unreadable
   # Only a harness whose secondmate launch is built belongs here: an unlisted one
   # downgrades dead/missing to unverified-harness and is reported rather than
   # relaunched. atomic and muse are deliberately absent, because bin/fm-spawn.sh
