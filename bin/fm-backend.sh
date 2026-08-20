@@ -881,16 +881,22 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 #   unverified - this backend has no recovery classifier.
 # Only `dead` and `missing` license recovery. The tmux adapter requires a
 # successful session inventory and returns `missing` only when it omits the
-# exact window; the Herdr adapter reuses its husk
-# classifier. Zellij remains unverified because its secondmate ghost-tab and
-# agent-process recovery path has not been empirically validated. Orca and cmux
-# do not support secondmate spawns.
-fm_backend_agent_state() {  # <backend> <target>
-  local backend=$1 target=$2
+# exact window; the Herdr adapter reuses its husk classifier, and when the
+# caller supplies the task's meta record, firstmate's own evidence may carry
+# an agent_not_found pane whose recorded harness herdr structurally cannot
+# register (bin/backends/herdr.sh's
+# fm_backend_herdr_unregisterable_harness_live). Zellij remains unverified
+# because its secondmate ghost-tab and agent-process recovery path has not
+# been empirically validated. Orca and cmux do not support secondmate spawns.
+# <meta-file> is optional and ignored by every backend that has no use for it;
+# callers that hold a task's meta record should pass it so the classifier sees
+# the recorded harness.
+fm_backend_agent_state() {  # <backend> <target> [<meta-file>]
+  local backend=$1 target=$2 meta=${3:-}
   fm_backend_source "$backend" || { printf 'unverified'; return 0; }
   case "$backend" in
     tmux) fm_backend_tmux_agent_state "$target" ;;
-    herdr) fm_backend_herdr_agent_state "$target" ;;
+    herdr) fm_backend_herdr_agent_state "$target" "$meta" ;;
     *) printf 'unverified' ;;
   esac
 }
@@ -898,8 +904,8 @@ fm_backend_agent_state() {  # <backend> <target>
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.
-fm_backend_agent_alive() {  # <backend> <target>
-  case "$(fm_backend_agent_state "$1" "$2")" in
+fm_backend_agent_alive() {  # <backend> <target> [<meta-file>]
+  case "$(fm_backend_agent_state "$1" "$2" "${3:-}")" in
     alive) printf 'alive' ;;
     dead|missing) printf 'dead' ;;
     *) printf 'unknown' ;;
