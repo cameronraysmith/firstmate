@@ -255,6 +255,8 @@ export FM_BACKEND_HERDR_WORKSPACE_MOVER="$FAKEBIN/herdr-workspace-mover"
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
 # This suite runs against its own isolated lab session, so a Herdr pane
 # inherited from the terminal it was launched in must not follow spawn into it
 # as a cross-session parent identity. Every projection below is anchored on the
@@ -269,30 +271,29 @@ export HERDR_SESSION="$HERDR_LAB_SESSION" HERDR_LAB_SESSION
 herdr_reserve_orchestrator_session "$HERDR_LAB_SESSION" \
   || { echo "not ok - could not reserve the lab orchestrator session" >&2; exit 1; }
 LAB_READY=0
-RECORDED_WORKTREES=""
 LOCK_CONTENTION_OWNER_PID=
 cleanup_all() {
-  local wt
+  # Bounded: the lock owner below holds a session presentation lock, and an
+  # unbounded wait on one that fails to exit would strand the lab teardown and
+  # the treehouse pool release that follow it.
   if [ -n "$LOCK_CONTENTION_OWNER_PID" ]; then
-    kill "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
-    wait "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
+    fm_test_reap_bounded "$LOCK_CONTENTION_OWNER_PID" >/dev/null 2>&1 || true
     LOCK_CONTENTION_OWNER_PID=
   fi
-  while IFS= read -r wt; do
-    [ -n "$wt" ] || continue
-    [ -d "$wt" ] || continue
-    "$REAL_TREEHOUSE" return --force "$wt" >/dev/null 2>&1 || true
-  done <<EOF
-$RECORDED_WORKTREES
-EOF
   if [ "$LAB_READY" -eq 1 ]; then
     PATH="$HERDR_ORIGINAL_PATH" \
       "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" >/dev/null 2>&1 || true
     LAB_READY=0
   fi
+  fm_test_pool_release_all || true
   rm -rf "$TMP_ROOT"
 }
 trap cleanup_all EXIT
+# A fatal signal otherwise skips the EXIT trap entirely, stranding this run's
+# lab session and treehouse pool; converting it to a normal exit runs the
+# cleanup above (tests/lib.sh uses the same pattern).
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 PATH="$HERDR_ORIGINAL_PATH" \
   "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
@@ -367,16 +368,23 @@ assert_cleanup_focus_preserved() {  # <line-count> <pane-id> <expected-focus>
   fi
 }
 
+# Asserts the spawn recorded a worktree and echoes it. Releasing the pool is
+# keyed on the fixture project instead (tests/cleanup-safety.sh), which is what
+# makes it correct here: most callers invoke this inside $(...), so any list this
+# function accumulated died with that subshell and never reached cleanup.
 remember_meta_worktree() {  # <meta>
   local wt
   wt=$(grep '^worktree=' "$1" | cut -d= -f2-)
   [ -n "$wt" ] || fail "metadata did not record a worktree"
-  RECORDED_WORKTREES="${RECORDED_WORKTREES}${wt}"$'\n'
   printf '%s' "$wt"
 }
 
 make_project() {  # <dir>
   local dir=$1
+  # Registering here covers every fixture repo this suite creates, so the
+  # treehouse pool acquired against it is destroyed before the repo is deleted
+  # (tests/cleanup-safety.sh).
+  fm_test_pool_register "$dir"
   mkdir -p "$dir"
   git -C "$dir" init -q
   printf '# Herdr projection E2E fixture\n' > "$dir/README.md"
@@ -715,7 +723,8 @@ else
   LOCK_CONTENTION_STATUS=$?
 fi
 : > "$LOCK_CONTENTION_RELEASE"
-wait "$LOCK_CONTENTION_OWNER_PID" || fail "guarded lab presentation lock owner failed"
+fm_test_wait_bounded "$LOCK_CONTENTION_OWNER_PID" \
+  || fail "guarded lab presentation lock owner failed or did not release within the bound"
 LOCK_CONTENTION_OWNER_PID=
 [ "$LOCK_CONTENTION_STATUS" -eq 0 ] \
   || fail "bounded presentation lock contention did not fall back to a successful flat spawn: $(cat "$TMP_ROOT/lock-contended.err")"
@@ -1144,7 +1153,8 @@ else
   AFLAT_STATUS=$?
 fi
 : > "$CROSS_LOCK_RELEASE"
-wait "$CROSS_LOCK_PID" || fail "cross-home session lock owner failed"
+fm_test_wait_bounded "$CROSS_LOCK_PID" \
+  || fail "cross-home session lock owner failed or did not release within the bound"
 [ "$AFLAT_STATUS" -eq 0 ] \
   || fail "cross-home lock contention did not fall back flat: $(cat "$TMP_ROOT/aflat.err")"
 grep -F "presentation focus lock unavailable; using the ordinary flat layout without projection" "$TMP_ROOT/aflat.err" >/dev/null 2>&1 \
