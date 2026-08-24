@@ -135,7 +135,7 @@ family_for_basename() {
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
     fm-bearings-board.test.sh|\
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
-    fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
+    fm-cd-pretool-check.test.sh|\
     fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
@@ -406,7 +406,6 @@ tests/fm-bootstrap-network-parallel.test.sh 8000
 tests/fm-bootstrap.test.sh 38417
 tests/fm-busy-adapter-wiring.test.sh 14880
 tests/fm-busy-state.test.sh 714
-tests/fm-calm-pi-extension.test.sh 464
 tests/fm-classify-decision-key.test.sh 928
 tests/fm-claude-stop-autoarm-live-e2e.test.sh 30
 tests/fm-claude-stop-autoarm.test.sh 60633

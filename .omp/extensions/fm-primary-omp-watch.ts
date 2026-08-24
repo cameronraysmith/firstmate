@@ -37,9 +37,8 @@ import { encodeFirstmateOperationalInput } from "../../.pi/extensions/lib/fm-ope
 // @earendil-works/pi-coding-agent - see the type note in
 // .omp/extensions/fm-primary-turnend-guard.ts. Only the members measured on omp
 // appear here. omp publishes typebox ON the API object, so the tool schema needs no
-// module import, and this extension registers no custom renderers: Firstmate's Calm
-// presentation is a Pi extension, and omp's default tool rendering was verified to
-// display the arm result on its own.
+// module import, and this extension registers no custom renderers: omp's default
+// tool rendering was verified to display the arm result on its own.
 type OmpToolResult = {
   content: Array<{ type: "text"; text: string }>;
   details?: unknown;
