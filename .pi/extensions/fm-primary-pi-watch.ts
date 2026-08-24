@@ -34,11 +34,6 @@ import {
   FM_BRANCH_DISPATCH_EVENT,
   scopeForUnreadWake,
 } from "./lib/fm-branch-dispatch.ts";
-import {
-  type CalmPresentationState,
-  calmTranscriptClassIsVisible,
-  FIRSTMATE_CALM_PRESENTATION_EVENT,
-} from "./lib/fm-calm-visibility.ts";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
 
 type ArmResult = {
@@ -494,22 +489,6 @@ process.once("exit", cleanupOnProcessExit);
 export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
   activateGeneration(generation);
-
-  let calmPresentation: CalmPresentationState = {
-    active: false,
-    stockExportRendering: false,
-  };
-  pi.events?.on?.(FIRSTMATE_CALM_PRESENTATION_EVENT, (data) => {
-    const next = data as Partial<CalmPresentationState>;
-    calmPresentation = {
-      active: next.active === true,
-      stockExportRendering: next.stockExportRendering === true,
-    };
-  });
-  const calmHides = (itemClass: Parameters<typeof calmTranscriptClassIsVisible>[0]): boolean =>
-    calmPresentation.active &&
-    !calmPresentation.stockExportRendering &&
-    !calmTranscriptClassIsVisible(itemClass);
 
   async function sendWake(
     owner: SessionGeneration,
@@ -1110,23 +1089,15 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     renderShell: "self",
     renderCall: (_args, theme, context) => {
-      if (calmHides("assistant-tool-call")) return new Container();
-      if (calmPresentation.stockExportRendering) {
-        return new Text(theme.fg("toolTitle", theme.bold("fm_watch_arm_pi")), 0, 0);
-      }
       const state = context.state as WatchToolShellState;
       state.call = new Text(theme.fg("toolTitle", theme.bold("fm_watch_arm_pi")), 0, 0);
       return refreshWatchToolShell(state, theme, context);
     },
     renderResult: (result, _options, theme, context) => {
-      if (calmHides("tool-result")) return new Container();
       const output = result.content
         .filter((item) => item.type === "text")
         .map((item) => item.text)
         .join("\n");
-      if (calmPresentation.stockExportRendering) {
-        return new Text(theme.fg("toolOutput", output), 0, 0);
-      }
       const state = context.state as WatchToolShellState;
       state.result = output
         ? new Text(theme.fg("toolOutput", output), 0, 0)
