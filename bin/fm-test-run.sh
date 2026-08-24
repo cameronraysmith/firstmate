@@ -1158,6 +1158,18 @@ families_for_changed_path() {
       printf '%s\n' __script__:fm-procevent-when.test.sh
       printf '%s\n' __script__:fm-remote-reply.test.sh
       ;;
+    .pi/extensions/*|.omp/extensions/*|.atomic/extensions/*)
+      # A retired extension has no consuming suite left to select, the same rule
+      # the bin/* and fixture cases below apply: the reference scan finds a
+      # module by the fixtures that copy it, so once the module and those copies
+      # are both gone there is nothing left to map. Refusing on that absent
+      # mapping would make every extension-retirement branch unable to select
+      # its own changed tests.
+      if [ -e "$path" ]; then
+        families_for_test_reference "$path" \
+          || printf '%s\n' "__unmapped__:$path"
+      fi
+      ;;
     bin/fm-timeout-lib.sh)
       # The shared hard bound: session start's runtime bound, the fleet/bearings
       # snapshots, the vendor auth probe, the stow cascade's per-home step, and
