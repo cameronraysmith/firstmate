@@ -25,15 +25,17 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
-## Pi supervision branch
+## Supervision branch (Pi and omp)
 
-On a Pi primary, an in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns its conversation lifecycle, row eligibility, mixed-queue dispatch, heartbeat routing, and pre-drain recheck.
-Supervision is default-on: once a Pi primary session owns this home's fleet lock, the branch is eligible for every task with no captain grant file required.
-A genuinely no-op heartbeat is absorbed in bash and never reaches Pi, and every watcher-failure alarm stays on the captain-facing main path.
+On a Pi or omp primary, an in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns its conversation lifecycle, row eligibility, mixed-queue dispatch, heartbeat routing, and the pre-drain recheck, and `.omp/extensions/fm-branch-supervision.ts` owns where omp's surface differs.
+Supervision is default-on: once such a primary session owns this home's fleet lock, the branch is eligible for every task with no captain grant file required.
+A genuinely no-op heartbeat is absorbed in bash and never reaches the branch, and every watcher-failure alarm stays on the captain-facing main path.
 Away mode still declines every wake offer, and a broken branch still falls back to today's wake-to-main path.
 The branch's role stays bounded exactly as the captain-approved architecture set it: it cannot merge a PR, land local work, or freshly spawn, and every existing captain gate remains unchanged.
 Homes on any other primary harness never load this feature and are entirely unaffected.
 `AGENTS.md`'s `state/` inventory routes the branch's runtime files to their format and lifecycle owners.
+The two harnesses share the outcome store and the leases but keep separate conversations and cursors: omp's are the same names under `state/omp-branch-session/`, `.omp-branch-session`, and `.omp-branch-mirror-cursor`, because Pi's extensions load on omp and are inert there, so neither harness may answer an ownership question with the other's state.
+On omp the merge note also waits for a fully settled turn rather than riding the next one, because omp has no `agent_settled` event; [docs/supervision-protocols/omp.md](supervision-protocols/omp.md) states what an omp primary should expect.
 A captain-facing (verdict `captain`) branch outcome persists as one exact, sequence-keyed visible transcript entry and then opens one sequence-keyed processing turn on main, which stays open until main acknowledges that sequence through its `fm_branch_processed` tool.
 The branch prompt's "Verdict: routine or captain" section owns the distinction between captain-facing, unsolicited routine, and unchanged-review outcomes.
 The generated [Pi supervision protocol](supervision-protocols/pi.md) owns main's event ownership, acknowledgement duty, and conversational treatment for merged outcomes, while the persisted entry itself owns captain visibility.
