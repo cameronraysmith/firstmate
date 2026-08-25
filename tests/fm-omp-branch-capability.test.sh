@@ -25,7 +25,11 @@ if [ "${FM_OMP_BRANCH_CAPABILITY:-0}" != 1 ]; then
   exit 0
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# No repository root is resolved here on purpose. Unlike every other test in
+# tests/, this probe copies nothing out of the tree: it writes its own probe
+# extension into a disposable lab and measures the installed omp's API. Building
+# it from the tracked extension's source would make the probe assert
+# implementation bytes, which is exactly what it must not do.
 
 fail() {
   printf 'not ok - %s\n' "$1" >&2
