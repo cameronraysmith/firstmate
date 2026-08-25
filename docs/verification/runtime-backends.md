@@ -1069,6 +1069,41 @@ The focused extension suite also exercised the installed Pi 0.84.4 picker and ou
 Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.
 The extension executes inside the signed CLI's own runtime, so a CLI upgrade can drift ahead of the pinned npm surface; refresh this record after every Pi upgrade by re-running the live guard, picker regression, and strict typecheck above (point `FM_PI_PACKAGE_DIR` at a matching npm install when one exists) and by watching the branch's own fallback line - every branch failure degrades to the pre-branch wake-to-main path by construction, which `tests/fm-pi-branch-extension.test.sh` holds with a broken generator and the live guard holds with the real SDK.
 
+## omp supervision branch
+
+The omp supervision-branch extension (`.omp/extensions/fm-branch-supervision.ts`) carries the same design as Pi's through a different surface, so the claim that omp can host it is measured rather than inherited.
+omp needs no `DefaultResourceLoader`, no `before_provider_request` cache-key hook, and no `createBashToolDefinition`: `createAgentSession` takes the isolation controls and `providerPromptCacheKey` directly, and the branch actor identity is injected by a `tool_call` input revision.
+omp has no `agent_settled` event, so the merge gate is a substitute built on `agent_end`'s `willContinue` flag plus `ctx.isIdle()` and `ctx.hasPendingMessages()`.
+
+Evidence produced 2026-08-25 on macOS 26.5.2 arm64, Node v22.23.2, against the installed `omp/18.0.4`:
+
+```text
+$ FM_OMP_BRANCH_CAPABILITY=1 bin/fm-test-run.sh tests/fm-omp-branch-capability.test.sh
+probing omp omp/18.0.4
+ok - omp omp/18.0.4: createAgentSession is exported from @oh-my-pi/pi-coding-agent
+ok - omp omp/18.0.4: SessionManager is exported from @oh-my-pi/pi-coding-agent
+ok - omp omp/18.0.4: a fully isolated branch session can be created
+ok - omp omp/18.0.4: createAgentSession accepts a caller-pinned providerPromptCacheKey
+ok - omp omp/18.0.4: createAgentSession accepts a restricted tool set
+ok - omp omp/18.0.4: pi.sendMessage is available to main
+ok - omp omp/18.0.4: sendCustomMessage on an idle session starts no turn
+ok - omp omp/18.0.4: the event bus reaches a handler synchronously through accept()
+ok - omp omp/18.0.4: ctx.isIdle is available on lifecycle handlers
+ok - omp omp/18.0.4: ctx.hasPendingMessages is available on lifecycle handlers
+ok - omp omp/18.0.4: ctx.setInterval is available for the bounded settle sweep
+ok - omp omp/18.0.4: ctx.sessionManager exposes getEntries for the dialog mirror
+ok - omp omp/18.0.4: agent_end fired at least once
+ok - omp omp/18.0.4: agent_end carries the willContinue continuation flag
+ok - omp omp/18.0.4: agent_settled never fires (the substitute is still required)
+ok - omp omp/18.0.4 carries every supervision-branch capability, and still has no agent_settled
+```
+
+The `agent_settled` line is the load-bearing one and is a NEGATIVE assertion on purpose: the substitute exists only because omp has no such event, so the day omp gains one this probe fails and the substitute is revisited instead of quietly rotting beside a native alternative.
+Both directions were confirmed falsifiable at the same run: asserting a capability omp does not have failed the probe, and re-pointing the `agent_settled` counter at a real event failed it with `expected 0, got 1`.
+
+Refresh this record after every omp upgrade by re-running the command above.
+The portable half - the merge gate itself, the process-scoped cycle, `.omp`-rooted markers, and the fallback to main - is pinned by `tests/fm-omp-branch-extension.test.sh` and the watcher-side offer tests in `tests/fm-omp-primary-extensions.test.sh`, neither of which needs omp installed.
+
 ## omp (oh-my-pi)
 
 omp is a Pi fork with its own identity, config root (`~/.omp/agent`), lifecycle events, and composer shape.
