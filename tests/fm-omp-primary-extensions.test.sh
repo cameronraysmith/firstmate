@@ -14,17 +14,20 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-omp-primary-extensions)
 GUARD_EXT="$ROOT/.omp/extensions/fm-primary-turnend-guard.ts"
 WATCH_EXT="$ROOT/.omp/extensions/fm-primary-omp-watch.ts"
+BRANCH_EXT="$ROOT/.omp/extensions/fm-branch-supervision.ts"
 export NODE_NO_WARNINGS=1
 
-# The extensions import the ONE operational-input adapter across roots, and that
-# adapter resolves bin/fm-operational-input.sh from its own module path, so a
-# fixture repo needs both trees.
+# The extensions import the ONE operational-input adapter and the ONE branch
+# dispatch handshake across roots, and the operational adapter resolves
+# bin/fm-operational-input.sh from its own module path, so a fixture repo needs
+# both trees.
 install_omp_extension_fixture() {
   local repo=$1
   mkdir -p "$repo/.omp/extensions" "$repo/.pi/extensions/lib" "$repo/bin"
   cp "$GUARD_EXT" "$repo/.omp/extensions/fm-primary-turnend-guard.ts"
   cp "$WATCH_EXT" "$repo/.omp/extensions/fm-primary-omp-watch.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$repo/.pi/extensions/lib/fm-branch-dispatch.ts"
   cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
   chmod +x "$repo/bin/fm-operational-input.sh"
 }
@@ -440,12 +443,156 @@ test_watch_extension_is_process_scoped_not_session_scoped() {
   pass "omp watch extension owns one process-scoped cycle rather than a per-session generation"
 }
 
+# The watcher half of the branch handshake. The branch's own suite drives the
+# branch; nothing else proves the WATCHER offers a wake before delivering it,
+# nor that an accepted wake leaves main alone.
+#
+# Each phase runs its own driver: an actionable close makes the watcher restore
+# and re-arm, so offers keep arriving and counting them across a mode switch
+# would be racing the cycle rather than testing it.
+run_branch_offer_driver() {
+  local repo=$1 home=$2 accept=$3
+  PLUGIN="$repo/.omp/extensions/fm-primary-omp-watch.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" \
+    FM_BRANCH_OFFER_ACCEPT="$accept" \
+    FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=1 \
+    node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const accept = process.env.FM_BRANCH_OFFER_ACCEPT === "1";
+let handler = null;
+let prompt = "";
+const offers = [];
+const pi = {
+  on() {},
+  typebox: { Type: { Object: (p) => ({ type: "object", properties: p }) } },
+  events: {
+    emit(channel, data) {
+      offers.push({ channel, data });
+      if (accept) data.accept();
+    },
+  },
+  registerCommand(name, options) { if (name === "fm-watch-arm-omp") handler = options.handler; },
+  registerTool() {},
+  sendUserMessage: async (message) => { prompt = message; },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handler("", { ui: { notify() {} } });
+for (let i = 0; i < 250 && offers.length === 0; i += 1) await new Promise((r) => setTimeout(r, 20));
+if (offers.length === 0) {
+  console.error("the watcher never offered the actionable wake to the branch");
+  process.exit(1);
+}
+if (offers[0].channel !== "fm-branch-supervision:dispatch") {
+  console.error(`offer went to the wrong channel: ${offers[0].channel}`);
+  process.exit(1);
+}
+// The offer must carry the scope the branch needs in order to refuse safely.
+if (offers[0].data.eligible !== true || offers[0].data.projects.length !== 1) {
+  console.error(`offer lost its resolved scope: ${JSON.stringify(offers[0].data)}`);
+  process.exit(1);
+}
+// Give an unaccepted wake every chance to reach main, and an accepted one every
+// chance to leak there.
+for (let i = 0; i < 100 && !prompt; i += 1) await new Promise((r) => setTimeout(r, 20));
+if (accept) {
+  if (prompt) {
+    console.error(`an accepted wake still woke main: ${prompt}`);
+    process.exit(1);
+  }
+} else if (!prompt.includes("FIRSTMATE WATCHER WAKE")) {
+  console.error(`an unaccepted wake did not reach main: ${prompt}`);
+  process.exit(1);
+}
+process.exit(0);
+EOF
+}
+
+test_watch_extension_offers_actionable_wakes_to_the_branch() {
+  local repo home out status=0
+  repo="$TMP_ROOT/branch-offer-root"
+  home="$TMP_ROOT/branch-offer-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$home/projects/approved"
+  install_omp_extension_fixture "$repo"
+  printf 'project=%s\nwindow=fm-branch-driver\n' "$home/projects/approved" > "$home/state/branch-driver.meta"
+  printf '1\t1\tsignal\tbranch-driver.status\tsignal: done: portable omp wake\n' > "$home/state/.wake-queue"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'watcher: started pid=4242 recovery-generation=g1\n'
+printf 'signal: done: portable omp wake\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(run_branch_offer_driver "$repo" "$home" 0) || status=$?
+  expect_code 0 "$status" "an unaccepted wake must reach main exactly as it did before the branch" "$out"
+  status=0
+  out=$(run_branch_offer_driver "$repo" "$home" 1) || status=$?
+  expect_code 0 "$status" "an accepted wake must be owned by the branch and leave main alone" "$out"
+  pass "the omp watcher offers each actionable wake and only wakes main when nobody takes it"
+}
+
+# Fail toward main: an offer path that throws must not take the watcher cycle
+# down, because a watcher that will not load leaves the home with no supervision
+# at all. Every other pi member stays required for the opposite reason.
+test_watch_extension_survives_a_broken_branch_offer() {
+  local repo home out status=0
+  repo="$TMP_ROOT/broken-offer-root"
+  home="$TMP_ROOT/broken-offer-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_omp_extension_fixture "$repo"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'watcher: started pid=4242 recovery-generation=g1\n'
+printf 'signal: done: portable omp wake\n'
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$repo/.omp/extensions/fm-primary-omp-watch.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" \
+    FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=1 \
+    node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+let handler = null;
+let prompt = "";
+const pi = {
+  on() {},
+  typebox: { Type: { Object: (p) => ({ type: "object", properties: p }) } },
+  events: {
+    emit() {
+      throw new Error("branch handler exploded");
+    },
+  },
+  registerCommand(name, options) { if (name === "fm-watch-arm-omp") handler = options.handler; },
+  registerTool() {},
+  sendUserMessage: async (message) => { prompt = message; },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handler("", { ui: { notify() {} } });
+for (let i = 0; i < 250 && !prompt; i += 1) await new Promise((r) => setTimeout(r, 20));
+if (!prompt.includes("FIRSTMATE WATCHER WAKE")) {
+  console.error(`a throwing branch offer swallowed the wake instead of falling back to main: ${prompt}`);
+  process.exit(1);
+}
+process.exit(0);
+EOF
+) || status=$?
+  expect_code 0 "$status" "a throwing branch offer must degrade to the wake-to-main path" "$out"
+  pass "a throwing branch offer degrades to main instead of taking the watcher cycle down"
+}
+
 test_extensions_never_import_pi_vendor_modules() {
   # Typing an omp extension with Pi's ExtensionAPI describes Pi's events, not
   # omp's, and importing Pi's TUI would tie omp to a presentation layer it has no
   # Firstmate extension for. Both are how a Pi shape gets re-borrowed by accident.
+  # The matching positive fact - that the branch extension resolves against omp's
+  # OWN package - is proven behaviorally instead, by the native-only node_modules
+  # fixture in tests/fm-omp-branch-extension.test.sh: a Pi-specifier branch would
+  # not load there at all.
   local ext
-  for ext in "$GUARD_EXT" "$WATCH_EXT"; do
+  for ext in "$GUARD_EXT" "$WATCH_EXT" "$BRANCH_EXT"; do
     grep -q 'from "@earendil-works/' "$ext" \
       && fail "$(basename "$ext") imports a Pi vendor module"
   done
@@ -462,4 +609,6 @@ test_watch_extension_wake_carries_no_options_object
 test_watch_extension_redundant_arm_is_an_owned_noop
 test_watch_extension_refuses_a_foreign_session_lock
 test_watch_extension_is_process_scoped_not_session_scoped
+test_watch_extension_offers_actionable_wakes_to_the_branch
+test_watch_extension_survives_a_broken_branch_offer
 test_extensions_never_import_pi_vendor_modules
