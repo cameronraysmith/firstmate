@@ -943,6 +943,12 @@ test_github_still_forwards_sha_arg() {
 # A merge that lands must leave a record outside the merging agent's memory.
 # bin/fm-merge-outcome-lib.sh owns where that record goes; these cases pin the
 # behavior through the real merge entrypoint.
+#
+# These cases pin WHERE a landed merge is recorded, not which landing shape ran,
+# so each states its landing explicitly with an explicit forge method. They must:
+# the default landing here is a local fast-forward, which needs a real project
+# clone on disk, and these outcome fixtures deliberately build only a home. The
+# default landing has its own cases further down, which do build that clone.
 
 # make_home_case <name> [<route> [<parent-home>]]: a case dir whose home is a
 # secondmate home bound to a parent, or a plain main home when no route is
@@ -975,7 +981,7 @@ test_secondmate_merge_reports_upward_once() {
   : >"$case_dir/gh-axi.log"
   replies="$case_dir/state/parent-replies.status"
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout" 2>"$case_dir/stderr" || fail "secondmate-merge-reports: merge failed"
 
   assert_grep "done [key=merged-task-x1]: merged task-x1 $url" "$replies" \
@@ -985,7 +991,7 @@ test_secondmate_merge_reports_upward_once() {
 
   # The same merge again: the forge accepts it in this fixture, so only the
   # at-most-once contract can keep the parent from being told twice.
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout2" 2>"$case_dir/stderr2" || fail "secondmate-merge-reports: repeat merge failed"
   [ "$(parent_reply_lines "$replies" "$url")" -eq 1 ] \
     || fail "secondmate-merge-reports: a repeat merge of the same PR duplicated the upward line"
@@ -1001,7 +1007,7 @@ test_secondmate_merge_reports_on_the_local_route() {
   : >"$case_dir/gh-axi.log"
   parent_status="$TMP_ROOT/secondmate-merge-local/parent/state/mate-x.status"
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout" 2>"$case_dir/stderr" || fail "secondmate-merge-local: merge failed"
 
   assert_grep "done [key=merged-task-x1]: merged task-x1 $url" "$parent_status" \
@@ -1018,7 +1024,7 @@ test_failed_merge_reports_nothing() {
   : >"$case_dir/gh-axi.log"
 
   set +e
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/63 \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/63 -- --squash \
     >"$case_dir/stdout" 2>"$case_dir/stderr"
   rc=$?
   set -e
@@ -1056,7 +1062,7 @@ test_gitlab_merge_reports_upward() {
   printf 'schema=fm-secondmate-parent.v1\nroute=remote\n' >"$case_dir/home/.fm-secondmate-parent"
   url=$MR_URL
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout" 2>"$case_dir/stderr" || fail "gitlab-merge-reports: merge failed"
 
   assert_grep "done [key=merged-task-x1]: merged task-x1 $url" \
@@ -1091,7 +1097,7 @@ test_main_home_merge_leaves_a_durable_wake() {
   add_gh_mocks "$case_dir" 7777777777777777777777777777777777777777
   : >"$case_dir/gh-axi.log"
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout" 2>"$case_dir/stderr" || fail "main-merge-wake: merge failed"
 
   assert_grep "$url" "$case_dir/state/.wake-queue" \
@@ -1111,7 +1117,7 @@ test_queued_github_merge_leaves_the_poll_armed() {
   : >"$case_dir/gh-axi.log"
 
   FM_TEST_GH_MERGE_STATE=open FM_TEST_HOME="$case_dir/home" \
-    run_pr_merge "$case_dir" task-x1 "$url" \
+    run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
       >"$case_dir/stdout" 2>"$case_dir/stderr" \
     || fail "queued-github-merge: accepted merge command failed"
 
@@ -1132,13 +1138,13 @@ test_distinct_merged_prs_keep_distinct_wakes() {
   add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   : >"$case_dir/gh-axi.log"
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$first_url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$first_url" -- --squash \
     >"$case_dir/stdout-1" 2>"$case_dir/stderr-1" \
     || fail "distinct-merge-wakes: first merge failed"
   rm -f "$case_dir/state/task-x1.check.sh" \
     "$case_dir/state/task-x1.pr-poll" \
     "$case_dir/state/task-x1.pr-poll-registration"
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$second_url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$second_url" -- --squash \
     >"$case_dir/stdout-2" 2>"$case_dir/stderr-2" \
     || fail "distinct-merge-wakes: second merge failed"
 
@@ -1178,7 +1184,7 @@ SH
   export FM_TEST_REAL_MV
   FM_TEST_REAL_MV=$(command -v mv)
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout-1" 2>"$case_dir/stderr-1" \
     || fail "uncommitted-wake-retry: landed merge was reported as failed"
   assert_grep 'could not record the outcome' "$case_dir/stderr-1" \
@@ -1191,7 +1197,7 @@ SH
   [ ! -e "$case_dir/state/task-x1.pr-poll-merge-notified" ] \
     || fail "uncommitted-wake-retry: failed marker commit was treated as complete"
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout-2" 2>"$case_dir/stderr-2" \
     || fail "uncommitted-wake-retry: retry failed"
   unset FM_TEST_MARKER_FAILURE FM_TEST_REAL_MV
@@ -1214,7 +1220,7 @@ test_secondmate_without_parent_binding_is_loud() {
   printf '%s\n' mate-x >"$case_dir/home/.fm-secondmate-home"
 
   set +e
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout" 2>"$case_dir/stderr"
   rc=$?
   set -e
