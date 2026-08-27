@@ -1895,6 +1895,12 @@ test_github_still_forwards_sha_arg() {
 # A merge that lands must leave a record outside the merging agent's memory.
 # bin/fm-merge-outcome-lib.sh owns where that record goes; these cases pin the
 # behavior through the real merge entrypoint.
+#
+# These cases pin WHERE a landed merge is recorded, not which landing shape ran,
+# so each states its landing explicitly with an explicit forge method. They must:
+# the default landing here is a local fast-forward, which needs a real project
+# clone on disk, and these outcome fixtures deliberately build only a home. The
+# default landing has its own cases further down, which do build that clone.
 
 # make_home_case <name> [<route> [<parent-home>]]: a case dir whose home is a
 # secondmate home bound to a parent, or a plain main home when no route is
@@ -2008,7 +2014,7 @@ test_gitlab_merge_reports_upward() {
   printf 'schema=fm-secondmate-parent.v1\nroute=remote\n' >"$case_dir/home/.fm-secondmate-parent"
   url=$MR_URL
 
-  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
     >"$case_dir/stdout" 2>"$case_dir/stderr" || fail "gitlab-merge-reports: merge failed"
 
   assert_grep "done [key=merged-task-x1]: merged task-x1 $url" \
