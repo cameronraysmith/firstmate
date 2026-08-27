@@ -61,7 +61,7 @@ printf 'probing omp %s\n' "$OMP_VERSION"
 # JSON report at the terminal settle. Everything it asserts is something the
 # tracked branch extension actually calls.
 cat > "$PROJECT/.omp/extensions/fm-capability-probe.ts" <<'TS'
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import * as omp from "@oh-my-pi/pi-coding-agent";
 
 const reportPath = process.env.FM_PROBE_REPORT as string;
@@ -87,6 +87,16 @@ const seen: Record<string, unknown> = {
   branchAcceptedPromptCacheKey: false,
   branchToolNamesRestricted: false,
   sendCustomMessageStartedNoTurn: null as boolean | null,
+  // Pillar 4: the session manager the port SUPPLIES. Every launch after the
+  // first reopens a recorded branch session, so this is the path a restart
+  // takes - and it is the path that had no live coverage at all when omp
+  // 18.0.6 shipped, because this probe let omp build its own manager and never
+  // handed one in. It cost the supervision branch until it was found by hand.
+  sessionManagerCreateIsSync: null as boolean | null,
+  sessionManagerOpenIsAsync: null as boolean | null,
+  suppliedManagerCarriesGetSessionId: null as boolean | null,
+  branchAcceptsSuppliedSessionManager: false,
+  suppliedManagerError: "",
   branchError: "",
 };
 
@@ -160,6 +170,53 @@ export default function (pi: any) {
     } catch (error) {
       seen.branchError = error instanceof Error ? error.message : String(error);
     }
+
+    // Pillar 4. Everything above lets omp build its own session manager, which
+    // is the ONE path the tracked extension does not take after its first
+    // launch. Supply one the way the extension does, through both factories,
+    // and hand it in.
+    try {
+      const SM = (omp as any).SessionManager;
+      const sessionsDir = `${process.env.FM_PROBE_PROJECT}/branch-sessions`;
+      mkdirSync(sessionsDir, { recursive: true });
+
+      // Which factories are synchronous is not a detail: an async one taken as
+      // a value yields a promise, and omp reads getSessionId() off whatever it
+      // is given. That is exactly how the branch died on 18.0.6.
+      const created = SM.create(process.env.FM_PROBE_PROJECT, sessionsDir);
+      seen.sessionManagerCreateIsSync = typeof created?.then !== "function";
+      const recorded = created.getSessionFile();
+
+      const reopened = SM.open(recorded, sessionsDir);
+      seen.sessionManagerOpenIsAsync = typeof reopened?.then === "function";
+      const manager = await reopened;
+      seen.suppliedManagerCarriesGetSessionId = typeof manager?.getSessionId === "function";
+
+      const supplied = await (omp as any).createAgentSession({
+        cwd: process.env.FM_PROBE_PROJECT,
+        sessionManager: manager,
+        systemPrompt: "You are a capability probe. Answer nothing.",
+        providerPromptCacheKey: "fm-branch-capability-probe",
+        providerPromptCacheKeySource: "explicit",
+        disableExtensionDiscovery: true,
+        skills: [],
+        rules: [],
+        contextFiles: [],
+        promptTemplates: [],
+        slashCommands: [],
+        enableMCP: false,
+        enableLsp: false,
+        enableIrc: false,
+        hasUI: false,
+        toolNames: ["read"],
+        restrictToolNames: true,
+        allowRestrictedCustomTools: true,
+      });
+      seen.branchAcceptsSuppliedSessionManager = typeof supplied.session?.sendCustomMessage === "function";
+      await supplied.session?.dispose?.();
+    } catch (error) {
+      seen.suppliedManagerError = error instanceof Error ? error.message : String(error);
+    }
     flush();
   });
 
@@ -226,6 +283,16 @@ expect "a fully isolated branch session can be created" '.branchCreated' 'true'
 expect "createAgentSession accepts a caller-pinned providerPromptCacheKey" '.branchAcceptedPromptCacheKey' 'true'
 expect "createAgentSession accepts a restricted tool set" '.branchToolNamesRestricted' 'true'
 
+# Pillar 4 - the session manager the port supplies, which every launch after
+# the first builds with SessionManager.open. The two shape assertions are the
+# ones that would have caught the 18.0.6 outage on the day of the bump: the
+# port must await open(), and what it hands over must carry the method omp
+# reads off it.
+expect "SessionManager.create is synchronous" '.sessionManagerCreateIsSync' 'true'
+expect "SessionManager.open is ASYNC and must be awaited" '.sessionManagerOpenIsAsync' 'true'
+expect "an awaited SessionManager carries getSessionId, which omp calls" '.suppliedManagerCarriesGetSessionId' 'true'
+expect "createAgentSession accepts a caller-supplied session manager" '.branchAcceptsSuppliedSessionManager' 'true'
+
 # Pillar 2 - turn-free bidirectional injection.
 expect "pi.sendMessage is available to main" '.sendMessage' 'function'
 expect "sendCustomMessage on an idle session starts no turn" '.sendCustomMessageStartedNoTurn' 'true'
@@ -244,5 +311,7 @@ expect "agent_settled never fires (the substitute is still required)" '.agentSet
 
 branch_error=$(probe '.branchError')
 [ -z "$branch_error" ] || fail "omp $OMP_VERSION: branch session creation reported: $branch_error"
+supplied_error=$(probe '.suppliedManagerError')
+[ -z "$supplied_error" ] || fail "omp $OMP_VERSION: caller-supplied session manager reported: $supplied_error"
 
 printf 'ok - omp %s carries every supervision-branch capability, and still has no agent_settled\n' "$OMP_VERSION"

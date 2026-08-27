@@ -48,9 +48,25 @@ JSON
   cat > "$repo/node_modules/@oh-my-pi/pi-coding-agent/index.js" <<'JS'
 import { writeFileSync } from "node:fs";
 
+// This stub MODELS omp; it does not merely satisfy the port. The distinction is
+// the whole reason the 18.0.6 branch outage reached production green: `open`
+// was stubbed synchronous while omp has always had it as `static async open`,
+// and `createAgentSession` never touched the sessionManager it was handed, so
+// nothing here could observe the port feeding omp an un-awaited promise.
 export class SessionManager {
   constructor(file) {
     this.file = file;
+  }
+  // Runtime shape switches, read at call time rather than module-init time,
+  // because the driver sets its globals after the extension has been imported.
+  // "missing-getSessionId" is a genuine CONTRACT MISMATCH: the capability is
+  // present and returns a session-manager-shaped object, but not the shape omp
+  // consumes.
+  static #shaped(sm) {
+    if (globalThis.__fmSessionManagerShape === "missing-getSessionId") {
+      return { getSessionFile: () => sm.file, getEntries: () => [] };
+    }
+    return sm;
   }
   static create(cwd, dir) {
     globalThis.__fmCreateCount = (globalThis.__fmCreateCount ?? 0) + 1;
@@ -58,21 +74,40 @@ export class SessionManager {
     sm.created = true;
     writeFileSync(sm.file, "");
     (globalThis.__fmSessionManagers ??= []).push(sm);
-    return sm;
+    return SessionManager.#shaped(sm);
   }
-  static open(path) {
+  // async, because omp's is (packages/coding-agent/src/session/session-manager.ts,
+  // `static async open`, unchanged 18.0.4 through 18.0.7).
+  static async open(path) {
     const sm = new SessionManager(path);
     sm.opened = true;
     (globalThis.__fmSessionManagers ??= []).push(sm);
-    return sm;
+    return SessionManager.#shaped(sm);
   }
   getSessionFile() {
     return this.file;
   }
+  // omp reads this INSIDE createAgentSession; a manager without it is what the
+  // outage actually looked like from omp's side.
+  getSessionId() {
+    return `session-${this.file}`;
+  }
 }
+
+// Published so a test can remove a capability from the very class object the
+// extension holds, which is what genuine ABSENCE looks like to its probe.
+globalThis.__fmSDK = { SessionManager };
 
 export async function createAgentSession(options) {
   if (globalThis.__fmCreateSessionError) throw new Error(globalThis.__fmCreateSessionError);
+  // omp's own first use of the manager it is handed:
+  // `options.providerSessionId ?? sessionManager.getSessionId()` in
+  // packages/coding-agent/src/sdk.ts. Reproduced here so a sessionManager that
+  // does not satisfy the contract fails the way it really fails, rather than
+  // sailing through a stub that never looks at it.
+  if (options.sessionManager) {
+    globalThis.__fmProviderSessionId = options.sessionManager.getSessionId();
+  }
   const session = {
     options,
     ops: [],
@@ -776,9 +811,180 @@ EOF
   pass "the branch stays inert without lock ownership and engages lazily once it arrives"
 }
 
+# The path that had no behavioral coverage at all, and the one the outage ran
+# through. A branch records its session file on success, so EVERY launch after
+# the first takes SessionManager.open instead of SessionManager.create. Without
+# the await on that async factory the port hands createAgentSession a promise
+# and the branch dies on "getSessionId is not a function" - which is precisely
+# what shipped, because the first launch of the day exercised only create().
+test_omp_branch_reuses_a_recorded_session_after_a_restart() {
+  local repo home out status
+  repo="$TMP_ROOT/reopen-root"
+  home="$TMP_ROOT/reopen-home"
+  mkdir -p "$home/state/omp-branch-session" "$home/config"
+  install_omp_branch_extension_fixture "$repo"
+  # What a previous, successful branch left behind.
+  : > "$home/state/omp-branch-session/prior.jsonl"
+  printf '%s\n' "$home/state/omp-branch-session/prior.jsonl" > "$home/state/.omp-branch-session"
+  PLUGIN="$repo/.omp/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, quiesce, mainUserMessages, home }; })()`);
+const { dispatch, settle, quiesce, mainUserMessages, home } = globalThis.__t;
+import { existsSync, writeFileSync } from "node:fs";
+
+writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
+
+if (!dispatch("signal: task-9 needs review").accepted) {
+  throw new Error("the branch declined a wake it was eligible for");
+}
+await quiesce();
+
+if (mainUserMessages.length !== 0) {
+  throw new Error(`the reopened branch fell back to main: ${JSON.stringify(mainUserMessages)}`);
+}
+const managers = globalThis.__fmSessionManagers ?? [];
+if (!managers.some((sm) => sm.opened)) {
+  throw new Error("the recorded session was never reopened");
+}
+// omp reads getSessionId() off whatever it is handed. A promise has none, so a
+// recorded id here is the direct evidence that a real manager arrived.
+if (typeof globalThis.__fmProviderSessionId !== "string") {
+  throw new Error(`createAgentSession got a sessionManager it could not read: ${globalThis.__fmProviderSessionId}`);
+}
+if (existsSync(`${home}/state/.omp-branch-contract-mismatch`)) {
+  throw new Error("a healthy reopen recorded a contract mismatch");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "a recorded branch session must be reopened and used, not degraded: $out"
+  pass "a branch session recorded by an earlier launch is reopened and handed to omp intact"
+}
+
+# The gap that let a runtime bump remove supervision with every suite green.
+# A contract mismatch and a missing capability are not the same fact, and a
+# mismatch that only degrades is invisible forever. This asserts the wake is
+# still never lost AND that the operator is told once - it fails if the port
+# goes back to degrading quietly.
+test_omp_branch_contract_mismatch_is_loud_and_said_once() {
+  local repo home out status
+  repo="$TMP_ROOT/mismatch-root"
+  home="$TMP_ROOT/mismatch-home"
+  mkdir -p "$home/state" "$home/config"
+  install_omp_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.omp/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, quiesce, mainUserMessages, home }; })()`);
+const { dispatch, settle, quiesce, mainUserMessages, home } = globalThis.__t;
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
+
+// The capability is PRESENT; its shape is wrong. That is a mismatch, not an
+// absence, and it must not be indistinguishable from one.
+globalThis.__fmSessionManagerShape = "missing-getSessionId";
+
+if (!dispatch("signal: task-11 needs review").accepted) {
+  throw new Error("the branch declined a wake it was eligible for");
+}
+await settle(() => mainUserMessages.length >= 2, "the mismatch diagnostic and the fallback wake");
+await quiesce();
+
+const texts = mainUserMessages.map((m) => m.content);
+const diagnostic = texts.find((t) => t.includes("CONTRACT MISMATCH"));
+if (!diagnostic) {
+  throw new Error(`a contract mismatch degraded silently: ${JSON.stringify(texts)}`);
+}
+if (!diagnostic.includes("18.0.6")) {
+  throw new Error(`the diagnostic did not record the verified omp floor: ${diagnostic}`);
+}
+if (!diagnostic.includes("getSessionId")) {
+  throw new Error(`the diagnostic did not name the defect: ${diagnostic}`);
+}
+// The safety property is non-negotiable: the wake still reaches main.
+if (!texts.some((t) => t.includes("FIRSTMATE WATCHER WAKE: signal: task-11 needs review"))) {
+  throw new Error(`the mismatch lost the wake: ${JSON.stringify(texts)}`);
+}
+if (!existsSync(`${home}/state/.omp-branch-contract-mismatch`)) {
+  throw new Error("the mismatch was announced without recording that it had been");
+}
+if (!readFileSync(`${home}/state/.omp-branch-contract-mismatch`, "utf8").includes("getSessionId")) {
+  throw new Error("the mismatch record does not identify which defect was announced");
+}
+
+// Once, not once per wake. A later wake still degrades, and still says nothing
+// new about a defect the operator has already been handed.
+const afterFirst = mainUserMessages.length;
+dispatch("signal: task-11 needs review again");
+await quiesce();
+const repeated = mainUserMessages.slice(afterFirst).filter((m) => m.content.includes("CONTRACT MISMATCH"));
+if (repeated.length !== 0) {
+  throw new Error(`the diagnostic repeated itself: ${JSON.stringify(repeated)}`);
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "a contract mismatch must degrade AND be surfaced once: $out"
+  pass "a session-manager contract mismatch degrades to main and is surfaced to the operator exactly once"
+}
+
+# The other half of the same distinction, and the reason the mismatch path is
+# not simply "shout on every failure". An omp that genuinely cannot host a
+# branch is not a defect to report; it degrades quietly, forever, because never
+# losing a wake is the property that must hold either way.
+test_omp_branch_absence_degrades_to_main_quietly() {
+  local repo home out status
+  repo="$TMP_ROOT/absent-root"
+  home="$TMP_ROOT/absent-home"
+  mkdir -p "$home/state" "$home/config"
+  install_omp_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.omp/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, settle, quiesce, mainUserMessages, home }; })()`);
+const { dispatch, settle, quiesce, mainUserMessages, home } = globalThis.__t;
+import { existsSync, writeFileSync } from "node:fs";
+
+writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
+
+// An omp with no branch capability at all: the entry point the port probes for
+// is simply not there. Removed from the class the extension itself holds.
+delete globalThis.__fmSDK.SessionManager.create;
+
+if (!dispatch("signal: task-12 needs review").accepted) {
+  throw new Error("the branch declined a wake it was eligible for");
+}
+await settle(() => mainUserMessages.length === 1, "fallback wake on main");
+await quiesce();
+
+const texts = mainUserMessages.map((m) => m.content);
+if (!texts.some((t) => t.includes("FIRSTMATE WATCHER WAKE: signal: task-12 needs review"))) {
+  throw new Error(`absence lost the wake: ${JSON.stringify(texts)}`);
+}
+if (texts.some((t) => t.includes("CONTRACT MISMATCH"))) {
+  throw new Error(`a missing capability was reported as a contract mismatch: ${JSON.stringify(texts)}`);
+}
+if (existsSync(`${home}/state/.omp-branch-contract-mismatch`)) {
+  throw new Error("a missing capability recorded a contract mismatch");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "genuine absence must degrade to main quietly: $out"
+  pass "an omp without branch capability degrades to main quietly, with no mismatch diagnostic"
+}
+
 test_settled_boundary_holds_notes_through_automatic_continuation
 test_omp_branch_dispatch_gating_and_prefix_contract
 test_omp_branch_failures_fall_back_to_main
 test_omp_branch_cycle_is_process_scoped_across_a_replacement
 test_omp_branch_mirror_filters_and_advances_its_own_cursor
 test_omp_branch_stays_inert_without_lock_ownership
+test_omp_branch_reuses_a_recorded_session_after_a_restart
+test_omp_branch_contract_mismatch_is_loud_and_said_once
+test_omp_branch_absence_degrades_to_main_quietly
