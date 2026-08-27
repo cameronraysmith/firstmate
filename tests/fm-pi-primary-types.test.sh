@@ -69,6 +69,16 @@ ln -s "$PI_PACKAGE_DIR/node_modules/@types/node" "$TMP_ROOT/node_modules/@types/
 # The narrow omp declaration described in the header. Every field the branch
 # passes is named explicitly, so a typo or a dropped isolation option is a
 # compile error here rather than a silently permissive session at runtime.
+#
+# These signatures must MIRROR omp's, not merely satisfy our call sites. A stub
+# that describes what this port assumed rather than what omp does can only ever
+# confirm the assumption, and that is not hypothetical: SessionManager.open was
+# declared synchronous here while omp has always had it as `static async open`
+# (packages/coding-agent/src/session/session-manager.ts, unchanged across 18.0.4
+# through 18.0.7). Strict tsc therefore blessed an un-awaited open() whose
+# promise went straight into createAgentSession, where omp called
+# getSessionId() on it and the supervision branch died on every wake. Keep the
+# async shape: it is what makes that mistake a compile error.
 cat > "$TMP_ROOT/node_modules/@oh-my-pi/pi-coding-agent/package.json" <<'JSON'
 {"name":"@oh-my-pi/pi-coding-agent","type":"module","types":"./index.d.ts","exports":{".":{"types":"./index.d.ts","default":"./index.js"}}}
 JSON
@@ -76,8 +86,11 @@ printf 'export {};\n' > "$TMP_ROOT/node_modules/@oh-my-pi/pi-coding-agent/index.
 cat > "$TMP_ROOT/node_modules/@oh-my-pi/pi-coding-agent/index.d.ts" <<'DTS'
 export declare class SessionManager {
   static create(cwd: string, sessionsDir: string): SessionManager;
-  static open(file: string, sessionsDir: string): SessionManager;
+  static open(file: string, sessionsDir: string): Promise<SessionManager>;
   getSessionFile(): string | undefined;
+  // Declared because omp CALLS it on whatever this port hands to
+  // createAgentSession; it is the method whose absence broke supervision.
+  getSessionId(): string;
 }
 
 export interface CreateAgentSessionOptions {

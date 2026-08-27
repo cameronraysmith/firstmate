@@ -40,6 +40,23 @@
 // omp, so an outcome recorded but never merged is re-presented by the
 // BRANCH OUTCOMES digest at the next locked session start.
 //
+// Failure direction, refined: a wake is never lost, but the two reasons a
+// branch can be unreachable are NOT the same fact and do not degrade the same
+// way. ABSENCE - this omp has no branch capability - degrades to main quietly
+// and indefinitely, because that is a property of the runtime and not an
+// operator error. CONTRACT MISMATCH - the capability is present but its shape
+// moved under us - degrades too, and is additionally said out loud once per
+// home. The distinction is not decorative. This port once fed
+// createAgentSession an un-awaited SessionManager.open promise, died inside omp
+// on `sessionManager.getSessionId is not a function`, and fell back to main on
+// every wake for the life of the process with every suite still green. Note
+// what that was NOT: omp's contract never moved - open has been `static async`
+// since well before 18.0.4 - and the defect was simply unreachable until a
+// branch had recorded a session file to reopen, so the first launch passed and
+// armed every launch after it. An omp upgrade supplied only the restart, which
+// is why "it broke when the runtime bumped" was the wrong story. A degrade that
+// says nothing is how a capability disappears without anyone noticing.
+//
 // Threat model (captain-decided, unchanged from Pi): the branch's actor
 // identity is CONFUSED-AGENT-GRADE - deterministic env injection plus a
 // readonly-variable shell prelude so an accidental override fails loudly inside
@@ -47,7 +64,8 @@
 // deliberate limits.
 //
 // ---------------------------------------------------------------------------
-// Why this is not Pi's file (measured against omp 18.0.4; refresh with
+// Why this is not Pi's file (measured against omp 18.0.6 - see
+// VERIFIED_OMP_VERSION below; refresh with
 // tests/fm-omp-branch-capability.test.sh)
 //
 // 1. Native specifiers only. Pi-named imports resolve on omp solely through the
@@ -105,7 +123,7 @@
 // durable in the store and its read cursor advances only on real delivery.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -135,6 +153,9 @@ const leaseScript = join(fmRoot, "bin", "fm-lease.sh");
 // inert there, so an omp primary must never be able to satisfy a supervision
 // ownership question with evidence a disarmed session wrote.
 const loadedMarker = join(state, ".omp-branch-extension-loaded");
+// Records the contract mismatch already announced to the operator, so the
+// diagnostic fires once per home per defect instead of once per wake.
+const contractMismatchMarker = join(state, ".omp-branch-contract-mismatch");
 
 // Same tool set in the same order on every spawn (tool definitions are part of
 // the cached prefix, so reordering them invalidates it). "bash" is omp's own
@@ -159,6 +180,25 @@ const CAPTAIN_OUTCOME_INSTRUCTION =
 // covers a continuation that never emits its own terminal agent_end, so a note
 // can never be stranded behind a stuck settle flag.
 const SETTLE_SWEEP_MS = 5000;
+
+// The omp release this port's session-manager contract is verified against,
+// end to end, by tests/fm-omp-branch-capability.test.sh. It is REPORTED, never
+// enforced: the gate below probes the surface and adapts, so a later omp that
+// keeps the contract keeps working without this line being touched. It exists
+// so an incompatible bump is a visible refusal rather than an invisible loss.
+const VERIFIED_OMP_VERSION = "18.0.6";
+
+// Exactly the surface a BRANCH session manager is used through, and no more.
+// getSessionId is the one that actually bit: createAgentSession reads
+// `options.providerSessionId ?? sessionManager.getSessionId()`
+// (omp packages/coding-agent/src/sdk.ts), so a value missing it dies INSIDE omp
+// with a TypeError indistinguishable from the branch being unsupported.
+// getSessionFile is ours, for the pointer that lets the next launch reopen this
+// conversation. Nothing else belongs here: demanding a method the port never
+// calls would turn an unrelated omp change into a false refusal, and this gate
+// only earns its keep while every entry is a real dependency. The MAIN
+// session's separate read-only surface is ReadonlyEntries, below.
+const REQUIRED_SESSION_MANAGER_METHODS = ["getSessionId", "getSessionFile"] as const;
 
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
@@ -246,6 +286,39 @@ type OmpExtensionAPI = {
   sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => unknown;
   registerTool: (tool: OmpToolDefinition) => unknown;
 };
+
+// Is the branch capability present at all? Deliberately shallow: it asks only
+// whether omp still offers the two entry points this port builds on, never
+// which version answered. A build that lacks them cannot host a branch, and
+// that is a fact about the runtime, not a defect to shout about.
+function ompBranchCapabilityPresent(): boolean {
+  return (
+    typeof createAgentSession === "function" &&
+    typeof (SessionManager as unknown as { create?: unknown } | undefined)?.create === "function"
+  );
+}
+
+// "" when the value satisfies what createAgentSession is about to do to it;
+// otherwise the defect, phrased for whoever has to fix it.
+function sessionManagerContractDefect(candidate: unknown): string {
+  if (candidate === null || candidate === undefined) {
+    return "the SessionManager factory produced nothing";
+  }
+  if (typeof candidate !== "object" && typeof candidate !== "function") {
+    return `the SessionManager factory produced a ${typeof candidate}, not a session manager`;
+  }
+  // A thenable is named separately because it is the shape that actually broke
+  // supervision here, and because "missing getSessionId" would send the reader
+  // hunting through omp's session manager for a method that is in fact there.
+  if (typeof (candidate as { then?: unknown }).then === "function") {
+    return "the SessionManager factory returned a promise this port did not await";
+  }
+  const missing = REQUIRED_SESSION_MANAGER_METHODS.filter(
+    (name) => typeof (candidate as Record<string, unknown>)[name] !== "function",
+  );
+  if (missing.length > 0) return `the session manager is missing ${missing.join(", ")}`;
+  return "";
+}
 
 function offerEligible(offer: BranchDispatchOffer): boolean {
   return offer.eligible === true;
@@ -407,6 +480,55 @@ export default function (pi: OmpExtensionAPI) {
       writeFileSync(loadedMarker, `${process.pid}\n`);
     } catch {
       // Diagnostic marker only; never block activation on it.
+    }
+  }
+
+  // A contract mismatch degrades like any other failure - the wake still
+  // reaches main - but it is ALSO said out loud, once per home per defect. The
+  // marker is keyed to the defect text rather than merely to "a mismatch
+  // happened", so a DIFFERENT shape change later still announces itself
+  // instead of being swallowed by a stale flag.
+  function announceContractMismatch(defect: string): void {
+    let announced = "";
+    try {
+      announced = readFileSync(contractMismatchMarker, "utf8").trim();
+    } catch {
+      announced = "";
+    }
+    if (announced === defect) return;
+    try {
+      mkdirSync(state, { recursive: true });
+      writeFileSync(contractMismatchMarker, `${defect}\n`);
+    } catch {
+      // A marker we cannot persist costs repetition, never the diagnostic.
+    }
+    const body =
+      "FIRSTMATE SUPERVISION DEGRADED: the omp supervision branch is disabled by a runtime CONTRACT " +
+      `MISMATCH, not by absence. Detected: ${defect}. This port's session-manager contract is verified ` +
+      `against omp ${VERIFIED_OMP_VERSION}, and the omp running now no longer satisfies it. Wakes are ` +
+      "being delivered to this session instead, so nothing is lost, but supervision is running without " +
+      "its branch until this is fixed. Re-probe with " +
+      "FM_OMP_BRANCH_CAPABILITY=1 tests/fm-omp-branch-capability.test.sh.";
+    let content = body;
+    try {
+      content = encodeFirstmateOperationalInput("watcher", body);
+    } catch {
+      // An encoding failure must not lose the diagnostic; deliver it unmarked.
+    }
+    try {
+      void pi.sendUserMessage(content);
+    } catch {
+      // Delivery is omp's; the marker still records that this was raised.
+    }
+  }
+
+  // A working branch retires the record, so a mismatch that returns later is
+  // announced again rather than suppressed by the marker that described it.
+  function clearContractMismatch(): void {
+    try {
+      rmSync(contractMismatchMarker, { force: true });
+    } catch {
+      // Nothing here is load-bearing; at worst one diagnostic is not repeated.
     }
   }
 
@@ -711,17 +833,35 @@ ${command}
     }
     if (!actingAsOwner(branchGeneration)) throw new Error("supervision lost lock ownership");
     mkdirSync(sessionsDir, { recursive: true });
+    // Absence is checked before anything is built, and degrades quietly: this
+    // omp simply cannot host a branch (see the failure-direction note).
+    if (!ompBranchCapabilityPresent()) {
+      throw new Error("this omp build exposes no supervision-branch capability");
+    }
     let sessionManager: SessionManager | null = null;
     try {
       const recorded = readFileSync(sessionPointer, "utf8").trim();
       if (recorded && existsSync(recorded)) {
-        sessionManager = SessionManager.open(recorded, sessionsDir);
+        // SessionManager.open is `static async` on every omp this port has been
+        // measured against (18.0.4 through 18.0.7). Taking its promise as a
+        // value is what removed supervision on 18.0.6. A REJECTED open falls
+        // through to a fresh session below, the same degrade a torn pointer
+        // gets - which is only reachable because the await is inside the try.
+        sessionManager = await SessionManager.open(recorded, sessionsDir);
       }
     } catch {
       sessionManager = null;
     }
     if (!sessionManager) {
       sessionManager = SessionManager.create(fmRoot, sessionsDir);
+    }
+    // The gate. Whatever the two factories produced must satisfy the contract
+    // BEFORE omp is handed it, so a shape change is named here instead of
+    // surfacing as an opaque TypeError thrown from inside createAgentSession.
+    const defect = sessionManagerContractDefect(sessionManager);
+    if (defect) {
+      announceContractMismatch(defect);
+      throw new Error(`omp session-manager contract mismatch: ${defect}`);
     }
     if (!actingAsOwner(branchGeneration)) throw new Error("supervision lost lock ownership");
     const leaseHolderPid = ownedLockPid;
@@ -766,6 +906,7 @@ ${command}
     } catch {
       // Pointer write failure only costs cross-restart session reuse.
     }
+    clearContractMismatch();
     return session;
   }
 
