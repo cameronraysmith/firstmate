@@ -375,6 +375,12 @@ if (escalation.options.triggerTurn !== true || escalation.options.deliverAs !== 
 if (escalation.message.display !== false) {
   throw new Error("captain note must be delivered silently; the follow-up turn is the visible artefact");
 }
+// What main's model actually receives is the delivered payload, not the
+// delivery options. Pinning only the options is precisely what let the stale
+// re-emission defect through on the Pi side, so write both notes out for the
+// real protocol executable to classify below.
+writeFileSync(`${home}/state/delivered-captain-note`, escalation.message.content);
+writeFileSync(`${home}/state/delivered-routine-note`, sentToMain[0].message.content);
 
 // 7. The bounded sweep only ever RELEASES a held note; it must never deliver
 // one while main is unsettled.
@@ -401,6 +407,34 @@ EOF
   out=$(cat "$TMP_ROOT/node-output")
   expect_code 0 "$status" "the agent_settled substitute must hold notes through an automatic continuation: $out"
   pass "merge notes are held through willContinue, queued work, and streaming, then released once"
+
+  # The delivered captain payload must identify itself to main's model. When it
+  # did not, main could not tell an incoming outcome from its own earlier answer
+  # and re-emitted that answer instead of relaying the outcome, silently losing
+  # it. The real protocol executable is the oracle here: it decides the kind and
+  # extracts the body, so this asserts delivered behavior rather than a shape
+  # this test already knows.
+  local kind body
+  kind=$(./bin/fm-operational-input.sh kind < "$home/state/delivered-captain-note") \
+    || fail "captain outcome reaches main's model as unattributed text the model cannot tell from its own answer"
+  [ "$kind" = branch-outcome ] \
+    || fail "captain outcome delivered as kind '$kind', not branch-outcome"
+  body=$(./bin/fm-operational-input.sh body < "$home/state/delivered-captain-note") \
+    || fail "captain outcome envelope carries no readable body"
+  case "$body" in
+    *"task-4: needs a credential decision"*) ;;
+    *) fail "captain outcome body lost the outcome itself: $body" ;;
+  esac
+  case "$body" in
+    *"Relay only this outcome"*"Do not restate or repeat any earlier answer"*) ;;
+    *) fail "captain outcome body never tells main to relay it instead of repeating: $body" ;;
+  esac
+  # The routine note is rendered in the TUI, and its renderer reads the glyph off
+  # the front of this same string, so it must stay plain text.
+  if ./bin/fm-operational-input.sh kind < "$home/state/delivered-routine-note" >/dev/null 2>&1; then
+    fail "routine note must stay plain rendered text, not typed operational input"
+  fi
+  pass "an omp captain outcome reaches main's model as typed, self-describing input while routine notes stay plain"
 }
 
 test_omp_branch_dispatch_gating_and_prefix_contract() {
