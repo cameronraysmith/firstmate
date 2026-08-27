@@ -1368,7 +1368,7 @@ EOF
   # and the refusal below is the unreadable state rather than a missing tool.
   ln -sf "$REAL_JQ" "$dir/fakebin/jq"
   set +e
-  run_merge_entry "$dir" task-c "$url" >/dev/null 2> "$dir/merge-c.err"
+  run_merge_entry "$dir" task-c "$url" -- --squash >/dev/null 2> "$dir/merge-c.err"
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "merge wrapper merged a GitLab merge request it could not read"
@@ -1588,7 +1588,7 @@ test_self_merge_and_poll_publish_one_outcome() {
   write_task_meta "$dir" task-a
   run_check_entry "$dir" task-a "$url" >/dev/null 2>"$dir/seed.err" \
     || fail "merge-outcome-committed: could not arm merge poll"
-  run_merge_entry "$dir" task-a "$url" -- --merge >"$dir/merge.out" 2>"$dir/merge.err" \
+  run_merge_entry "$dir" task-a "$url" -- --squash >"$dir/merge.out" 2>"$dir/merge.err" \
     || fail "merge-outcome-committed: merge entrypoint failed: $(cat "$dir/merge.err")"
   add_stop_custom_check "$dir"
   set +e
@@ -1621,7 +1621,7 @@ exec "$FM_TEST_REAL_MV" "$@"
 SH
   chmod +x "$dir/fakebin/mv"
   set +e
-  FM_TEST_REAL_MV="$REAL_MV" run_merge_entry "$dir" task-a "$url" -- --merge \
+  FM_TEST_REAL_MV="$REAL_MV" run_merge_entry "$dir" task-a "$url" -- --squash \
     >"$dir/merge.out" 2>"$dir/merge.err"
   rc=$?
   set -e
