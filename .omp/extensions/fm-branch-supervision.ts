@@ -148,6 +148,13 @@ const branchCacheKey = `fm-branch-${createHash("sha256").update(fmHome).digest("
 
 const MIRROR_MESSAGE_CAP = 4000;
 const MERGE_NOTE_BOAT = "⛵";
+// Carried inside the captain note's own text because that text is the only
+// part of a custom message the model is given (see deliverNote).
+const CAPTAIN_OUTCOME_INSTRUCTION =
+  "This is a supervision outcome delivered automatically by the supervision branch. " +
+  "It was not typed by the captain and it is not your own earlier output. " +
+  "Relay only this outcome to the captain now, in one short message, in captain outcome language. " +
+  "Do not restate or repeat any earlier answer.";
 // Bounded re-check for held notes. agent_end normally releases them; this only
 // covers a continuation that never emits its own terminal agent_end, so a note
 // can never be stranded behind a stuck settle flag.
@@ -472,6 +479,29 @@ export default function (pi: OmpExtensionAPI) {
     }
   }
 
+  // omp keeps only `content` when it converts a custom message for the model:
+  // customType, display, and details never reach the provider. A captain note
+  // therefore has to carry its own identity inside `content`, or main receives
+  // an unattributed user message written in main's own captain-facing voice and
+  // cannot tell an incoming outcome from its own earlier answer. When that
+  // happens main re-emits its previous answer instead of relaying the outcome,
+  // and the outcome is lost. Upstream measured that against Pi 0.84.1 as 6
+  // failures in 24 turns; omp forks that conversion unchanged, so this port
+  // carries the fix rather than waiting to re-measure the same defect here.
+  //
+  // Encoding shells out, so it can fail on a broken checkout. This file's
+  // failure direction applies: an outcome that cannot be typed is still
+  // delivered, carrying the same instruction as plain text, because an untyped
+  // outcome main can still read beats an outcome the captain never sees.
+  function captainOutcomeInput(task: string, summary: string): string {
+    const body = `${CAPTAIN_OUTCOME_INSTRUCTION}\n\n${task}: ${summary}`;
+    try {
+      return encodeFirstmateOperationalInput("branch-outcome", body);
+    } catch {
+      return body;
+    }
+  }
+
   // Append-only merge into main, delivered ONLY while main is fully settled.
   // Routine notes take omp's idle no-turn append; a captain-relevant note takes
   // exactly one follow-up turn, and that turn is itself the captain-visible
@@ -484,7 +514,11 @@ export default function (pi: OmpExtensionAPI) {
     if (!actingAsOwner()) return false;
     if (note.verdict === "captain") {
       pi.sendMessage(
-        { customType: "fm-branch-merge", content: `${note.task}: ${note.summary}`, display: false },
+        {
+          customType: "fm-branch-merge",
+          content: captainOutcomeInput(note.task, note.summary),
+          display: false,
+        },
         { triggerTurn: true, deliverAs: "followUp" },
       );
     } else {
