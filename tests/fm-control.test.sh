@@ -250,7 +250,7 @@ test_interrupt_sends_each_harness_verified_key() {
     out=$(run_control "$dir" t1 interrupt); rc=$?
     expect_code 0 "$rc" "interrupt on $harness should succeed"$'\n'"$out"
     IFS=$'\t' read -r expected key repeat clear <<< "$(verified_adapter_contract "$harness")"
-    want=$(for _ in $(seq 1 "$repeat"); do printf '%s\n' "$key"; done)
+    want=$(n=0; while [ "$n" -lt "$repeat" ]; do printf '%s\n' "$key"; n=$((n + 1)); done)
     [ -z "$clear" ] || want="$want"$'\n'"$clear"
     got=$(keys_sent "$dir")
     [ "$got" = "$want" ] \
