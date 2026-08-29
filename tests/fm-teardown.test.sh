@@ -2110,12 +2110,21 @@ case "${1:-} ${2:-}" in
       printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":false}]}}'
     elif [ -e "${FM_FAKE_HERDR_CLOSED:?}" ]; then
       printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":true}]}}'
+    elif [ "${FM_FAKE_HERDR_TARGET_FOCUSED:-0}" = 1 ]; then
+      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t2","label":"firstmate/task-x1 · p:AbCdEfGhIjKlMnOpQrStUv","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":false}]}}'
     else
       printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t2","label":"firstmate/task-x1 · p:AbCdEfGhIjKlMnOpQrStUv","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":false}]}}'
     fi
     ;;
   "tab list")
     case "$*" in
+      *"--workspace w1"*)
+        if [ "${FM_FAKE_HERDR_TARGET_FOCUSED:-0}" = 1 ]; then
+          printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t2","focused":true}]}}'
+        else
+          printf '%s\n' '{"result":{"tabs":[]}}'
+        fi
+        ;;
       *"--workspace w2"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","focused":true}]}}' ;;
       *"--workspace w3"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' ;;
       *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
@@ -2155,6 +2164,10 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2","focused":true}}}'
     ;;
   "agent get")
+    if [ "${FM_FAKE_HERDR_AGENT_LIVE:-0}" = 1 ]; then
+      printf '%s\n' '{"result":{"agent":{"agent_status":"working"}}}'
+      exit 0
+    fi
     printf '%s\n' '{"error":{"code":"agent_not_found"}}' >&2
     exit 1
     ;;
@@ -2202,11 +2215,60 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
     || fail "unconfirmed task-pane close erased the durable endpoint metadata"
   assert_grep "close could not be confirmed" "$case_dir/stderr" \
     "unconfirmed projected close did not explain why the journal was retained"
-  assert_grep "not confirmed gone" "$case_dir/stderr" \
+  assert_grep "proves neither an absent pane nor an agent-free one" "$case_dir/stderr" \
     "unconfirmed projected close did not explain why the records were retained"
   assert_not_contains "$(cat "$log")" "workspace close" \
     "unconfirmed projected close must not escalate to workspace cleanup"
   pass "herdr projection teardown retains every record when post-close presence is unknown"
+}
+
+# The reproduced wedge: a projected close can never close its session's focused
+# tab, so a pane that is agent-free AND focused refuses that close on every
+# rerun. Under a presence-only gate the task's records could never be retired.
+test_herdr_projection_teardown_retires_records_when_refused_close_leaves_an_agent_free_pane() {
+  local case_dir log closed restored
+  case_dir=$(make_case herdr-projection-focused-agent-free)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" FM_FAKE_HERDR_TARGET_FOCUSED=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-projection-focused-agent-free: teardown refused an agent-free endpoint"
+  [ ! -e "$closed" ] \
+    || fail "herdr-projection-focused-agent-free: regression did not exercise a REFUSED close"
+  assert_grep "is the focused tab of herdr session fmtest" "$case_dir/stderr" \
+    "the refused close did not name the condition it actually observed"
+  assert_grep "confirmed agent-free" "$case_dir/stderr" \
+    "teardown did not report that it retired records beside a surviving agent-free pane"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-projection-focused-agent-free: an agent-free endpoint did not retire its durable metadata"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "a surviving pane must keep its presentation journal for the session-start reaper"
+  pass "herdr teardown retires records when a refused close leaves a provably agent-free pane"
+}
+
+# The other half of the boundary: a still-registered agent is a live worker, so
+# a failed close must never let its records be erased.
+test_herdr_projection_teardown_retains_records_when_agent_is_still_registered() {
+  local case_dir log closed restored rc=0
+  case_dir=$(make_case herdr-projection-agent-still-live)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_TARGET_FOCUSED=1 FM_FAKE_HERDR_AGENT_LIVE=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-projection-agent-still-live: teardown proceeded while an agent was still registered"
+  assert_grep "reads 'alive'" "$case_dir/stderr" \
+    "the refusal did not name the live agent state it observed"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "a live worker's durable endpoint metadata was erased"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "a live worker's presentation journal was retired"
+  pass "herdr teardown keeps every record while its worker is still registered"
 }
 
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup() {
@@ -2842,6 +2904,8 @@ test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
+test_herdr_projection_teardown_retires_records_when_refused_close_leaves_an_agent_free_pane
+test_herdr_projection_teardown_retains_records_when_agent_is_still_registered
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head

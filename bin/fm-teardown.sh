@@ -2822,22 +2822,38 @@ elif [ "$BACKEND" = herdr ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   echo "warning: herdr presentation journal for $ID remains quarantined; no workspace cleanup was attempted" >&2
 fi
-# A refused, skipped, or failed Herdr close must never erase a live task's
-# durable endpoint identity: unless the exact pane is confirmed gone, retain
-# every record and stop before any removal below so a later rerun can retry
-# the locked close. Only a structured not-found proves the pane gone; unknown
-# presence, missing or malformed endpoint identity, and missing confirmation
-# machinery all refuse.
+# A refused, skipped, or failed Herdr close must never erase a LIVE task's
+# durable endpoint identity. That is the question this gate asks, and pane
+# presence was only standing in for it: a present pane refuses even when the
+# pane is a provably agent-free husk. That stand-in makes some refusals
+# permanent rather than retryable, because a projected close cannot close its
+# session's focused tab, so a husk that is its session's last pane can never
+# satisfy a presence-only gate and its records could never be retired.
+# fm_backend_agent_state (bin/fm-backend.sh) answers the real question, and is
+# the same recovery-grade signal bin/fm-spawn.sh's --relaunch already gates on
+# for this endpoint. Its verdicts come from structured Herdr responses rather
+# than an absence scan: `missing` is a structured pane_not_found, and `dead` is
+# a present pane whose `agent get` returned a structured agent_not_found and
+# whose recorded harness carries no positive live-worker evidence.
+# Every other verdict is unproven and still refuses: `alive`, `ambiguous`,
+# `unreadable` (an unparseable read, or a missing or malformed endpoint
+# identity), and `unverified` (the backend could not be sourced at all, which
+# is the missing-confirmation-machinery case).
+# Deliberately scoped to herdr, because zellij, orca, and cmux have no
+# recovery-grade classifier and report `unverified`; gating them on this would
+# refuse every teardown on those backends.
 if [ "$BACKEND" = herdr ]; then
-  fm_backend_source herdr || true
-  if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
-    echo "error: herdr endpoint confirmation is unavailable for $ID; retaining every durable task record" >&2
-    exit 1
-  fi
-  if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
-    echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
-    exit 1
-  fi
+  TEARDOWN_ENDPOINT_STATE=$(fm_backend_agent_state "$BACKEND" "$T" "$META")
+  case "$TEARDOWN_ENDPOINT_STATE" in
+    missing) ;;
+    dead)
+      echo "warning: herdr pane $T for $ID survived its close but is confirmed agent-free; retiring $ID's records and leaving that pane for the locked session-start reaper" >&2
+      ;;
+    *)
+      echo "error: herdr pane $T for $ID reads '$TEARDOWN_ENDPOINT_STATE', which proves neither an absent pane nor an agent-free one; retaining every durable task record - rerun teardown once that endpoint reads as agent-free or absent" >&2
+      exit 1
+      ;;
+  esac
 fi
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
