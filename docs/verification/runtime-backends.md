@@ -1064,7 +1064,9 @@ ok - real Pi SDK 0.84.4 delivers a custom message to the provider as user text c
 FM_TEST_END 2026-08-29T01:01:01Z tests/fm-pi-branch-live-e2e.test.sh exit=0 duration_ms=2520 gate_skip=false
 ```
 
-The focused extension suite also exercised the installed Pi 0.84.4 picker and outcome-renderer consumers; [`calm-mode-feasibility.md`](../calm-mode-feasibility.md#2026-08-28-pi-0844-outcome-renderer-compatibility-verification) owns the version-scoped renderer evidence.
+The focused extension suite also exercised the installed Pi 0.84.4 picker and outcome-renderer consumers.
+Upstream carried the version-scoped renderer evidence in `docs/calm-mode-feasibility.md`, which this stack deletes with the Calm extension, so the surviving owner of that evidence is `tests/fm-pi-branch-extension.test.sh`: it verifies `fm_branch_outcomes` capability-probed all-line versus collapsed stock output, exact expanded output, and export rendering against the installed renderer.
+The probe is what makes that coverage version-independent - it measures the host's stock preview policy at run time rather than pinning a Pi version - which is also why it holds under atomic, whose renderer is not Pi's.
 
 Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.
 The extension executes inside the signed CLI's own runtime, so a CLI upgrade can drift ahead of the pinned npm surface; refresh this record after every Pi upgrade by re-running the live guard, picker regression, and strict typecheck above (point `FM_PI_PACKAGE_DIR` at a matching npm install when one exists) and by watching the branch's own fallback line - every branch failure degrades to the pre-branch wake-to-main path by construction, which `tests/fm-pi-branch-extension.test.sh` holds with a broken generator and the live guard holds with the real SDK.
