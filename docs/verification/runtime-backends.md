@@ -1349,6 +1349,27 @@ ok - omp omp/17.3.5 live E2E covered the blocking turn-end guard, extension-owne
 Phase A loads only the turn-end guard extension, so nothing in that session can arm a watcher; with one task in flight the guard is invoked twice, first with `"stop_hook_active":false` and then with `"stop_hook_active":true`, the model answers the block reason, and the turn ends.
 Phase B loads both, the model calls `fm_watch_arm_omp`, a `done:` status write closes the cycle actionable, the extension starts and ledger-links a successor before delivering the wake, the model drains and settles, the arm child survives a `/new`, and `/exit` takes both the watcher and the arm child with it.
 
+#### Startup-context gating (2026-08-29, installed omp 18.0.10)
+
+Upstream's Pi guard now gates the first provider call: it starts the wrapper at `session_start` and makes `before_agent_start` await that result before returning the persistent `message`, so the digest cannot land after the model has already been prompted.
+The omp port does not do this yet. It delivers with `pi.sendMessage` from inside `session_start`, which does not block the turn.
+
+The gate exists on omp, so this is an unported fix rather than a missing capability.
+Measured against the INSTALLED build (`/nix/store/...-omp-18.0.10/lib/omp/omp`, a Mach-O binary) rather than the checkout, which had already moved to 18.0.11:
+
+```text
+before_agent_start          hits=8    emitted as { type, prompt, images }, handler results collected
+session_start               hits=10   emitted as { type: "session_start" } - no reason field
+createGrepToolDefinition    hits=4
+createSearchToolDefinition  hits=0
+".omp" literal              hits=12   CONFIG_DIR_NAME = ".omp"
+".pi"  literal              hits=0
+```
+
+So omp exposes `before_agent_start` and accepts a handler-returned message, while its `session_start` still carries no `reason`; a port therefore keeps the existing header-and-argv source derivation and changes only the delivery path.
+Because omp never reads `.pi` at all (zero hits above), such a port must carry its own copy of the supervisor under `.omp/extensions/lib/` and must never reference the `.pi/` one.
+The nested-directory probe recorded under Extension discovery above already shows a `.omp/extensions/lib/` file is not auto-discovered as an extension, which is what makes that copy safe to place there.
+
 ### Refresh commands
 
 ```sh
@@ -1530,6 +1551,21 @@ The file appears only once the first assistant message exists, so an interrupt b
 ### Standing coverage
 
 `tests/fm-atomic-adapter.test.sh` pins this layer portably, `tests/fm-atomic-harness.test.sh` owns identity, and `tests/fm-atomic-adapter-live-e2e.test.sh` (opt-in, `FM_ATOMIC_LIVE_E2E=1`) is the live regression for the facts above that only real atomic can answer.
+
+### Inherited Pi extension fixes (2026-08-29, installed atomic 0.9.16)
+
+atomic loads project-local `.pi/extensions` under trust, so a fix to a tracked `.pi/extensions/*.ts` file reaches atomic through the cascade with no atomic-side port.
+That covers both Pi fixes in the 4eb587d6 gap: the startup-context gate in `fm-primary-turnend-guard.ts` and the renderer capability probe in `fm-branch-supervision.ts`.
+This is the one place the `.pi/` path is legitimate for a non-Pi harness, because atomic loads that directory itself rather than being pointed at another harness's tree.
+
+Measured in the installed bundle (`/nix/store/...-atomic-0.9.16/lib/node_modules/@bastani/atomic/dist`) rather than the checkout, which reports version `0.0.0`:
+
+- `before_agent_start` is emitted before `agent.prompt()` and its returned `message` becomes a `role: "custom"` message, so the gate's mechanism is supported natively.
+- `session_start` carries the full `reason` union (`startup`, `reload`, `new`, `resume`, `fork`), unlike omp's.
+- The Pi specifier `@earendil-works/pi-coding-agent` is aliased onto atomic's own index, which exports `createSearchToolDefinition` and not `createGrepToolDefinition`.
+
+That last line is the whole of the divergence among the eight tool-definition factories Firstmate has imported; the other seven names match.
+It is why `fm-calm.ts` is retired rather than guarded, and it is untouched by upstream's Pi 0.84.4 work, which changed `fm-calm.ts` only for TypeScript return-type conformance.
 
 ### Refresh commands
 
