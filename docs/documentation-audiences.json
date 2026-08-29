@@ -385,6 +385,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/upstream-cascade-a390659.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/voice-relay.md",
       "audience": "operator-current"
     },
