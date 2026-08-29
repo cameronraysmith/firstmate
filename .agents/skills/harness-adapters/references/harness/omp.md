@@ -1,16 +1,16 @@
 # omp (oh-my-pi)
 
-Verified for crewmate, scout, and primary work on 2026-08-18 with omp 17.3.5 on tmux, unless a fact gives another version.
+Verified for crewmate, scout, secondmate, and primary work on 2026-08-18 with omp 17.3.5 on tmux, unless a fact gives another version.
 oh-my-pi is a Pi fork with its own identity, config root, lifecycle events, composer, busy predicate, and primary supervision.
 Nothing from the Pi reference transfers; every fact below was measured on omp itself.
-`../../../bin/fm-spawn.sh` still refuses `--secondmate` on omp because that launch wiring is unbuilt, not because the supervision protocol is missing.
+It runs crewmate, scout, secondmate, and primary work.
 
 ## Operating facts
 
 | Fact | Value |
 |---|---|
 | Binary | `omp` from `PATH`. The pane's `#{pane_current_command}` is the exact name `omp`, which is also what the liveness and identity probes match; a `*omp*` glob is deliberately never used, so `composer` and `omptest` stay `other`. |
-| Launch | A positional prompt, the Pi and Grok shape, so the brief rides the launch command. |
+| Launch | A positional prompt, the Pi and Grok shape, so the brief rides the launch command. A SECONDMATE launch adds no `-e` path, because its pane runs in the secondmate home and omp discovers that home's own `.omp/extensions/*.ts`. |
 | Busy state | The Firstmate-owned per-task extension's `agent_start` (busy) and `agent_end` **without** `willContinue` (idle), source `omp-ext`. |
 | Exit command | `/exit`; one Enter submits it even though a slash popup is open. |
 | Interrupt | Single Escape. The run closes with `[Command cancelled]` and the composer returns EMPTY, so no clear key is needed (unlike muse). `../../../bin/fm-control-lib.sh` claims no cancellation acknowledgement. |
@@ -20,7 +20,7 @@ Nothing from the Pi reference transfers; every fact below was measured on omp it
 | Model discovery | Run `omp models` (or `omp models find <substring>`, `omp models --json`), which lists every available provider/model and each one's supported thinking levels. `omp usage` reports the authenticated accounts. |
 | Autonomy | `--auto-approve`. Without it every tool call is gated; with it a bash tool call ran unattended. `--approval-mode yolo` is the equivalent knob. |
 | Trust dialog | None observed on a never-seen worktree path, and none is needed for the busy extension, which loads through an explicit `-e` path rather than a project root. A PRIMARY needs none either: omp auto-discovers `.omp/extensions/` without approving anything. |
-| Primary supervision | Its own tracked `.omp/extensions/` pair. Turn end BLOCKS through `session_stop`; the arm cycle is owned per omp PROCESS. See "Primary supervision" below. `--secondmate` is still refused. |
+| Primary supervision | Its own tracked `.omp/extensions/` pair. Turn end BLOCKS through `session_stop`; the arm cycle is owned per omp PROCESS. See "Primary supervision" below. A secondmate home loads the same pair by discovery from its own tree. |
 | Environment marker | `OMPCODE=1`, and omp ALSO exports `CLAUDECODE=1` of its own accord. Detection tests `OMPCODE` first for exactly that reason. |
 | Composer | A two-row box with NO interior content row: a titled top border and an input row that IS the bottom border (`╰─ typed text ─╯`), with the terminal cursor on that bottom row. |
 | Resume | `omp --continue` for the previous session, or `omp --resume <id-prefix>`. |
