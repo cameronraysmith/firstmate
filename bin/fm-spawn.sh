@@ -194,9 +194,10 @@
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
 # omp loads state/<id>.omp-ext.ts through an explicit -e path, the same
-# outside-the-worktree shape pi uses. An omp PRIMARY instead auto-discovers its
-# own tracked .omp/extensions pair; omp is refused for --secondmate because that
-# launch wiring is unbuilt, not because it lacks a supervision protocol.
+# outside-the-worktree shape pi uses. An omp SECONDMATE passes no -e path at
+# all: its pane runs in its own firstmate home, and omp auto-discovers that
+# home's tracked .omp/extensions/*.ts without a trust grant, so the primary
+# supervision extensions load by discovery alone.
 # Every launch is additionally prefixed with the shared launch-boundary
 # sanitizer (bin/fm-launch-boundary-lib.sh), which clears the agent-session markers a
 # primary exports or a pane environment retains.
@@ -517,7 +518,7 @@ spawn_remote_secondmate() {
     harness=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
   fi
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor) ;;
     *)
       fm_lock_release "$registry_lock" || true
       fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -1378,7 +1379,23 @@ launch_template() {
     # worktree path). --no-extensions is deliberately NOT passed: it would also
     # drop the operator's own omp extensions, and firstmate has no standing to
     # disable those for a crewmate.
-    omp) printf '%s' 'omp --auto-approve __MODELFLAG____EFFORTFLAG__-e __OMPEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # A SECONDMATE emits no -e path, which is where omp parts company with pi.
+    # The pane's working directory IS the secondmate home, and omp discovers
+    # that home's tracked .omp/extensions/*.ts with no trust approval, so the
+    # primary supervision extensions load without being named. Naming them as
+    # well would give omp a second route to modules discovery has already
+    # loaded, and the watch extension owns exactly one arm generation per omp
+    # process. Discovery cannot be suppressed here to make room for explicit
+    # paths, because --no-extensions would also drop the operator's own
+    # extensions, so the bare launch is the only form that loads each
+    # supervision extension once.
+    omp)
+      if [ "$kind" = secondmate ]; then
+        printf '%s' 'omp --auto-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      else
+        printf '%s' 'omp --auto-approve __MODELFLAG____EFFORTFLAG__-e __OMPEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      fi
+      ;;
     # atomic: a Pi fork, so a positional prompt starts the supervised interactive
     # session and the brief rides the launch command. Every flag here was measured
     # on atomic 0.9.13, 2026-08-19.
@@ -1507,28 +1524,16 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   exit 1
 fi
 
-# omp runs a verified PRIMARY - its own tracked .omp/extensions pair owns the
-# turn-end block and the watcher wake - but is still refused for --secondmate,
-# because a secondmate is a separate launch surface rather than a separate
-# supervision model. A secondmate home receives its primary extensions as
-# absolute -e paths composed here (see __PITURNEND__/__PIWATCH__), and that
-# template, the seeded home's extension tree, and the remote secondmate harness
-# allowlists are none of them built or measured for omp. Refuse rather than
-# launch a secondmate whose supervision wiring has never been exercised.
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = omp ]; then
-  echo "error: omp runs crewmate and scout work only; its secondmate launch wiring is not built. Select a harness verified for secondmates." >&2
-  exit 1
-fi
-
-# atomic is refused for --secondmate on omp's reason, not muse's, and the
-# difference matters. muse CANNOT be a primary: its hook dialect rejects the
+# atomic is refused for --secondmate on unbuilt wiring, not on incapability, and
+# the difference matters. muse CANNOT be a primary: its hook dialect rejects the
 # handlers primary supervision is built on. atomic has the full primary
 # capability surface - it is a Pi fork whose extension API is pi's, and pi is
 # already a verified secondmate harness - but a secondmate is a separate LAUNCH
-# surface: the seeded home's extension tree, the secondmate launch template, and
-# the remote secondmate allowlists are none of them built or measured for atomic.
-# The refusal is therefore about unbuilt wiring and is expected to lift with its
-# own evidence, rather than being a capability verdict.
+# surface: atomic has no tracked primary extension tree of its own, no entry in
+# docs/supervision-protocols/, and no secondmate launch template, so a secondmate
+# on it would render the unknown protocol and could never arm. The refusal is
+# therefore expected to lift with its own evidence, rather than being a
+# capability verdict.
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = atomic ]; then
   echo "error: atomic runs crewmate and scout work only; its secondmate launch wiring is not built. Select a harness verified for secondmates." >&2
   exit 1
