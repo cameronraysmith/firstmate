@@ -799,7 +799,7 @@ secondmate_liveness_one() {  # <meta> <id>
   # refuses a --secondmate launch on them, so relaunching would only loop into
   # that refusal.
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor) ;;
     *)
       case "$agent_state" in dead|missing) agent_state=unverified-harness ;; esac
       ;;
