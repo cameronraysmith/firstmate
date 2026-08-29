@@ -668,7 +668,7 @@ ACTIVE_SEEDED_FOCUS_START=$(focus_audit_line_count)
 if spawn_task active-seeded "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/active-seeded.out" 2> "$TMP_ROOT/active-seeded.err"; then
   fail "active seeded-tab projection should refuse the prune"
 fi
-grep -F "target is the captain's active tab" "$TMP_ROOT/active-seeded.err" >/dev/null 2>&1 \
+grep -F "is the focused tab of herdr session" "$TMP_ROOT/active-seeded.err" >/dev/null 2>&1 \
   || fail "active seeded-tab projection did not report its exact refusal"
 ACTIVE_SEEDED_WSID=$(cat "$ACTIVE_SEEDED_CONTROL/workspace")
 ACTIVE_SEEDED_TAB=$(cat "$ACTIVE_SEEDED_CONTROL/seeded-tab")

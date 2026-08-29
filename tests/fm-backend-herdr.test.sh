@@ -1379,11 +1379,11 @@ test_projection_close_refuses_active_tab() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w9:p2' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "cleanup must refuse when exact active-tab preservation is impossible"
-  assert_contains "$out" "target is the captain's active tab" \
-    "active-tab cleanup refusal did not explain the focus-safety boundary"
+  assert_contains "$out" "is the focused tab of herdr session fmtest" \
+    "active-tab cleanup refusal did not name the focus condition it observed"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose' \
     "active-tab cleanup refusal still closed the pane"
-  pass "herdr presentation focus: cleanup refuses rather than close the captain's active tab"
+  pass "herdr presentation focus: cleanup refuses rather than close its session's focused tab"
 }
 
 test_projection_close_reports_focus_restore_failure() {
@@ -2194,11 +2194,11 @@ test_projection_seeded_prune_refuses_active_tab() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_prune_seeded_default_tab fmtest w9 w9:t1 focus-preserving' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "projected seeded pruning must refuse the active tab"
-  assert_contains "$out" "target is the captain's active tab" \
-    "projected seeded prune did not explain its active-tab refusal"
+  assert_contains "$out" "is the focused tab of herdr session fmtest" \
+    "projected seeded prune did not name the focus condition it observed"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose' \
-    "projected seeded prune closed the captain's active tab"
-  pass "herdr presentation focus: projected seeded pruning refuses the active tab"
+    "projected seeded prune closed its session's focused tab"
+  pass "herdr presentation focus: projected seeded pruning refuses its session's focused tab"
 }
 
 test_projection_label_builder_uses_corner_and_strips_owner_prefixes() {
