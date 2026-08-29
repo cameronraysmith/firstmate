@@ -171,11 +171,18 @@ const MIRROR_MESSAGE_CAP = 4000;
 const MERGE_NOTE_BOAT = "⛵";
 // Carried inside the captain note's own text because that text is the only
 // part of a custom message the model is given (see deliverNote).
+//
+// The note still needs to identify itself so main cannot mistake an incoming
+// outcome for its own earlier answer and silently lose the outcome. Event
+// ownership forbids a second fleet operation, while the captain-facing verdict
+// requires a visible response and leaves its wording to main.
 const CAPTAIN_OUTCOME_INSTRUCTION =
   "This is a supervision outcome delivered automatically by the supervision branch. " +
-  "It was not typed by the captain and it is not your own earlier output. " +
-  "Relay only this outcome to the captain now, in one short message, in captain outcome language. " +
-  "Do not restate or repeat any earlier answer.";
+  "It was not typed by the captain. " +
+  "The fleet event is already handled: do not re-drain, re-run, or acknowledge it. " +
+  "This outcome is captain-facing: give the captain a visible response now. " +
+  "Use your judgment over the wording and how to incorporate it, not whether to surface it. " +
+  "An outcome that directly answers an explicit captain request is captain-facing, regardless of whether it is healthy, routine, measured, actionable, or requires a decision.";
 // Bounded re-check for held notes. agent_end normally releases them; this only
 // covers a continuation that never emits its own terminal agent_end, so a note
 // can never be stranded behind a stuck settle flag.
@@ -387,13 +394,21 @@ function textOfContent(content: unknown): string {
 // briefs) are fleet machinery, not captain dialog; mirroring them would feed
 // the branch its own supervision traffic back. Current injections start with
 // the U+2063 operational prefix; the plain legacy form starts with FIRSTMATE.
+// Matched inline rather than through the canonical classifier helper, which
+// spawns bin/fm-operational-input.sh per call: this runs once per mirrored
+// message, and the two forms above are the whole grammar it has to decide.
 function isOperationalUserText(text: string): boolean {
   return text.startsWith("⁣") || /^FIRSTMATE[ _]/.test(text);
 }
 
+// Head AND tail, because a captain request's tail is where the actual ask
+// usually sits: a head-only cap can drop the whole question it was mirroring.
 function capMirrorText(text: string): string {
   if (text.length <= MIRROR_MESSAGE_CAP) return text;
-  return `${text.slice(0, MIRROR_MESSAGE_CAP)}\n[mirror truncated at ${MIRROR_MESSAGE_CAP} characters]`;
+  const headLength = Math.ceil(MIRROR_MESSAGE_CAP / 2);
+  const tailLength = MIRROR_MESSAGE_CAP - headLength;
+  const omitted = text.length - MIRROR_MESSAGE_CAP;
+  return `${text.slice(0, headLength)}\n[mirror truncated: ${omitted} characters omitted]\n${text.slice(-tailLength)}`;
 }
 
 function readMirrorCursor(): MirrorCursor {
@@ -431,8 +446,22 @@ function collectMainDialog(
   const entries = sessionManager.getEntries();
   const anchor = collection.collectAnchor ?? readMirrorCursor();
   const start = anchor.file === file ? Math.min(anchor.index, entries.length) : 0;
+  // The newest captain message in this batch is the request an outcome may be
+  // answering, so it is mirrored whole while older dialog stays capped.
+  let currentCaptainIndex = -1;
+  for (let index = entries.length - 1; index >= start; index -= 1) {
+    const entry = entries[index];
+    if (entry.type !== "message") continue;
+    const message = (entry as { message?: { role?: string; content?: unknown } }).message;
+    if (message?.role !== "user") continue;
+    const text = textOfContent(message.content).trim();
+    if (!text || isOperationalUserText(text)) continue;
+    currentCaptainIndex = index;
+    break;
+  }
   const items: MirrorItem[] = [];
-  for (const entry of entries.slice(start)) {
+  for (let index = start; index < entries.length; index += 1) {
+    const entry = entries[index];
     if (entry.type !== "message") continue;
     const message = (entry as { message?: { role?: string; content?: unknown } }).message;
     if (!message) continue;
@@ -440,7 +469,10 @@ function collectMainDialog(
     const text = textOfContent(message.content).trim();
     if (!text) continue;
     if (message.role === "user" && isOperationalUserText(text)) continue;
-    items.push({ tag: message.role === "user" ? "captain" : "main", text: capMirrorText(text) });
+    items.push({
+      tag: message.role === "user" ? "captain" : "main",
+      text: index === currentCaptainIndex ? text : capMirrorText(text),
+    });
   }
   collection.collectAnchor = { file, index: entries.length };
   collection.pendingCursor = collection.collectAnchor;
@@ -697,7 +729,8 @@ export default function (pi: OmpExtensionAPI) {
           description: "The task id the event belongs to (or 'fleet' for fleet-wide events)",
         }),
         verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
-          description: "captain only for what a human must see; routine otherwise",
+          description:
+            "Use captain unconditionally for an outcome that directly answers an explicit captain request, regardless of whether it is healthy, routine, measured, actionable, or requires a decision. Also use captain for work ready for review, captain-only decisions, blockers or failures after recovery is exhausted, needed credentials, and destructive, irreversible, or security-sensitive actions; use routine otherwise.",
         }),
         summary: Type.String({
           description:

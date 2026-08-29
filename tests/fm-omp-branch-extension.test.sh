@@ -461,8 +461,8 @@ EOF
     *) fail "captain outcome body lost the outcome itself: $body" ;;
   esac
   case "$body" in
-    *"Relay only this outcome"*"Do not restate or repeat any earlier answer"*) ;;
-    *) fail "captain outcome body never tells main to relay it instead of repeating: $body" ;;
+    *"The fleet event is already handled"*"captain-facing: give the captain a visible response now"*) ;;
+    *) fail "captain outcome body never separates event ownership from the required captain-facing response: $body" ;;
   esac
   # The routine note is rendered in the TUI, and its renderer reads the glyph off
   # the front of this same string, so it must stay plain text.
