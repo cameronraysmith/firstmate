@@ -72,8 +72,9 @@ Grok selects native blocking or its pre-native bounded resume fallback from the 
 Kimi is outside the primary turn-end guard scope, while `docs/turnend-guard.md` owns its separate guarded global hook for crew wake signals.
 muse is CREWMATE/SCOUT ONLY and has no primary integration at all: its plugin engine (its only hook surface) is disabled in the default build, and its Claude-compatible hook dialect names `asyncRewake` and model reawakening as explicitly unsupported, which is exactly what a firstmate primary's turn-end supervision needs.
 `bin/fm-spawn.sh` refuses a `--secondmate` launch on muse for that reason.
-omp runs a verified PRIMARY through its own tracked extension pair, but `bin/fm-spawn.sh` still refuses `--secondmate` on omp: a secondmate home receives its primary extensions as absolute `-e` paths composed at launch, and neither that template nor the remote secondmate allowlists are built or measured for omp.
-atomic is CREWMATE/SCOUT ONLY for a different reason again: its extension API is Pi's and the capability is there, but no firstmate primary protocol is built on it, so `bin/fm-spawn.sh` refuses `--secondmate` on atomic rather than launching supervision that cannot be armed.
+omp runs a verified PRIMARY through its own tracked extension pair and is a verified secondmate harness.
+Its secondmate launch passes no `-e` path: the pane's working directory is the secondmate home, and omp auto-discovers that home's tracked `.omp/extensions/*.ts` without a trust approval, so naming those files again would give omp a second route to modules discovery has already loaded.
+atomic is CREWMATE/SCOUT ONLY: its extension API is Pi's and the capability is there, but no firstmate primary protocol is built on it, so `bin/fm-spawn.sh` refuses `--secondmate` on atomic rather than launching supervision that cannot be armed.
 cursor HAS a full hooks system: 20 lifecycle events configurable at project scope in `.cursor/hooks.json`, plus a Claude-Code compatibility name map that also loads `<project>/.claude/settings.json`.
 Its `stop` step cannot block - exit 2 there is a silent no-op - so `bin/fm-turnend-guard-cursor.sh` parks the turn boundary on the watcher and returns one bounded `followup_message` instead.
 Because Cursor loads the tracked Claude settings too, every Claude-shaped entrypoint whose event Cursor covers stands down on a Cursor-delivered payload.
@@ -555,16 +556,16 @@ muse is a day-0 `0.1.0` beta whose launcher polls a release channel hourly and c
 The captain accepted that risk, so firstmate does NOT set `MUSE_NO_AUTO_UPDATE=1`; a fleet that later wants stability can set it in the launch environment without any adapter change.
 Its plugin/hook engine reports `plugins are not available in this build` unless `MUSE_EXPERIMENTAL_PLUGINS=on`, which is why the busy source reads the session log instead of installing a hook.
 
-## omp (VERIFIED CREWMATE, SCOUT, AND PRIMARY 2026-08-18 on tmux, omp 17.3.5)
+## omp (VERIFIED CREWMATE, SCOUT, SECONDMATE, AND PRIMARY 2026-08-18 on tmux, omp 17.3.5)
 
 oh-my-pi (`omp`) is a Pi fork with its own identity, config root, lifecycle events, composer, busy predicate, and primary supervision.
 Nothing from the pi rows transfers; every fact below was measured on omp itself.
-It runs crewmate, scout, and primary work; `bin/fm-spawn.sh` still refuses `--secondmate` on omp because that launch wiring is unbuilt, not because the supervision protocol is missing.
+It runs crewmate, scout, secondmate, and primary work.
 
 | Fact | Value |
 |---|---|
 | Binary | `omp` from `PATH`. The pane's `#{pane_current_command}` is the exact name `omp`, which is also what the liveness and identity probes match; a `*omp*` glob is deliberately never used, so `composer` and `omptest` stay `other`. |
-| Launch | A positional prompt, the Pi/Grok shape, so the brief rides the launch command. |
+| Launch | A positional prompt, the Pi/Grok shape, so the brief rides the launch command. A SECONDMATE launch adds no `-e` path, because its pane runs in the secondmate home and omp discovers that home's own `.omp/extensions/*.ts`. |
 | Models | `--model <model>` with fuzzy matching (`--model haiku` resolved to `claude-haiku-4-5`). Validate against `omp models`; an unknown model REFUSES the launch with `Model "..." not found`. |
 | Busy state | The Firstmate-owned per-task extension's `agent_start` (busy) and `agent_end` **without** `willContinue` (idle), source `omp-ext`. |
 | Exit command | `/exit`; one Enter submits it even though a slash popup is open. |
@@ -572,7 +573,7 @@ It runs crewmate, scout, and primary work; `bin/fm-spawn.sh` still refuses `--se
 | Skill invocation | `/<skill>`, the claude/grok form. |
 | Autonomy | `--auto-approve`. Without it every tool call is gated; with it a bash tool call ran unattended. `--approval-mode yolo` is the equivalent knob. |
 | Trust dialog | None observed on a never-seen worktree path, and none is needed for the busy extension, which loads through an explicit `-e` path rather than a project root. A PRIMARY needs none either: omp auto-discovers `.omp/extensions/` without approving anything. |
-| Primary supervision | Its own tracked `.omp/extensions/` pair. Turn end BLOCKS through `session_stop`; the arm cycle is owned per omp PROCESS. See "Primary supervision" below. `--secondmate` is still refused. |
+| Primary supervision | Its own tracked `.omp/extensions/` pair. Turn end BLOCKS through `session_stop`; the arm cycle is owned per omp PROCESS. See "Primary supervision" below. A secondmate home loads the same pair by discovery from its own tree. |
 | Environment marker | `OMPCODE=1`, and omp ALSO exports `CLAUDECODE=1` of its own accord. Detection tests `OMPCODE` first for exactly that reason. |
 | Composer | A two-row box with NO interior content row: a titled top border and an input row that IS the bottom border (`╰─ typed text ─╯`), with the terminal cursor on that bottom row. |
 | Effort | `--thinking`; see the [launch-profile-axes table](#launch-profile-axes) for the mapping and the silent-fallback hazard. |
@@ -636,7 +637,7 @@ It runs crewmate and scout work only; `bin/fm-spawn.sh` refuses `--secondmate` o
 | Skill invocation | No verified slash form. A slash popup exists (228 entries), but `/no-mis` matched nothing, so firstmate's skills are not commands there; use natural language naming the skill, as with pi. |
 | Autonomy | No flag, and none exists to look for: atomic executes tools with NO approval gate at all. |
 | Trust dialog | A BLOCKING five-option `Trust project folder?` dialog on any project folder atomic has not been trusted with, whose first and preselected option is a PERSISTENT trust. `-na` suppresses it entirely, which is what firstmate relies on - accepting it with Enter would write a disposable task worktree into atomic's persistent `~/.atomic/agent/trust.json`. |
-| Primary supervision | None built. Crewmate and scout only; `--secondmate` refused, on omp's unbuilt-wiring reason rather than muse's incapability. |
+| Primary supervision | None built. Crewmate and scout only; `--secondmate` refused on unbuilt wiring rather than on muse's incapability. |
 | Environment marker | `ATOMIC_CODING_AGENT=true` plus `AI_AGENT=atomic`, and never `PI_CODING_AGENT`. See "Detection" above; the `AI_AGENT` conjunct is what keeps a nested worker from being misread. |
 | Composer | Pi's separated region - an input row between two full-width rules - but atomic draws claude's `❯` agent glyph on that row, so the shared classifier proves it through the bare-glyph rule and needs NO identity gate, unlike pi and omp. |
 | Effort | `--thinking`; see the [launch-profile-axes table](#launch-profile-axes) for the mapping and the silent-clamp hazard. |
