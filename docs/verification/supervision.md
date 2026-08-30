@@ -500,6 +500,30 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+## omp supervision branch in a home with no installed dependencies
+
+`.omp/extensions/fm-branch-supervision.ts` imports `@oh-my-pi/pi-coding-agent` by package specifier rather than by relative path, and a seeded firstmate home is an ordinary clone with no `node_modules`.
+Whether omp resolves that specifier for an extension it found by project discovery decides whether a home gets the supervision branch or silently runs without it.
+Measured on 2026-08-29 with omp 18.0.11 on darwin-arm64.
+
+The probe root held only the three tracked files the extension needs and no `node_modules`, so nothing in it could satisfy the specifier locally:
+
+```text
+./.omp/extensions/fm-branch-supervision.ts
+./.pi/extensions/lib/fm-branch-dispatch.ts
+./.pi/extensions/lib/fm-operational-input.ts
+```
+
+```sh
+omp --no-session --auto-approve -p "List the exact names of every tool available to you, one per line, and nothing else."
+```
+
+The reply ended with `xd://fm_branch_outcomes`, the tool this extension registers.
+A tool cannot be registered by a module that failed to import, so omp resolves its own `@oh-my-pi/*` scope for a project-discovered extension and the branch is available in a dependency-free home.
+
+This measures module resolution and tool registration only.
+The probe root held no `state/.lock`, so the branch never claimed ownership and the arm-and-dispatch cycle is not covered here; that remains the live guard's subject.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.
