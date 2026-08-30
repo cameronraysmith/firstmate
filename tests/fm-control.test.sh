@@ -364,11 +364,14 @@ test_backend_key_capability_matrix() {
 }
 
 # A verified adapter is not automatically verified for every task kind, and the
-# check has to sit on the pre-stop side of a relaunch: neither muse nor omp has
-# a primary supervision protocol, so bin/fm-spawn.sh refuses both for a
-# secondmate, and
-# discovering that only after the running agent was stopped would strand the
-# secondmate with no agent at all.
+# check has to sit on the pre-stop side of a relaunch: muse has no primary
+# supervision protocol and atomic has no tracked primary extension tree, so
+# bin/fm-spawn.sh refuses both for a secondmate, and discovering that only after
+# the running agent was stopped would strand the secondmate with no agent at all.
+# omp is on the other side of that line and is asserted there deliberately: it
+# has had its own supervision protocol since docs/supervision-protocols/omp.md
+# was written, and its secondmate launch is built, so a negative assertion here
+# would pin a refusal the spawn path no longer makes.
 test_harness_kind_capability() {
   local harness
   for harness in $VERIFIED_HARNESSES; do
@@ -379,9 +382,9 @@ test_harness_kind_capability() {
   done
   fm_control_harness_supports_kind muse secondmate \
     && fail "muse has no primary supervision protocol and must not claim a secondmate"
-  fm_control_harness_supports_kind omp secondmate \
-    && fail "omp has no primary supervision protocol and must not claim a secondmate"
-  for harness in claude codex opencode pi pi-signed grok kimi; do
+  fm_control_harness_supports_kind atomic secondmate \
+    && fail "atomic has no primary extension tree and must not claim a secondmate"
+  for harness in claude codex opencode pi pi-signed grok kimi omp; do
     fm_control_harness_supports_kind "$harness" secondmate \
       || fail "$harness should be able to run a secondmate"
   done

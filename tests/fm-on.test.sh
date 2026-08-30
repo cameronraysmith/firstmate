@@ -380,6 +380,25 @@ assert_contains "$out" "required harness=claude:$DOCTOR_BIN/claude" "the remote 
 assert_not_contains "$out" 'required tools do not resolve' "a resolved required tool was still reported missing"
 pass "the remote doctor reports its required runtime tool set and optional tools"
 
+# The readiness gate returns on the FIRST harness that resolves, so a host whose
+# only harness is a late entry in the list has to be checked separately: the
+# claude case above would still pass if that entry were missing entirely.
+OMP_ONLY_BIN="$TMP_ROOT/doctor-bin-omp"
+mkdir -p "$OMP_ONLY_BIN"
+for tool in bash uname git jq herdr tasks-axi treehouse; do
+  ln -sf "$DOCTOR_BIN/$tool" "$OMP_ONLY_BIN/$tool"
+done
+printf '#!/usr/bin/env bash\nexit 0\n' > "$OMP_ONLY_BIN/omp"
+chmod +x "$OMP_ONLY_BIN/omp"
+set +e
+out=$(HOME="$DOCTOR_HOME" PATH="$OMP_ONLY_BIN:/usr/bin:/bin:/usr/sbin:/sbin" "$ROOT/bin/fm-remote-doctor.sh" 2>&1)
+set -e
+assert_contains "$out" "required harness=omp:$OMP_ONLY_BIN/omp" \
+  "the remote doctor did not recognise omp as the host's only harness"
+assert_not_contains "$out" 'required harness=MISSING' \
+  "a host with omp installed was still reported as having no harness"
+pass "the remote doctor recognises a harness that is not the first list entry"
+
 out=$(fm_on ios fm-probe-two.sh)
 assert_contains "$out" "home=$REMOTE_HOME" "first dynamic command stopped resolving"
 ARGV_TWO="$REMOTE_HOME/argv-two.bin"
