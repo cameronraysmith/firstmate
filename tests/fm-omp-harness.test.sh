@@ -17,6 +17,13 @@
 # what the launched process actually received - a stale
 # CLAUDE_CODE_CHILD_SESSION is what silently turns off a claude worker's own
 # transcript persistence.
+#
+# Finally it pins omp's SECONDMATE route. A secondmate on omp passes through
+# three separate harness gates - the local spawn, the parent's remote spawn, and
+# the remote host's own launch - and the launch it produces must carry no -e
+# path, because the pane runs in the secondmate home and omp discovers that
+# home's tracked .omp/extensions/*.ts by itself. A regression that reintroduced
+# the per-task -e would silently launch a secondmate on the worker adapter.
 # shellcheck disable=SC2016 # single quotes are deliberate: $$ and $1 expand inside the fixture child, not here
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -155,6 +162,16 @@ omp_launch_line() {  # <log> <binary>
   grep -F -- "$2" "$1" | tail -1
 }
 
+# A minimal seeded secondmate home. validate_firstmate_home_for_spawn needs the
+# seed marker naming this id, AGENTS.md, bin/, and a charter to launch from.
+omp_seeded_home() {  # <home> <id>
+  local home=$1 id=$2
+  mkdir -p "$home/bin" "$home/data" "$home/state" "$home/config" "$home/projects"
+  printf '# Firstmate\n' > "$home/AGENTS.md"
+  printf '%s\n' "$id" > "$home/.fm-secondmate-home"
+  printf 'charter for %s\n' "$id" > "$home/data/charter.md"
+}
+
 test_launch_boundary_clears_foreign_session_markers() {
   local home proj wt fakebin log launch out
   IFS='|' read -r home proj wt fakebin log <<EOF
@@ -198,32 +215,99 @@ SH
   pass "launch boundary: a spawn clears the inherited agent-session markers and nothing else"
 }
 
-# omp is a verified PRIMARY, so nothing in its supervision model explains this
-# refusal - the gap is the secondmate LAUNCH surface. A secondmate home is
-# seeded with an extension tree and launched through absolute -e paths that
-# fm-spawn composes only for pi, and neither that template nor the remote
-# secondmate harness allowlists were ever built for omp. The refusal is what
-# keeps that unbuilt path from standing up a home whose supervision cycle
-# could never be armed, so it is pinned here rather than left to the primary
-# adapter's verified status to imply.
-test_spawn_refuses_secondmate() {
-  local home fakebin out status
-  IFS='|' read -r home _ _ fakebin _ <<EOF
+# The secondmate launch carries the brief and nothing else: no -e path, and in
+# particular not the per-task busy-state extension, which belongs to a worker.
+# The pane's working directory is the secondmate home, where omp discovers the
+# tracked primary extensions on its own, so an explicit path would only give it
+# a second route to a module already loaded.
+test_secondmate_launch_carries_no_extension_path() {
+  local case_dir home fakebin log sub out launch meta
+  IFS='|' read -r home _ _ fakebin log <<EOF
 $(omp_spawn_case secondmate omp secondmate-1)
 EOF
+  case_dir="$TMP_ROOT/secondmate"
+  sub="$case_dir/sub"
+  omp_seeded_home "$sub" secondmate-1
+
   out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     PATH="$fakebin:$PATH" \
-    "$ROOT/bin/fm-spawn.sh" secondmate-1 omp --secondmate 2>&1)
-  status=$?
-  [ "$status" -ne 0 ] || fail "omp was accepted as a secondmate harness: $out"
-  assert_contains "$out" "secondmate launch wiring is not built" \
-    "the omp secondmate refusal did not explain the boundary"
-  pass "omp is refused as a secondmate harness"
+    "$ROOT/bin/fm-spawn.sh" secondmate-1 "$sub" omp --secondmate 2>&1) \
+    || fail "omp should be accepted as a secondmate harness: $out"
+
+  meta="$home/state/secondmate-1.meta"
+  assert_grep 'kind=secondmate' "$meta" "the omp spawn did not record a secondmate"
+  assert_grep 'harness=omp' "$meta" "the omp secondmate did not record its harness"
+
+  launch=$(omp_launch_line "$log" omp)
+  [ -n "$launch" ] || fail "no omp launch command was sent to the pane; log: $(cat "$log")"
+  case "$launch" in
+    *' -e '*) fail "the omp secondmate launch passed an extension path: $launch" ;;
+  esac
+  case "$launch" in
+    *.omp-ext.ts*) fail "the omp secondmate launch carried the per-task worker extension: $launch" ;;
+  esac
+  case "$launch" in
+    *'omp --auto-approve'*) ;;
+    *) fail "the omp secondmate launch is not an omp launch: $launch" ;;
+  esac
+  pass "omp runs a secondmate, and that launch carries no extension path"
+}
+
+# A remote omp secondmate is refused twice more if only the local spawn lifts:
+# the parent's remote-route allowlist, and the remote host's own launch
+# allowlist in bin/fm-remote-secondmate-control.sh, which re-enters fm-spawn on
+# that host. Each is asserted against its own script rather than through one
+# combined route, because a single case would pass while either was still
+# refusing. Each is driven with a deliberately invalid value for the gate that
+# sits immediately AFTER the harness check on that script, so an accepted
+# harness stops there and names it - proof the harness gate passed, with no
+# launch attempted.
+test_remote_secondmate_allowlists_accept_omp() {
+  local w sub out
+  w="$TMP_ROOT/remote-allowlist"
+  sub="$w/sub"
+  mkdir -p "$w/home/state" "$w/home/data" "$w/home/config" "$w/home/projects"
+  omp_seeded_home "$sub" rsm
+  printf -- '- rsm - remote domain (host: remote-mac; root: /remote/root; home: /remote/home; scope: remote work; projects: alpha; added 2026-08-02)\n' \
+    > "$w/home/data/secondmates.md"
+
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$w/home" \
+    FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
+    FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
+    FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" rsm --secondmate --harness omp --backend zellij 2>&1) \
+    && fail "the non-herdr backend should still have refused the remote spawn: $out"
+  assert_contains "$out" "a remote secondmate runs only on the herdr backend" \
+    "the parent's remote-route allowlist refused omp before reaching the backend check"
+
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$w/home" \
+    FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
+    FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
+    FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" rsm --secondmate --harness nosuch --backend zellij 2>&1) \
+    && fail "an unverified remote harness should have been refused: $out"
+  assert_contains "$out" "remote secondmate spawn requires a verified harness adapter" \
+    "the parent's remote-route allowlist stopped refusing unverified harnesses"
+
+  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$sub" \
+    "$ROOT/bin/fm-remote-secondmate-control.sh" launch rsm omp - bogus herdr 2>&1) \
+    && fail "the invalid effort should still have refused the host-local launch: $out"
+  assert_contains "$out" "invalid remote secondmate effort" \
+    "the host-local launch allowlist refused omp before reaching the effort check"
+
+  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$sub" \
+    "$ROOT/bin/fm-remote-secondmate-control.sh" launch rsm nosuch - bogus herdr 2>&1) \
+    && fail "an unverified host-local harness should have been refused: $out"
+  assert_contains "$out" "unverified remote secondmate harness" \
+    "the host-local launch allowlist stopped refusing unverified harnesses"
+
+  pass "omp is accepted by both remote secondmate harness allowlists"
 }
 
 test_tmux_liveness_classifies_the_exact_omp_name
 test_launch_boundary_clears_foreign_session_markers
-test_spawn_refuses_secondmate
+test_secondmate_launch_carries_no_extension_path
+test_remote_secondmate_allowlists_accept_omp
