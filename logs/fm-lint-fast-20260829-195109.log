@@ -1,3 +1,0 @@
-fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
-fm-lint.sh: fast local mode; ShellCheck extended analysis disabled
-fm-lint-workflows.sh: actionlint not found; install actionlint 1.7.12 with bin/fm-install-actionlint.sh <destination-directory> and put that directory on PATH.
