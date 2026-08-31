@@ -46,6 +46,10 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Helper scripts in `bin/` are plain bash.
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
+  Resolve every interpreter through `#!/usr/bin/env <name>`, or a literal `#!/bin/sh` where POSIX shell is genuinely intended, and never hardcode another absolute interpreter path.
+  A host following the NixOS layout ships only `/bin/sh` and `/usr/bin/env` and reaches every other tool through `PATH`, so a shebang naming an absolute `/bin/bash` fails at exec there.
+  The same applies to a shebang your script writes into a file it generates, and to an absolute tool path such as `/bin/ps`: probe `PATH` rather than giving up when a fixed location is absent.
+  `tests/fm-portable-interpreters.test.sh` enforces this over the tracked set and explains why the suite could not otherwise catch it.
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, pinned shellcheck version, and pinned actionlint workflow lint), and both CI and the no-mistakes pre-push gate run its no-argument full-analysis path.
   Its header and `--help` output own the exact local lint modes and flags.
   A malformed `.github/workflows/*.yml`, including a self-broken `ci.yml`, fails that local lint path before merge because a broken workflow cannot report its own breakage.
