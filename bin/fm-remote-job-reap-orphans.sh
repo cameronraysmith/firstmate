@@ -56,22 +56,43 @@ TXT
 
 # The code root a worker command line was launched from, echoed only when the
 # command is unambiguously a worker invocation: an absolute script path ending
-# in the worker suffix, optionally preceded by the interpreter ps reports as
-# "/bin/bash <script>", with at most the --serve argument after it.
+# in the worker suffix, optionally preceded by the interpreter token ps reports
+# ahead of it, with at most the --serve argument after it.
+#
+# That interpreter token has two shapes, because a shebang naming the
+# interpreter through env does not survive into argv as a path. The kernel execs
+# "/usr/bin/env bash <script>", env then execs bash with argv[0] set to the bare
+# name it resolved, so ps reports "bash <script>", where a shebang hardcoding an
+# absolute /bin/bash would have reported "/bin/bash <script>" instead. Both
+# shapes are accepted.
+#
+# A code root that itself contains a space is still read whole rather than
+# split, because the leading token is dropped only when it really is the
+# interpreter: an absolute token must be an executable file, and a bare token
+# must resolve on PATH to one. A bare token can never be part of the root, since
+# the root the remainder must present is absolute.
 reap_worker_root() { # <command>
-  local command=$1 path prefix leading
+  local command=$1 path prefix leading resolved
   case "$command" in
     *"$REAP_SUFFIX --serve") path=${command%" --serve"} ;;
     *"$REAP_SUFFIX") path=$command ;;
     *) return 1 ;;
   esac
   prefix=${path%"$REAP_SUFFIX"}
-  case "$prefix" in /*) ;; *) return 1 ;; esac
   leading=${prefix%% *}
-  # Drop the leading token only when it really is the interpreter binary, so a
-  # code root that itself contains a space is read whole rather than split.
-  if [ "$leading" != "$prefix" ] && [ -f "$leading" ] && [ -x "$leading" ]; then
-    prefix=${prefix#"$leading" }
+  if [ "$leading" != "$prefix" ]; then
+    case "$leading" in
+      /*)
+        [ -f "$leading" ] && [ -x "$leading" ] && prefix=${prefix#"$leading" }
+        ;;
+      */*) ;;
+      *)
+        resolved=$(command -v -- "$leading" 2>/dev/null) || resolved=
+        case "$resolved" in
+          /*) [ -f "$resolved" ] && [ -x "$resolved" ] && prefix=${prefix#"$leading" } ;;
+        esac
+        ;;
+    esac
   fi
   case "$prefix" in /*) ;; *) return 1 ;; esac
   printf '%s\n' "$prefix"
