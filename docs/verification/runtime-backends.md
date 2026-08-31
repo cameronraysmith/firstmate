@@ -407,6 +407,34 @@ ok - real herdr E2E: teardown closes only the worker's own pane and leaves the l
 That suite's headline case runs `bin/fm-spawn.sh` inside a real Herdr pane, so the parent identity comes from Herdr's own injection rather than a composed environment.
 Cross-session and contradictory bindings are covered deterministically in `tests/fm-backend-herdr.test.sh`, which can script a second server's socket without provisioning one.
 
+### Session placement
+
+A worker's Herdr session is resolved from the ambient environment by `fm_backend_herdr_session` in `bin/backends/herdr.sh`, which reads `${HERDR_SESSION:-default}`.
+An unconfigured home therefore places every crewmate and scout in `default`, the session its orchestrator already occupies.
+
+A selector that read the session from each project's `data/projects.md` entry was carried on this fork between 2026-08-12 and 2026-08-31 and then retired, so that placement matches upstream before persistent agents are distributed across several SSH-reachable hosts.
+`bin/fm-herdr-whereami.sh`, the self-location detector that shipped with that selector, was retired with it.
+
+The reserved remote session is unaffected, and the coupling ran in the direction that is easy to guess backwards.
+`bin/fm-remote-secondmate-control.sh` pins every remote secondmate to `fm-remote` by exporting `HERDR_SESSION` around its host-local `bin/fm-spawn.sh` call, and `bin/fm-spawn.sh` asserts that exact name on the recorded endpoint.
+The registry selector stopped reading `HERDR_SESSION`, which broke that pin and was why it added an explicit `--herdr-session` argument to carry the name instead.
+Retiring the selector restores the export as the channel that carries the pin, and that argument is gone.
+
+Checked on 2026-08-31 against the retirement:
+
+```sh
+bin/fm-test-run.sh \
+  tests/fm-remote-secondmate-parent-binding.test.sh \
+  tests/fm-remote-secondmate-trace-context.test.sh
+```
+
+```text
+FM_TEST_END 2026-08-31T15:44:13Z tests/fm-remote-secondmate-parent-binding.test.sh exit=0
+FM_TEST_END 2026-08-31T15:47:06Z tests/fm-remote-secondmate-trace-context.test.sh exit=0
+```
+
+Those are the two suites the `--herdr-session` argument was added to satisfy, so their passing without it is the direct evidence that the export carries the pin on its own.
+
 ### Per-home and presentation topology
 
 Per-home behavior is owned by:
