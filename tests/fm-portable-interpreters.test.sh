@@ -80,6 +80,24 @@ $FOUND"
 fi
 pass "no tracked file hardcodes an absolute interpreter outside /bin/sh"
 
+# own_shebang_is_portable <first-line>: true when a first line is not a shebang
+# at all, or is one of the two accepted forms.
+#
+# A named predicate rather than a case inside the command substitution below,
+# because stock macOS Bash 3.2 cannot parse one: its $() scanner counts the ")"
+# closing a case pattern as the closing parenthesis of the substitution and
+# reports a syntax error at the following ";;". CI's stock-Bash parse sweep
+# catches exactly that, so keep this classification out of the substitution.
+own_shebang_is_portable() { # <first-line>
+  local first=$1
+  case "$first" in
+    "$MARK/usr/bin/env "*) return 0 ;;
+    "$MARK/bin/sh") return 0 ;;
+    "$MARK"*) return 1 ;;
+  esac
+  return 0
+}
+
 # Every tracked script's OWN shebang, checked independently of the scan above so
 # a first line is still verified by the rule that names it.
 BAD_OWN=$(
@@ -87,13 +105,9 @@ BAD_OWN=$(
     [ -f "$ROOT/$path" ] || continue
     # LC_ALL=C throughout: the tracked set includes binary assets whose first
     # bytes are not valid UTF-8, and a locale-aware tr rejects them outright
-    # rather than passing them through to a case that simply will not match.
+    # rather than passing them through to a test that simply will not match.
     first=$(LC_ALL=C sed -n '1{p;q;}' "$ROOT/$path" 2>/dev/null | LC_ALL=C tr -d '\r') || continue
-    case "$first" in
-      "$MARK/usr/bin/env "*) ;;
-      "$MARK/bin/sh") ;;
-      "$MARK"*) printf '%s\n' "$path" ;;
-    esac
+    own_shebang_is_portable "$first" || printf '%s\n' "$path"
   done
 )
 [ -z "$BAD_OWN" ] || fail "these tracked scripts do not resolve their interpreter portably:
