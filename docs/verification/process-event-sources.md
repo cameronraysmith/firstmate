@@ -192,6 +192,17 @@ Both direct `start` and `reconcile` use a Perl launcher that forks the runner, c
 The private path verifies that the runner PID is also its process-group id before it records a claim, so neither entry point can inherit and claim the caller's process group.
 Without this launcher, reconcile would silently fail to start a runner on macOS and direct start could make retirement signal unrelated caller-group processes.
 
+## Extension bindings against the tracked omp harness extensions (2026-08-31)
+
+The a56a78ac cascade brought in the trusted process-event extension bindings while this fork carries three tracked harness extensions under `.omp/extensions/`.
+The two are separate registries and neither can reach the other, so the bindings duplicate nothing the omp extensions already register.
+
+`bin/fm-extension.mjs` binds a package into a firstmate home's content-addressed package store and enables one manifest-declared process-event adapter by name, under `--trust-same-user-code` and per-fact consent, and `bin/fm-procevent.sh` is its only invoker.
+The omp extensions are harness-side modules that omp itself discovers from `.omp/extensions/*.ts` and loads into the agent session, where they register `pi.on(...)` lifecycle handlers and tools.
+
+Checked in both directions on the cascaded tip: `bin/fm-extension.mjs`, `bin/fm-extension.sh`, `bin/fm-procevent.sh`, and `bin/fm-procevent-lib.sh` contain no reference to `.omp/extensions`, `.pi/extensions`, or `.atomic/extensions`, and no file under `.omp/extensions/` references the binding host, an extension binding, or `resolve-process-event`.
+A harness extension therefore cannot appear as a bound process-event source, and a bound adapter cannot be discovered by a harness.
+
 ## Scope
 
 The runner is domain-neutral and creates no endpoint, task metadata, or backlog item, so the supported primary harnesses and runtime backends are unaffected except through the existing `check` and status-signal wake paths they already consume.

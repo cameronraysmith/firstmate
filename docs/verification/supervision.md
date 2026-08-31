@@ -524,6 +524,25 @@ A tool cannot be registered by a module that failed to import, so omp resolves i
 This measures module resolution and tool registration only.
 The probe root held no `state/.lock`, so the branch never claimed ownership and the arm-and-dispatch cycle is not covered here; that remains the live guard's subject.
 
+## Pane-churn absorb against the stale-path absorb classes (2026-08-31)
+
+Upstream's turn-end pane-churn absorb and this stack's stale-path absorb classes both widen when a wake is treated as benign, so the a56a78ac cascade measured whether either makes the other redundant.
+They are complementary: neither is reachable from the other's path, and neither reads the other's evidence.
+
+| | Upstream pane-churn absorb | This stack's stale absorb classes |
+| --- | --- | --- |
+| Path | Signal path, bare turn-end wakes only | Stale path |
+| Evidence | Pane bytes, compared against the `state/.hash-*` marker | The reconciled verdict from `bin/fm-crew-state.sh` |
+| Entry point | `signal_turnend_panes_churned`, [`bin/fm-watch.sh`](../../bin/fm-watch.sh) line 463 | `crew_absorb_class`, [`bin/fm-classify-lib.sh`](../../bin/fm-classify-lib.sh) line 1686, called from `bin/fm-watch.sh` lines 942, 961, and 1852 |
+| Default | Off; the predicate returns on its first line unless the home creates `config/turnend-churn-absorb` | Always on |
+
+The first line of `signal_turnend_panes_churned` is `[ -e "$CONFIG/turnend-churn-absorb" ] || return 1`, so in a home that has not opted in the stale classes are the only behavior either change contributes.
+Where a home does opt in, the two still do not overlap: the churn predicate answers only for a bare turn-end on the signal path, and its deferral bound is evaluated before any `.stale-` state is touched, so a wake that surfaces there leaves the stale path's own classification alone.
+
+The distinction that matters for the queued defect about staleness keying on pane content is that it applies to the churn evidence, not to these classes.
+The stale classes never read pane content; they read the crew-state verdict, which is the harness busy source and the crew's own status log.
+That is also why upstream gated its own pane-bytes inference behind an opt-in and bounded it with `FM_TURNEND_CHURN_ABSORB_SECS`: churn and pane staleness read the same pane, so a continuously rendering pane would otherwise never surface a stopped worker.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.
