@@ -445,6 +445,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/upstream-cascade-10b93b2.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/voice-relay.md",
       "audience": "operator-current"
     },
