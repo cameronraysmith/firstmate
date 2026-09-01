@@ -341,6 +341,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/fork-stack-cascade.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/gitlab-merge-watch.md",
       "audience": "maintainer-verification"
     },
