@@ -51,6 +51,29 @@ Discovery keeps the two apart on its own: omp auto-discovers only top-level `.om
 Reaching the trap takes an explicit `-e`.
 The markers, the ownership proof (`fm_primary_extension_pairs` in `../../../bin/fm-wake-lib.sh`), and the session-start diagnostic are all keyed per harness for the same reason, so Pi evidence can never answer for an omp primary.
 
+## The eval cell budget is wall clock over the runtime's own work
+
+Measured on omp 18.0.11.
+`IdleTimeout` in `packages/coding-agent/src/eval/idle-timeout.ts` carries no activity signal: its deadline is set once in the constructor and re-armed only by `resume()`, which fires when an `agent()`, `parallel()`, or `completion()` bridge call hands control back.
+Compute, stdout, `log()`, `phase()`, and ordinary tool calls all spend the budget, so a cell is never charged for being quiet and never credited for being chatty.
+Only bounding the work shortens a cell; writing chattier cells does not.
+
+A requested `timeout` is capped twice before it reaches that watchdog: by the per-tool ceiling of 3600 seconds, and by `tools.maxTimeout` when that setting is positive, its default of `0` meaning no cap.
+The bash tool reports such a reduction to the agent and the eval tool does not, so read a cell's effective budget as unconfirmed rather than as the number passed.
+
+## Losing an eval kernel discards every variable in it
+
+A cell blocked in a subprocess is not rescued by its own `subprocess.run(timeout=...)`, which kills the direct child only.
+Whatever ends the cell - the budget, a cancelled turn, or a manual interrupt - the host first sends SIGINT, and a Python runtime that has not unwound within five seconds is escalated to a kernel kill that discards the whole namespace.
+That kill sweeps the runner's process group, so descendants do not outlive it.
+
+Output already flushed as a complete line survives and arrives with a `[kernel] ...` line appended.
+A trailing partial line, and everything a blocked statement had not printed yet, is lost, so a cell that works silently and prints once at the end reports nothing at all when it is killed.
+
+Two rules follow.
+Print a short line before and after each external call, so a stuck cell names what it is stuck on.
+Pass `stdin=subprocess.DEVNULL` to every subprocess, because a cell's child inherits the kernel's own stdin and blocks indefinitely if it reads from it.
+
 ## Primary supervision
 
 `../../../docs/supervision-protocols/omp.md` is the emitted protocol. Two mechanisms, both omp's own:
