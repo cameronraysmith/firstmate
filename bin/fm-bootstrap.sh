@@ -793,6 +793,11 @@ secondmate_liveness_one() {  # <meta> <id>
   target=$(fm_backend_target_of_meta "$meta")
   [ -n "$target" ] || target="$window"
   agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null) || agent_state=unreadable
+  # Only a harness whose secondmate launch is built belongs here: an unlisted one
+  # downgrades dead/missing to unverified-harness and is reported rather than
+  # relaunched. atomic and muse are deliberately absent, because bin/fm-spawn.sh
+  # refuses a --secondmate launch on them, so relaunching would only loop into
+  # that refusal.
   case "$harness" in
     claude|codex|opencode|pi|pi-signed|omp|grok|kimi) ;;
     *)
@@ -1106,14 +1111,14 @@ crew_dispatch_validate() {
     return 0
   fi
   err=$(jq -r '
-    def verified($h): ["claude","codex","opencode","pi","pi-signed","omp","grok","kimi","cursor","muse"] | index($h);
+    def verified($h): ["claude","codex","opencode","pi","pi-signed","omp","atomic","grok","kimi","cursor","muse"] | index($h);
     def effort_ok($h; $e):
       if $e == null then true
       elif ($e | type) != "string" then false
       elif $h == "claude" then (["low","medium","high","xhigh","max"] | index($e))
       elif $h == "codex" then (["low","medium","high","xhigh"] | index($e))
       elif $h == "grok" then (["low","medium","high"] | index($e))
-      elif $h == "pi" or $h == "pi-signed" or $h == "omp" then (["low","medium","high","xhigh","max"] | index($e))
+      elif $h == "pi" or $h == "pi-signed" or $h == "omp" or $h == "atomic" then (["low","medium","high","xhigh","max"] | index($e))
       elif $h == "muse" then (["low","medium","high","xhigh","max"] | index($e))
       elif $h == "opencode" or $h == "kimi" or $h == "cursor" then false
       else true

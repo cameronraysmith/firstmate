@@ -23,7 +23,7 @@ make_spawn_case() {  # <name> <harness> <id>
   home="$case_dir/home"
   proj="$case_dir/project"
   wt="$case_dir/wt"
-  fakebin=$(make_spawn_fakebin "$case_dir/fake" pi opencode claude codex omp)
+  fakebin=$(make_spawn_fakebin "$case_dir/fake" pi opencode claude codex omp atomic)
   fm_test_spawn_home "$home" "$harness"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   fm_test_spawn_brief "$home" "$id"
@@ -267,6 +267,71 @@ test_omp_source_cannot_classify_another_adapter() {
   pass "omp-ext is trusted only for a task recorded as omp"
 }
 
+# atomic's generated extension is driven through drive_pi_ext deliberately: its
+# predicate IS Pi's - agent_start plus agent_settled confirmed by ctx.isIdle() -
+# which was measured on atomic rather than inherited, and reusing the driver is
+# what makes a future divergence show up as a failure here.
+test_atomic_extension_semantic_lifecycle() {
+  local rec id=busy-atomic-1 out state ext
+  rec=$(make_spawn_case atomic-lifecycle atomic "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "atomic spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.atomic-ext.ts"
+  assert_present "$ext" "atomic spawn did not write the per-task extension"
+
+  out=$(classify atomic "$id" "$state")
+  [ "$out" = "busy fm-spawn" ] || fail "seed after spawn must be 'busy fm-spawn', got '$out'"
+
+  rm -f "$state/$id.turn-ended"
+  out=$(drive_pi_ext "$ext" turn-end) || fail "turn_end drive failed: $out"
+  [ -f "$state/$id.turn-ended" ] || fail "turn_end no longer touches the notification marker"
+  out=$(classify atomic "$id" "$state")
+  [ "$out" = "busy fm-spawn" ] || fail "turn_end must stay a notification, not a state edge, got '$out'"
+
+  out=$(drive_pi_ext "$ext" settle-idle) || fail "agent_settled drive failed: $out"
+  out=$(classify atomic "$id" "$state")
+  [ "$out" = "idle atomic-ext" ] \
+    || fail "agent_settled with ctx.isIdle() true must classify 'idle atomic-ext', got '$out'"
+
+  out=$(drive_pi_ext "$ext" agent-start) || fail "agent_start drive failed: $out"
+  out=$(classify atomic "$id" "$state")
+  [ "$out" = "busy atomic-ext" ] || fail "agent_start must classify 'busy atomic-ext', got '$out'"
+
+  # The case omp's predicate gets wrong and atomic's must not: a settle while
+  # the session is still going keeps the task busy.
+  out=$(drive_pi_ext "$ext" settle-continuing) || fail "continuing settle drive failed: $out"
+  out=$(classify atomic "$id" "$state")
+  [ "$out" = "busy atomic-ext" ] \
+    || fail "a settle that ctx.isIdle() does not confirm must stay busy, got '$out'"
+
+  out=$(drive_pi_ext "$ext" settle-idle) || fail "final settle drive failed: $out"
+  out=$(classify atomic "$id" "$state")
+  [ "$out" = "idle atomic-ext" ] || fail "the final settle must classify idle, got '$out'"
+  pass "atomic extension reports agent_start busy, settles only on an isIdle-confirmed agent_settled, and keeps turn_end a notification"
+}
+
+test_atomic_source_cannot_classify_another_adapter() {
+  local rec id=busy-atomic-2 out state ext
+  rec=$(make_spawn_case atomic-crosstalk atomic "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "atomic spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.atomic-ext.ts"
+  out=$(drive_pi_ext "$ext" settle-idle) || fail "settle drive failed: $out"
+  # Both directions matter here because atomic and pi share a predicate: the
+  # record must still be trusted only for the harness that wrote it.
+  out=$(classify pi "$id" "$state")
+  [ "$out" = "unknown source-mismatch" ] \
+    || fail "an atomic-ext record must not classify a pi task, got '$out'"
+  out=$(classify omp "$id" "$state")
+  [ "$out" = "unknown source-mismatch" ] \
+    || fail "an atomic-ext record must not classify an omp task, got '$out'"
+  pass "atomic-ext is trusted only for a task recorded as atomic"
+}
+
 # drive_oc_plugin <plugin-path> <events-json-lines...>: load the generated
 # OpenCode plugin in a plain Node host and feed it one event per argument, in
 # order, through the same hooks.event entry OpenCode calls.
@@ -439,6 +504,8 @@ test_omp_extension_semantic_lifecycle
 test_omp_extension_serializes_settle_before_next_start
 test_omp_extension_stale_incarnation_rejected
 test_omp_source_cannot_classify_another_adapter
+test_atomic_extension_semantic_lifecycle
+test_atomic_source_cannot_classify_another_adapter
 test_kimi_and_grok_install_no_unverified_wiring
 test_opencode_plugin_semantic_lifecycle
 test_claude_hooks_semantic_lifecycle

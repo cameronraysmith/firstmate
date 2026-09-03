@@ -129,6 +129,14 @@ for h in claude codex opencode pi omp grok kimi muse; do
     note "harness absent, not verified here: $h"
   fi
 done
+# atomic is launched with the -na its own adapter carries, not bare: without it
+# an untrusted project folder blocks on atomic's five-option trust dialog, which
+# is a real unreadable-composer state rather than the composer under test.
+if command -v atomic >/dev/null 2>&1; then
+  check_harness_idle_empty atomic atomic -na
+else
+  note "harness absent, not verified here: atomic"
+fi
 
 # --- 2. The strict blank-row posture, live ----------------------------------
 # A plain shell pane parked on a blank line between two rules (the audit's

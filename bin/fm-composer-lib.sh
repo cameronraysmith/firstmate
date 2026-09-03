@@ -340,6 +340,15 @@ FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
 # Pi's `Working\.\.\.` deliberately does NOT match omp: omp writes a single
 # U+2026 ellipsis, so borrowing the pi row would have silently failed.
 FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT='(⟨|⟦|\[)esc(⟩|⟧|\])'
+# atomic renders its mid-turn footer as the bare literal `esc to interrupt`, and
+# that string REPLACES the model/cwd line in the same row (verified live on
+# atomic 0.9.13: mid-turn the row read `esc to interrupt`, and after the turn the
+# same row read `(anthropic) claude-haiku-4-5 low • <cwd>`).
+# Pi's `Working\.\.\.` must NOT be borrowed even though atomic is a Pi fork: its
+# mid-turn spinner text is randomly chosen from a whimsical set ("Combobulating...",
+# "Bottling the buffers..."), so pi's token would never match. omp's bracketed
+# `esc` would not match either - atomic writes the unbracketed phrase.
+FM_DELIVERY_ATOMIC_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
 # cursor-agent's busy footer. The TOKEN is matched, not the spinner verb: the
 # same version rendered both `Working` and `Running` beside its braille spinner
@@ -363,6 +372,7 @@ fm_busy_lines_match() {  # [harness]
       opencode) regex=$FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT ;;
       pi|pi-signed) regex=$FM_DELIVERY_PI_BUSY_REGEX_DEFAULT ;;
       omp) regex=$FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT ;;
+      atomic) regex=$FM_DELIVERY_ATOMIC_BUSY_REGEX_DEFAULT ;;
       grok) regex=$FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT ;;
       kimi) regex=$FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT ;;
       cursor) regex=$FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT ;;
