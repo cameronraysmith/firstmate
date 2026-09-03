@@ -210,7 +210,7 @@ run_two_level() {
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$prim" \
     FM_STATE_OVERRIDE="$prim/state" FM_DATA_OVERRIDE="$prim/data" \
     FM_PROJECTS_OVERRIDE="$prim/projects" FM_CONFIG_OVERRIDE="$prim/config" \
-    FM_SPAWN_NO_GUARD=1 OMPCODE='' CLAUDECODE=1 TMUX="fake,1,0" \
+    FM_SPAWN_NO_GUARD=1 OMPCODE='' ATOMIC_CODING_AGENT='' CLAUDECODE=1 TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$smlog" PATH="$smfake:$PATH" \
     "$SPAWN" "$sm_id" "$sm" --secondmate >/dev/null 2>&1 || true
 
@@ -381,7 +381,7 @@ test_duplicate_secondmate_spawn_does_not_converge_trace_context() {
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$prim" \
     FM_STATE_OVERRIDE="$prim/state" FM_DATA_OVERRIDE="$prim/data" \
     FM_PROJECTS_OVERRIDE="$prim/projects" FM_CONFIG_OVERRIDE="$prim/config" \
-    FM_SPAWN_NO_GUARD=1 OMPCODE='' CLAUDECODE=1 TMUX="fake,1,0" \
+    FM_SPAWN_NO_GUARD=1 OMPCODE='' ATOMIC_CODING_AGENT='' CLAUDECODE=1 TMUX="fake,1,0" \
     FM_FAKE_DUPLICATE_WINDOW="fm-$id" FM_FAKE_LAUNCH_LOG="$log" \
     PATH="$fake:$PATH" "$SPAWN" "$id" "$sm" --secondmate 2>&1)
   status=$?
