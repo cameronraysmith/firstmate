@@ -25,12 +25,23 @@
 // bounded retry, successor verification before wake delivery, and recovery delivery
 // confirmation - is the same contract Pi implements, because it is plain Node and
 // bin/fm-watch-arm.sh rather than anything harness-specific.
+//
+// Each actionable wake is first OFFERED to the supervision branch extension over
+// the shared handshake in .pi/extensions/lib/fm-branch-dispatch.ts; only a wake
+// nobody accepts reaches main, so the fallback is the pre-branch behaviour
+// unchanged. A wake whose watcher recovery could not be confirmed, and every
+// watcher-failure alarm, always go to main and are never offered.
 // omp/17.3.5, measured 2026-08-18; docs/verification/runtime-backends.md.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createBranchDispatchOffer,
+  FM_BRANCH_DISPATCH_EVENT,
+  scopeForUnreadWake,
+} from "../../.pi/extensions/lib/fm-branch-dispatch.ts";
 import { encodeFirstmateOperationalInput } from "../../.pi/extensions/lib/fm-operational-input.ts";
 
 // omp's API surface, declared structurally rather than imported from
@@ -52,6 +63,7 @@ type OmpToolResult = {
 type OmpExtensionAPI = {
   typebox: { Type: { Object: (properties: Record<string, unknown>) => unknown } };
   on: (event: string, handler: (event: unknown) => unknown) => unknown;
+  events: { emit: (channel: string, data: unknown) => void };
   sendUserMessage: (content: string) => unknown;
   registerCommand: (
     name: string,
@@ -224,27 +236,72 @@ function stopGeneration(): void {
 process.once("exit", stopGeneration);
 
 export default function (pi: OmpExtensionAPI) {
-  async function sendWake(
-    message: string,
-    recovery?: { generation: string; watcherPid: string },
-  ): Promise<void> {
+  async function sendWake(message: string): Promise<void> {
     if (!generationIsLive()) return;
     const content = encodeFirstmateOperationalInput(
       "watcher",
       `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
     );
     await pi.sendUserMessage(content);
-    if (recovery) {
-      const result = spawnSync(
-        "bash",
-        [armScript, "--handling-delivered", recovery.generation, "--watcher-pid", recovery.watcherPid],
-        {
-          cwd: fmRoot,
-          env: { ...process.env, FM_HOME: fmHome, FM_STATE_OVERRIDE: state, FM_ROOT_OVERRIDE: fmRoot },
-        },
-      );
-      if (result.status !== 0) throw new Error("watcher recovery delivery could not be confirmed");
+  }
+
+  function confirmHandlingDelivery(recovery: { generation: string; watcherPid: string }): boolean {
+    const result = spawnSync(
+      "bash",
+      [armScript, "--handling-delivered", recovery.generation, "--watcher-pid", recovery.watcherPid],
+      {
+        cwd: fmRoot,
+        env: { ...process.env, FM_HOME: fmHome, FM_STATE_OVERRIDE: state, FM_ROOT_OVERRIDE: fmRoot },
+      },
+    );
+    return result.status === 0;
+  }
+
+  // Offer one actionable wake to the supervision branch extension
+  // (.omp/extensions/fm-branch-supervision.ts) over the shared handshake. The
+  // branch accepts SYNCHRONOUSLY inside its handler, so reading offer.accepted
+  // after emit returns is a valid decision: omp's EventBus.on wraps each handler
+  // in an async function whose body runs synchronously up to its first await,
+  // and the branch's accept() precedes any await. true means the branch now owns
+  // delivering and handling this wake, including its own fallback back to main;
+  // false means nobody took it and main receives it exactly as before the branch
+  // existed. Watcher-failure alarms are never offered, because only main holds
+  // fm_watch_arm_omp.
+  // Unlike every other member of OmpExtensionAPI, a failure here is CONTAINED
+  // rather than fatal. The other members are required because their absence
+  // would lose a wake; this one only decides WHICH session handles a wake that
+  // is delivered either way, so any failure - a host with no event bus, a
+  // throwing branch handler, an unreadable wake queue - must degrade to the
+  // pre-branch wake-to-main path rather than take the watcher cycle down with
+  // it. A watcher that refused to load would leave the home with no supervision
+  // at all, which is strictly worse than no branch.
+  function offerWakeToBranch(message: string): boolean {
+    try {
+      const heartbeat = /^heartbeat($|:)/.test(message);
+      const scope = scopeForUnreadWake(state, heartbeat);
+      const offer = createBranchDispatchOffer(message, scope.projects, heartbeat, scope.eligible);
+      pi.events.emit(FM_BRANCH_DISPATCH_EVENT, offer);
+      return offer.accepted === true;
+    } catch {
+      return false;
     }
+  }
+
+  // Confirm handling delivery BEFORE routing, so a wake whose recovery could not
+  // be confirmed reaches main and is never offered to the branch, and so the
+  // confirmation runs exactly once whichever session ends up handling it.
+  async function deliverActionableWake(
+    message: string,
+    repairFailed: boolean,
+    recovery?: { generation: string; watcherPid: string },
+  ): Promise<void> {
+    if (!generationIsLive()) return;
+    if (recovery && !confirmHandlingDelivery(recovery)) {
+      await sendWake(message);
+      throw new Error("watcher recovery delivery could not be confirmed");
+    }
+    if (!repairFailed && offerWakeToBranch(message)) return;
+    await sendWake(message);
   }
 
   function surfaceFailure(message: string): void {
@@ -440,7 +497,7 @@ export default function (pi: OmpExtensionAPI) {
           if (generationIsLive()) generation.restoring = false;
           if (!generationIsLive()) return;
           const message = restoration.failure ? `${classification.message}\n\n${restoration.failure}` : classification.message;
-          await sendWake(message, restoration.recovery);
+          await deliverActionableWake(message, restoration.failure !== "", restoration.recovery);
         })().catch(() => {
         });
         return;

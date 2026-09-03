@@ -1155,6 +1155,57 @@ It proved that a follow-up the extension sends while main is streaming raises no
 The portable regression drives the same shape with a fake main that never raises `before_agent_start` while streaming, then proves a replacement replays only the follow-up Pi had not consumed and that an exhausted restoration delivers its typed failure without launching a further arm.
 A second regression holds a branch settlement open while the verified successor exits with a failure, and proves that failure takes the ordinary bounded retry once the delivery settles rather than leaving the generation with no watcher and no retry.
 
+## omp supervision branch
+
+The omp supervision-branch extension (`.omp/extensions/fm-branch-supervision.ts`) carries the same design as Pi's through a different surface, so the claim that omp can host it is measured rather than inherited.
+omp needs no `DefaultResourceLoader`, no `before_provider_request` cache-key hook, and no `createBashToolDefinition`: `createAgentSession` takes the isolation controls and `providerPromptCacheKey` directly, and the branch actor identity is injected by a `tool_call` input revision.
+omp has no `agent_settled` event, so the merge gate is a substitute built on `agent_end`'s `willContinue` flag plus `ctx.isIdle()` and `ctx.hasPendingMessages()`.
+
+Evidence produced 2026-08-27 on macOS 26.5.2 arm64, Node v22.23.2, against the installed `omp/18.0.6`, which is the version `VERIFIED_OMP_VERSION` in `.omp/extensions/fm-branch-supervision.ts` records as this port's floor:
+
+```text
+$ FM_OMP_BRANCH_CAPABILITY=1 bin/fm-test-run.sh tests/fm-omp-branch-capability.test.sh
+probing omp omp/18.0.6
+ok - omp omp/18.0.6: createAgentSession is exported from @oh-my-pi/pi-coding-agent
+ok - omp omp/18.0.6: SessionManager is exported from @oh-my-pi/pi-coding-agent
+ok - omp omp/18.0.6: a fully isolated branch session can be created
+ok - omp omp/18.0.6: createAgentSession accepts a caller-pinned providerPromptCacheKey
+ok - omp omp/18.0.6: createAgentSession accepts a restricted tool set
+ok - omp omp/18.0.6: SessionManager.create is synchronous
+ok - omp omp/18.0.6: SessionManager.open is ASYNC and must be awaited
+ok - omp omp/18.0.6: an awaited SessionManager carries getSessionId, which omp calls
+ok - omp omp/18.0.6: createAgentSession accepts a caller-supplied session manager
+ok - omp omp/18.0.6: pi.sendMessage is available to main
+ok - omp omp/18.0.6: sendCustomMessage on an idle session starts no turn
+ok - omp omp/18.0.6: the event bus reaches a handler synchronously through accept()
+ok - omp omp/18.0.6: ctx.isIdle is available on lifecycle handlers
+ok - omp omp/18.0.6: ctx.hasPendingMessages is available on lifecycle handlers
+ok - omp omp/18.0.6: ctx.setInterval is available for the bounded settle sweep
+ok - omp omp/18.0.6: ctx.sessionManager exposes getEntries for the dialog mirror
+ok - omp omp/18.0.6: agent_end fired at least once
+ok - omp omp/18.0.6: agent_end carries the willContinue continuation flag
+ok - omp omp/18.0.6: agent_settled never fires (the substitute is still required)
+ok - omp omp/18.0.6 carries every supervision-branch capability, and still has no agent_settled
+```
+
+The `agent_settled` line is the load-bearing one and is a NEGATIVE assertion on purpose: the substitute exists only because omp has no such event, so the day omp gains one this probe fails and the substitute is revisited instead of quietly rotting beside a native alternative.
+Both directions were confirmed falsifiable at the same run: asserting a capability omp does not have failed the probe, and re-pointing the `agent_settled` counter at a real event failed it with `expected 0, got 1`.
+
+### Why the session-manager pillar exists
+
+The four `SessionManager` lines were added on 2026-08-27 after the branch went dark on this home and every wake fell back to main with `sessionManager.getSessionId is not a function`.
+That was not an omp contract change: `SessionManager.open` is `static async` in 18.0.4, 18.0.5, 18.0.6 and 18.0.7 alike, and `createAgentSession` has read `options.providerSessionId ?? sessionManager.getSessionId()` since March.
+The port simply never awaited it, and the bug was unreachable until a branch had recorded a session file to reopen - so the first launch worked, wrote the pointer that arms the `open` path, and every launch after it failed.
+An omp upgrade only supplied the restart.
+
+Three separate instruments agreed the port was healthy while it was not, and all three had the same defect: each described what the port assumed rather than what omp does.
+The strict typecheck's hand-written declaration had `open` returning a `SessionManager`; the behavioral suite's stub had it synchronous and never read the manager it was handed; and this probe let omp build its own session manager and never supplied one, so the entire reopen path had no live coverage.
+A stub that mirrors the caller can only ever confirm the caller.
+
+Refresh this record after every omp upgrade by re-running the command above - and note that the refresh instruction alone did not hold, because it was not followed across the 18.0.4 to 18.0.6 bump and nothing failed when it was skipped.
+What now fails in that situation is the probe's own contract: a capability that is present but reshaped is a CONTRACT MISMATCH, which the extension surfaces to the operator once rather than degrading in silence, while genuine absence still degrades quietly to main.
+The portable half - the merge gate itself, the process-scoped cycle, `.omp`-rooted markers, the absence/mismatch split, and the fallback to main - is pinned by `tests/fm-omp-branch-extension.test.sh` and the watcher-side offer tests in `tests/fm-omp-primary-extensions.test.sh`, neither of which needs omp installed.
+
 ## omp (oh-my-pi)
 
 omp is a Pi fork with its own identity, config root (`~/.omp/agent`), lifecycle events, and composer shape.
