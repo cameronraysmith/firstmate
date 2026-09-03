@@ -437,6 +437,44 @@ test_herdr_lab_contract_is_explicit_and_complete() {
   pass "fm-brief.sh: --herdr-lab emits the complete hard safety contract"
 }
 
+# The contract opened on a Herdr version anchor ("On Herdr 0.7.3 the API socket
+# is not relocatable by HERDR_CONFIG_PATH, XDG_CONFIG_HOME, or HOME") until the
+# 0.8.0 upgrade showed the anchor was the wrong shape for the claim. On 0.8.0
+# that sentence is not merely stale but false: a session's API socket is derived
+# from config_dir(), which honors XDG_CONFIG_HOME and otherwise falls back to
+# HOME, so two of the three named variables do relocate it. Re-anchoring on the
+# installed version would therefore have restamped a false claim as freshly
+# verified. The isolation rule is unaffected and unchanged; only its stated
+# justification was wrong, and a worker who checks a premise and finds it wrong
+# is left deciding whether a safety contract still binds, which is the one
+# decision this contract must never hand down. The justification now rests on
+# the helper's own per-call enforcement, which this repo owns and tests, and
+# this guard keeps any version figure out of the section so no upstream release
+# can rot it again.
+test_herdr_lab_contract_carries_no_version_anchor() {
+  local home id brief section
+  home="$TMP_ROOT/herdr-lab-version-home"
+  mkdir -p "$home/data"
+  id="brief-herdr-lab-version-d1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --herdr-lab >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "Herdr lab brief was not scaffolded"
+  section=$(awk '
+    /^# Herdr isolation - HARD SAFETY CONTRACT$/ { inside = 1; next }
+    inside && /^# / { exit }
+    inside { print }
+  ' "$brief")
+  [ -n "$section" ] || fail "could not extract the Herdr lab contract section from $brief"
+  if printf '%s\n' "$section" | grep -Eq '[0-9]+\.[0-9]+'; then
+    fail "Herdr lab contract carries a version anchor that will rot:"$'\n'"$section"
+  fi
+  assert_grep "on every Herdr version" "$brief" \
+    "Herdr lab contract must bind independently of the installed Herdr version"
+  assert_grep "that is an escalation, not a judgement to make inside this contract" "$brief" \
+    "Herdr lab contract must route a suspected Herdr behavior change to escalation, not to worker judgement"
+  pass "fm-brief.sh: --herdr-lab contract justifies itself without a Herdr version anchor"
+}
+
 test_herdr_lab_contract_quotes_foreign_firstmate_path() {
   local home id brief foreign_root helper
   home="$TMP_ROOT/herdr-lab-foreign-home"
@@ -897,6 +935,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
+test_herdr_lab_contract_carries_no_version_anchor
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_documented_global_replace_leaves_the_herdr_gate_intact
