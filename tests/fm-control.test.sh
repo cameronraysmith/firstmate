@@ -35,7 +35,7 @@ mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-VERIFIED_HARNESSES="claude codex opencode pi pi-signed grok kimi cursor muse"
+VERIFIED_HARNESSES="claude codex opencode pi pi-signed omp grok kimi cursor muse"
 
 # The expectation table, written out independently of the implementation so a
 # silent change to either side shows up here. The fourth field is the composer
@@ -48,6 +48,7 @@ verified_adapter_contract() {  # <harness> -> exit command, interrupt key, repea
     opencode) printf '/exit\tEscape\t2\t\n' ;;
     pi) printf '/quit\tEscape\t1\t\n' ;;
     pi-signed) printf '/quit\tEscape\t1\t\n' ;;
+    omp) printf '/exit\tEscape\t1\t\n' ;;
     grok) printf '/exit\tC-c\t1\t\n' ;;
     kimi) printf '/exit\tEscape\t1\t\n' ;;
     cursor) printf '/exit\tEscape\t1\t\n' ;;
@@ -267,13 +268,15 @@ test_harness_family_resolution() {
   for pair in claude:claude claude-latest:claude codex:codex codex-cli:codex \
       opencode:opencode grok:grok grok-2:grok kimi:kimi cursor:cursor \
       cursor-agent:cursor muse:muse muse-bin-0.1.0:muse pi:pi \
-      pi-signed:pi-signed; do
+      pi-signed:pi-signed omp:omp; do
     recorded=${pair%%:*}
     want=${pair#*:}
     got=$(fm_control_harness_family "$recorded") \
       || fail "'$recorded' should resolve to the $want adapter"
     [ "$got" = "$want" ] || fail "'$recorded' should resolve to $want, got '$got'"
   done
+  fm_control_harness_family omptest \
+    && fail "an omp-prefixed launch command must not be guessed into the omp adapter"
   fm_control_harness_family someagent \
     && fail "an unrecognized launch command must not be guessed into an adapter family"
   fm_control_harness_family '' \
@@ -361,8 +364,9 @@ test_backend_key_capability_matrix() {
 }
 
 # A verified adapter is not automatically verified for every task kind, and the
-# check has to sit on the pre-stop side of a relaunch: muse has no primary
-# supervision protocol, so bin/fm-spawn.sh refuses it for a secondmate, and
+# check has to sit on the pre-stop side of a relaunch: neither muse nor omp has
+# a primary supervision protocol, so bin/fm-spawn.sh refuses both for a
+# secondmate, and
 # discovering that only after the running agent was stopped would strand the
 # secondmate with no agent at all.
 test_harness_kind_capability() {
@@ -375,6 +379,8 @@ test_harness_kind_capability() {
   done
   fm_control_harness_supports_kind muse secondmate \
     && fail "muse has no primary supervision protocol and must not claim a secondmate"
+  fm_control_harness_supports_kind omp secondmate \
+    && fail "omp has no primary supervision protocol and must not claim a secondmate"
   for harness in claude codex opencode pi pi-signed grok kimi; do
     fm_control_harness_supports_kind "$harness" secondmate \
       || fail "$harness should be able to run a secondmate"

@@ -68,7 +68,12 @@ PATH="$SHIM_DIR:$PATH"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-tmux-lib.sh"
 
-tmux -L "$SOCKET" new-session -d -s "$SESSION" -x 220 -y 50 -c "$ROOT"
+# The holder command is load-bearing. Without one the session runs the login
+# shell, which exits immediately in a non-interactive context; the server then
+# dies as soon as the first harness window is killed, and every later harness
+# fails with "could not launch in the isolated tmux server" rather than a real
+# verdict. Observed as claude passing and codex failing on the very next check.
+tmux -L "$SOCKET" new-session -d -s "$SESSION" -x 220 -y 50 -c "$ROOT" -- sleep 86400
 
 harness_version() {  # <binary>
   "$1" --version 2>/dev/null | head -1 || printf 'version-unknown'
@@ -117,7 +122,7 @@ check_harness_idle_empty() {  # <name> <launch-cmd...>
 }
 
 # --- 1. Every installed verified harness must reach a proven-empty composer --
-for h in claude codex opencode pi grok kimi muse; do
+for h in claude codex opencode pi omp grok kimi muse; do
   if command -v "$h" >/dev/null 2>&1; then
     check_harness_idle_empty "$h" "$h"
   else
