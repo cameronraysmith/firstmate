@@ -57,9 +57,9 @@ Three layers failed. Each was attributed by running the same test at the pre-cas
 
 1. **`tests/fm-documentation-audiences.test.sh`** at pos21 and pos25: dangling link `../calm-mode-feasibility.md#...`. Fails at the **old** tips too, and passes by the final tip because pos26 (`fix(docs): repair the dangling calm-mode-feasibility link the cascade created`) repairs it. Pre-existing intermediate state, not caused by this cascade.
 2. **`tests/fm-watch-triage.test.sh`** at pos10: fails at the old tip too, with a different assertion, alongside `date: ...: No such file or directory` and `touch: invalid date format`. Host-dependent fixture failure, not a cascade regression.
-3. **`tests/fm-test-run.test.sh`** at pos21: **passes at the old tip, fails at the new tip, and still fails at the final tip.** A real regression introduced by the integration, described below.
+3. **`tests/fm-test-run.test.sh`** at pos21: **passes at the old tip, fails at the new tip, and still fails at the final tip.** A real consequence of the integration, and an **expected** one whose fix is already decided and queued. See below.
 
-## Open item: upstream fixture names a script this stack deletes
+## Expected failure until `fm-atomic-calm-restore-renamed-symbol` lands
 
 `tests/fm-test-run.test.sh` fails with:
 
@@ -77,7 +77,9 @@ Surviving references at the final tip:
 - `tests/fm-test-run.test.sh:417` the matching `FM_TEST_END ... exit=124` assertion
 - `tests/fm-test-run.test.sh:505` and `:516` the concurrency and proven-isolated selections
 
-Picking a replacement fixture subject is a content decision inside another layer's diff: the timeout probe needs a deliberately slow script (Calm's was ~77s) and the concurrency case needs a specific family, so the substitute changes what those fixtures actually measure. That choice was left open rather than invented here.
+This needs no fixture edit. A standing captain ruling that predates this cascade keeps the Calm extension, renaming the one factory atomic changed rather than deleting it, and is queued as the change **`fm-atomic-calm-restore-renamed-symbol`**. That change reverses exactly the deletion in pos21, which removes `.pi/extensions/fm-calm.ts`, the three `lib/fm-calm-*` modules, `docs/calm-mode-feasibility.md`, `docs/calm.md`, and `tests/fm-calm-pi-extension.test.sh` (verified against commit `7c575b31`). Restoring Calm restores the fixture subject, so this failure resolves with no change to `tests/fm-test-run.test.sh` at all.
+
+State plainly: **`tests/fm-test-run.test.sh` fails at the published tip `32c5b38f` until `fm-atomic-calm-restore-renamed-symbol` lands.** Substituting another fixture subject was rejected because it would work around a deletion already slated for reversal and would change what the timeout and concurrency fixtures measure; leaving it unrecorded was rejected because it would normalise a red check whose fix is already decided. The restoration is deliberately **not** implemented here: it is a separate queued change, and folding it into a cascade record would couple a history rewrite to a behaviour change.
 
 ## Files
 
