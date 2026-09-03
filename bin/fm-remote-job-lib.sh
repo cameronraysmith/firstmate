@@ -906,9 +906,32 @@ fm_remote_job_worker_ready_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.r
 fm_remote_job_worker_identity_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.identity"; }
 fm_remote_job_worker_lock_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.lock"; }
 
+# ps(1) for the process reads below. The absolute locations are probed first, so
+# a host that has them resolves exactly the binary it always did, and PATH is
+# the fallback for a host that has neither. A NixOS host is that host: its /bin
+# holds only sh and its /usr/bin only env, with every other tool in a profile
+# directory, so an absolute-only probe fails there and takes worker ownership,
+# process-group isolation, and orphan reaping down with it. Bare ps is already
+# how bin/fm-remote-job-reap-orphans.sh and bin/fm-remote-entrypoint.sh read the
+# process table on this same path, so the fallback narrows no trust boundary
+# these reads already hold.
+#
+# Deliberately not cached, for the reason bin/fm-stat-lib.sh gives: a caller
+# that narrows PATH to a minimal set, or installs a shim, must get the tool PATH
+# now names rather than one resolved before it changed.
+fm_remote_job_ps_bin() {
+  local resolved
+  [ -x /bin/ps ] && { printf '%s\n' /bin/ps; return 0; }
+  [ -x /usr/bin/ps ] && { printf '%s\n' /usr/bin/ps; return 0; }
+  resolved=$(command -v ps 2>/dev/null) || return 1
+  case "$resolved" in /*) ;; *) return 1 ;; esac
+  [ -x "$resolved" ] || return 1
+  printf '%s\n' "$resolved"
+}
+
 fm_remote_job_process_start() {
   local pid=$1 ps_bin value
-  if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
+  ps_bin=$(fm_remote_job_ps_bin) || return 1
   value=$("$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
@@ -917,7 +940,7 @@ fm_remote_job_process_start() {
 
 fm_remote_job_process_command() {
   local pid=$1 ps_bin value
-  if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
+  ps_bin=$(fm_remote_job_ps_bin) || return 1
   value=$("$ps_bin" -p "$pid" -o command= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
@@ -926,7 +949,7 @@ fm_remote_job_process_command() {
 
 fm_remote_job_process_pgid() { # <pid>
   local pid=$1 ps_bin value
-  if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
+  ps_bin=$(fm_remote_job_ps_bin) || return 1
   value=$("$ps_bin" -p "$pid" -o pgid= 2>/dev/null) || return 1
   value=$(printf '%s' "$value" | tr -d '[:space:]')
   case "$value" in ''|*[!0-9]*) return 1 ;; esac
@@ -1043,7 +1066,7 @@ fm_remote_job_worker_owned_alive() {
   [ ! -e "$lock/pid" ] && [ ! -L "$lock/pid" ] &&
     [ ! -e "$lock/start" ] && [ ! -L "$lock/start" ] &&
     [ ! -e "$lock/command" ] && [ ! -L "$lock/command" ] || return 1
-  if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
+  ps_bin=$(fm_remote_job_ps_bin) || return 1
   command=$("$ps_bin" -p "$pid" -o command= 2>/dev/null) || return 1
   case "$command" in *"$root/bin/fm-remote-job-worker.sh"*) FM_REMOTE_JOB_OWNER_PID=$pid; return 0 ;; esac
   return 1

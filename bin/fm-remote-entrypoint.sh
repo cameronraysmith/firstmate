@@ -68,14 +68,23 @@ path_is_ancestor() { # <ancestor> <path>
   return 1
 }
 
+# The absolute locations are probed first, so a host that has them hashes with
+# exactly the binary it always did, and PATH is the fallback for a host that has
+# none of them. A NixOS host is that host: its /bin holds only sh and its
+# /usr/bin only env, so an absolute-only probe cannot hash the payload it is
+# about to run and every remote job fails its integrity check.
 sha256_file() { # <path>
-  local path=$1 digest extra
+  local path=$1 digest extra tool
   if [ -x /usr/bin/shasum ]; then
     read -r digest extra < <(/usr/bin/shasum -a 256 "$path") || return 1
   elif [ -x /usr/bin/sha256sum ]; then
     read -r digest extra < <(/usr/bin/sha256sum "$path") || return 1
   elif [ -x /bin/sha256sum ]; then
     read -r digest extra < <(/bin/sha256sum "$path") || return 1
+  elif tool=$(command -v sha256sum 2>/dev/null) && [ -x "$tool" ]; then
+    read -r digest extra < <("$tool" "$path") || return 1
+  elif tool=$(command -v shasum 2>/dev/null) && [ -x "$tool" ]; then
+    read -r digest extra < <("$tool" -a 256 "$path") || return 1
   else
     return 1
   fi
