@@ -1,0 +1,660 @@
+===== pos=1 pr=3 br=fm/01-stat-dialect-probe
+----- old: a56a78ac431833381a265d28cbc9c5ab6094117d..dcc0c51c266200f1db8bfeba8e1215c5c6ee0b64
+----- new: 75b2de262ab03897518908a8a91be2bc234a52db..80dca4b626023677033dc26754cb021f2708a967
+1:  2bd7a883 ! 1:  43673307 ci: run on every stack PR, cancel superseded runs, widen the serial cap
+    @@ .github/workflows/ci.yml: jobs:
+        tests-portable-serial:
+          name: Behavior portable serial ${{ matrix.shard }}
+          runs-on: ubuntu-latest
+    --    # Measured whole remainder is ~42 min of serial work; the balanced shards
+    --    # are ~10.6 min each. Cap is a hang tripwire with roughly 2x margin, not the
+    --    # expected healthy end of the lane.
+    +-    # Measured whole remainder is ~63 min of serial work; the balanced shards
+    +-    # are ~12.7 min each. Cap is a hang tripwire with roughly 1.6x margin, not
+    +-    # the expected healthy end of the lane.
+     -    timeout-minutes: 20
+    -+    # Measured whole remainder is ~42 min of serial work and the balanced shards
+    -+    # average ~10.6 min each, but observed shard walls run 8m40s to 13m38s and
+    -+    # one script has been measured varying 222s to 430s between runners. The cap
+    -+    # is sized against that worst case rather than the average: a 15-minute cap
+    -+    # left roughly 90s of headroom at the worst shard, so a shard could exceed it
+    ++    # Measured whole remainder is ~63 min of serial work and the balanced shards
+    ++    # are ~12.7 min each, but observed shard walls run 8m40s to 13m38s and one
+    ++    # script has been measured varying 222s to 430s between runners. The cap is
+    ++    # sized against that worst case rather than the average: a 15-minute cap left
+    ++    # roughly 90s of headroom at the worst shard, so a shard could exceed it
+     +    # nondeterministically and produce a failure attributable to no branch. It is
+     +    # a hang tripwire, not the expected healthy end of the lane.
+     +    timeout-minutes: 25
+    @@ docs/fm-test-portable-shards.md: Portable shards, each portable serial shard, an
+      | Lane | Bound | Rationale |
+      |---|---|---|
+      | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
+    --| portable serial 1-4 | job `timeout-minutes: 20` | Each balanced shard is about eleven minutes of measured script time, leaving roughly 2x hang-tripwire margin for job setup and runner-speed spread. |
+    -+| portable serial 1-4 | job `timeout-minutes: 25` | Balanced shards average about eleven minutes of measured script time, but observed shard walls run 8m40s to 13m38s, so the cap is sized against that worst case rather than the average to keep it from tripping nondeterministically. |
+    +-| portable serial 1-5 | job `timeout-minutes: 20` | Each balanced shard is about 12.7 minutes of measured script time, leaving roughly 1.6x hang-tripwire margin for job setup and runner-speed spread. |
+    ++| portable serial 1-5 | job `timeout-minutes: 25` | Each balanced shard is about 12.7 minutes of measured script time, but observed shard walls run 8m40s to 13m38s, so the cap is sized against that worst case rather than the average to keep it from tripping nondeterministically. |
+      | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
+      
+      Timeouts are hang tripwires rather than expected healthy durations.
+2:  dcc0c51c ! 2:  80dca4b6 fix: probe the stat(1) dialect instead of inferring it from uname
+    @@ tests/fm-cursor-primary.test.sh: install_scripts() {
+        cp "$ROOT/bin/fm-arm-command-policy.mjs" "$dir/bin/fm-arm-command-policy.mjs"
+     
+      ## tests/fm-gotmp.test.sh ##
+    -@@ tests/fm-gotmp.test.sh: make_fake_root() {
+    +@@ tests/fm-gotmp.test.sh: SH
+        ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
+        # fm-lease-lib.sh: teardown sources it for the supervision lease guard.
+        ln -s "$ROOT/bin/fm-lease-lib.sh" "$fake/bin/fm-lease-lib.sh"
+    @@ tests/fm-gotmp.test.sh: make_fake_root() {
+        # Lifecycle serialization, status presentation retirement, and shared adapter
+        # ownership are sourced by teardown.
+        ln -s "$ROOT/bin/fm-control-lib.sh" "$fake/bin/fm-control-lib.sh"
+    -@@ tests/fm-gotmp.test.sh: test_teardown_skips_gracefully_without_tasktmp() {
+    +@@ tests/fm-gotmp.test.sh: SH
+        ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
+        # fm-lease-lib.sh: teardown sources it for the supervision lease guard.
+        ln -s "$ROOT/bin/fm-lease-lib.sh" "$fake/bin/fm-lease-lib.sh"
+    @@ tests/fm-pi-branch-extension.test.sh: test_branch_default_on_heartbeat_afk_and_f
+        home="$TMP_ROOT/gating-home"
+        mkdir -p "$home/state" "$home/config" "$broken/bin"
+        install_pi_branch_extension_fixture "$repo"
+    --  cp "$ROOT/bin/fm-lease.sh" "$ROOT/bin/fm-lease-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-wake-grant.sh" "$broken/bin/"
+     +  # fm-stat-lib.sh: fm-wake-lib.sh resolves its file reads through the stat-dialect
+     +  # probe, so staging the lib without it leaves the sandbox copy dead at source time.
+    -+  cp "$ROOT/bin/fm-lease.sh" "$ROOT/bin/fm-lease-lib.sh" "$ROOT/bin/fm-wake-lib.sh" \
+    -+    "$ROOT/bin/fm-wake-grant.sh" "$ROOT/bin/fm-stat-lib.sh" "$broken/bin/"
+    +   cp "$ROOT/bin/fm-branch-outcome.sh" "$ROOT/bin/fm-classify-lib.sh" \
+    +     "$ROOT/bin/fm-lease.sh" "$ROOT/bin/fm-lease-lib.sh" "$ROOT/bin/fm-timeout-lib.sh" \
+    +-    "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-wake-grant.sh" "$broken/bin/"
+    ++    "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-wake-grant.sh" "$ROOT/bin/fm-stat-lib.sh" \
+    ++    "$broken/bin/"
+        cat > "$broken/bin/fm-branch-prompt.sh" <<'SH'
+      #!/usr/bin/env bash
+      echo "synthetic generator failure" >&2
+
+===== pos=2 pr=4 br=fm/02-date-dialect-probe
+----- old: dcc0c51c266200f1db8bfeba8e1215c5c6ee0b64..7c31a9ae42a2fb398446bc0a4dfb7e09e9cf38a1
+----- new: 80dca4b626023677033dc26754cb021f2708a967..2e7544eefb664e6d25a678883e98ccd522c6971f
+1:  7c31a9ae = 1:  2e7544ee test: probe the date(1) dialect instead of inferring it from uname
+
+===== pos=3 pr=5 br=fm/03-gitignore-claude-settings
+----- old: 7c31a9ae42a2fb398446bc0a4dfb7e09e9cf38a1..ffa0f2d5737119543d10d33c29bf4e1103e40368
+----- new: 2e7544eefb664e6d25a678883e98ccd522c6971f..0ee4f19e499a5183fa13906121e803976f7a2bd6
+1:  ffa0f2d5 = 1:  0ee4f19e chore: ignore the local Claude settings file
+
+===== pos=4 pr=6 br=fm/04-watcher-lock-standdown
+----- old: ffa0f2d5737119543d10d33c29bf4e1103e40368..43df488e598a18f14398fa11698647d7eac29013
+----- new: 0ee4f19e499a5183fa13906121e803976f7a2bd6..cd990e293c44da27fefe403961f0cdac8158c9c4
+1:  e3e2cb5c = 1:  0b4b5407 fix: stand down the watcher on a single stop signal
+2:  8d8324fc ! 2:  cc96b684 test: cover single-signal watcher stand-down from a self-held lock
+    @@ Commit message
+     
+      ## docs/watcher-continuity.md ##
+     @@ docs/watcher-continuity.md: Only the watcher process touches `state/.last-watcher-beat`; no helper process c
+    - The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
+    + The same suite covers ordinary same-process session replacement for `/new`, `/resume`, `/fork`, and reload, same-instance shutdown-plus-start, automatic re-arm before any model turn, a fresh extension-module rebind carrying all in-flight actionable closes exactly once, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
+      `tests/fm-watch-arm.test.sh` covers durable queue replay, real remote parent-replies ingestion into the authoritative status log, decision-only OPEN DECISIONS recovery, interrupted handling replay, generation-bound acknowledgement, a persistent live successor after recovery, a watcher close inside the handling window that must leave the printed acknowledgement valid, and the self-healing moved-generation acknowledgement that consumes its handled rows and names its remedy.
+      `tests/fm-watch-recovery-loop.test.sh` covers the once-per-generation announcement bound with the real Pi extension against a refused handling handshake, and a handling successor that must surface a real crew event instead of going blind.
+     -`tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
+3:  3644d1fd = 3:  dfab7991 fix: bound the watch arm's reap of its owned watcher child
+4:  2b340a53 = 4:  3078a606 fix(bin): validate the mtime before it reaches staleness arithmetic
+5:  43df488e = 5:  cd990e29 fix(bin): stop the lock steal path recursing on an absent lock
+
+===== pos=5 pr=7 br=fm/05-decision-key-visibility
+----- old: 43df488e598a18f14398fa11698647d7eac29013..cd791291cff44ab7d17ae7bf0b6589015e5144f0
+----- new: cd990e293c44da27fefe403961f0cdac8158c9c4..2dec4cbe57ac09f1ece6da2de7fc5cb835063417
+1:  ad535b70 ! 1:  6d4cfaa1 fix(brief): demonstrate the decision-key position in the status protocol
+    @@ bin/fm-brief.sh
+      # Ship tasks include a project-memory section so durable project-intrinsic
+      # learnings can be committed to AGENTS.md through the project's delivery path;
+      # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
+    -@@ bin/fm-brief.sh: EOF
+    - HERDR_SECTION=${HERDR_SECTION%$'\n'}
+    - fi
+    +@@ bin/fm-brief.sh: IFS= read -r -d '' TASK_SECTION <<'EOF' || true
+    + EOF
+    + TASK_SECTION=${TASK_SECTION%$'\n'}
+      
+     +# The decision-key token's position is load-bearing, so the scaffold SHOWS the
+     +# keyed open and the keyed close instead of mentioning the token in passing: a
+2:  cd791291 = 2:  2dec4cbe fix(bin): open a visible decision for a malformed stated key
+
+===== pos=6 pr=8 br=fm/06-arm-guard-grammar
+----- old: cd791291cff44ab7d17ae7bf0b6589015e5144f0..b90858c545dfa4a4e90b4aac7aefb05b6c25e146
+----- new: 2dec4cbe57ac09f1ece6da2de7fc5cb835063417..3a59507ec2217a5f6f878c83d153074aaf7c4190
+1:  b90858c5 = 1:  3a59507e fix(arm-guard): classify compound grammar instead of raw command bytes
+
+===== pos=7 pr=9 br=fm/07-session-lock-identity
+----- old: b90858c545dfa4a4e90b4aac7aefb05b6c25e146..c3d5b5fc8a301108a56628a44c29533dcb4e06ec
+----- new: 3a59507ec2217a5f6f878c83d153074aaf7c4190..b012eacf03f173e1c85cbb6d1209e5837b32aaed
+1:  c3d5b5fc ! 1:  b012eacf fix(bin): key the session lease on the session, not a shared harness pid
+    @@ docs/verification/supervision.md: That inertness result is scoped to the builds
+      It also covers decision-only recovery, interrupted handling, handling-window generation reuse, non-fatal moved-generation acknowledgement with sequence-bounded consumption, and a persistent successor remaining live after recovery is acknowledged.
+     
+      ## docs/watcher-continuity.md ##
+    -@@ docs/watcher-continuity.md: Pi same-process session replacement follows the generation-owner contract in `.p
+    +@@ docs/watcher-continuity.md: A main follow-up counts as delivered once Pi accepts it, never once the model re
+      Cursor's `.cursor/hooks.json` `stop` hook (`bin/fm-turnend-guard-cursor.sh`) owns routine tokenless re-arm for a Cursor primary by parking that awaited hook on `bin/fm-watch-arm.sh` and returning an actionable close as one follow-up; [`turnend-guard.md`](turnend-guard.md#harness-integrations) owns its Pi-host stand-down, loop bounds, and supersession baton.
+      Claude's `.claude/settings.json` Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns routine tokenless re-arm.
+      The hook fires on every Stop, and an eligible primary with supervision need admits one home-scoped owner that foregrounds `bin/fm-watch-arm.sh` inside the hook-owned process tree.
+
+===== pos=8 pr=11 br=fm/09-herdr-projection-retirement
+----- old: c3d5b5fc8a301108a56628a44c29533dcb4e06ec..ec0e22b73a7226f08a93bc0746d1626d910e1a4a
+----- new: b012eacf03f173e1c85cbb6d1209e5837b32aaed..9e08bc6ac5cb1c233dfdc65b0e5978159f0d342f
+1:  ec0e22b7 = 1:  9e08bc6a fix(herdr): retire a projection workspace that outlives its task pane
+
+===== pos=9 pr=12 br=fm/10-test-teardown-safety
+----- old: ec0e22b73a7226f08a93bc0746d1626d910e1a4a..962f2179aa8440dd04b0118089b6b8f997d5fe04
+----- new: 9e08bc6ac5cb1c233dfdc65b0e5978159f0d342f..af939ee2bb09c944d7bddf1fa50d359672f927b0
+ 1:  19a1469a =  1:  ab4fb64e fix(tests): stop the test's live children before removing fixture roots
+ 2:  c74d4ff3 =  2:  7fa441bd test(cleanup): own the cleanup-does-not-complete failure family
+ 3:  54530e13 !  3:  f66197cb test(herdr): release the treehouse pool before deleting the fixture repo
+    @@ tests/fm-backend-autodetect-smoke.test.sh: HERDR_LAB_SESSION=$("$HERDR_LAB_HELPE
+        rm -rf "$TMP_ROOT"
+        return "$cleanup_status"
+      }
+    -@@ tests/fm-backend-autodetect-smoke.test.sh: printf 'off\n' > "$CONFIG/herdr-presentation-spaces"
+    - printf 'trivial autodetect-smoke brief: nothing to do.\n' > "$DATA/$ID/brief.md"
+    +@@ tests/fm-backend-autodetect-smoke.test.sh: Verify the real spawn path selects Herdr.
+    + EOF
+      
+      PROJ="$TMP_ROOT/scratch-project"
+     +# Registered before the repo exists so the pool is released even if the run
+    @@ tests/fm-backend-herdr-workspace-per-home-e2e.test.sh: herdr_forget_inherited_pa
+        rm -rf "$TMP_ROOT"
+      }
+      trap cleanup_all EXIT
+    -@@ tests/fm-backend-herdr-workspace-per-home-e2e.test.sh: printf 'trivial e2e secondmate-owned crewmate brief: nothing to do.\n' > "$SM_HO
+    +@@ tests/fm-backend-herdr-workspace-per-home-e2e.test.sh: EOF
+      
+      make_scratch_project() {  # <dir>
+        local dir=$1
+ 4:  0eacd398 =  4:  8571b053 test: bound every wait that stands in front of required teardown
+ 5:  1b493138 =  5:  8a50836a test(cleanup): cover the abort path and the stuck child against real resources
+ 6:  6b6e6747 =  6:  19fe46ca test(cleanup): bound the lock-owner waits, and observe pool directories
+ 7:  1b4be68a =  7:  0a19de4f docs(contributing): point test authors at the cleanup-safety contracts
+ 8:  f87bf21f =  8:  9ce8a7ac test(cleanup): read pool membership off disk, never from a CLI call
+ 9:  346410c5 =  9:  730b39b6 test(herdr): run cleanup on a fatal signal, not only on exit
+10:  6c17f592 = 10:  dbe44946 test(herdr): convert this suite's fatal signals to a normal exit
+11:  962f2179 = 11:  af939ee2 fix(test-run): map the shared cleanup harness so --changed still selects
+
+===== pos=10 pr=13 br=fm/11-declared-wait-stale-escalation
+----- old: 962f2179aa8440dd04b0118089b6b8f997d5fe04..f4b4304e4a37384e5a2c404ce1c17cea2a1e5ceb
+----- new: af939ee2bb09c944d7bddf1fa50d359672f927b0..a5ac672b55bdbd77f1242d57de356d61240167dc
+1:  acced4a6 ! 1:  05207f29 fix(watcher): stop escalating healthy crew as stale
+    @@ bin/fm-watch.sh: BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
+     -# A crew that declared a pause is idling on a known external wait, so its stale
+     -# pane is absorbed rather than wedge-escalated.
+     -# A captain-held or paused crew whose agent has confidently exited uses the same
+    --# bounded cadence, while a live or ambiguously read agent still surfaces once; a
+    --# secondmate earns the cadence on its declaration alone, because its endpoint
+    --# liveness is deliberately never read (pause_state_class owns that split).
+    +-# bounded cadence, while a live or ambiguously read agent surfaces on first sight
+    +-# and is then held to that same cadence; a secondmate earns the cadence on its
+    +-# declaration alone, because its endpoint liveness is deliberately never read
+    +-# (pause_state_class owns that split).
+     +# A crew that declared a pause is idling on a known wait it expects to clear on
+     +# its own, so its stale pane is absorbed rather than wedge-escalated. A
+     +# captain-held crew uses the same bounded cadence, and so does either whose agent
+    @@ bin/fm-watch.sh: pause_state_class() {  # <window> <task>
+        case "$class" in
+          paused) date +%s > "$recheck_file" ;;
+          *) rm -f "$recheck_file" ;;
+    -@@ bin/fm-watch.sh: pause_state_class() {  # <window> <task>
+    -   printf '%s' "$class"
+    - }
+    - 
+    -+# Surface a non-terminal stale pane, then record what the crew's own status log
+    -+# declares about the idle. The bare wake is queued FIRST on purpose: this path is
+    -+# only reached for an agent that is live or of inconclusive liveness (a
+    -+# confidently dead agent behind a declaration is classified `paused` by
+    -+# pause_state_class and absorbed by handle_paused_stale without ever arriving
+    -+# here), and one supervision turn is the cheap insurance that a live agent's
+    -+# declaration still matches reality. From the second determination on, the
+    -+# markers written below hand the pane to the bounded PAUSE_RESURFACE_SECS
+    -+# cadence, so the fail-open surface costs one wake per pause rather than one per
+    -+# fresh hash.
+    - surface_nonterminal_stale() {  # <window> <hash>
+    -   local win=$1 h=$2 key task last
+    -   key=$(window_key "$win")
+     @@ bin/fm-watch.sh: EOF
+                # line. On a NEW hash, give an active run/busy pane (the same
+                # authoritative source fm-crew-state.sh itself already prioritizes
+    @@ tests/fm-watch-triage.test.sh: test_busy_declared_pause_is_rechecked_not_wedge_e
+     +test_terminal_stale_pipeline_reported_finish_surfaced
+      test_nonterminal_stale_paused_absorbed_then_resurfaced
+      test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+    - test_secondmate_paused_resurfaces_in_normal_mode
+    + test_absorbed_replacement_wait_does_not_inherit_the_old_throttle
+2:  8dd07021 ! 2:  c7044b15 docs(brief): let a crew declare a wait on its own background work
+    @@ bin/fm-brief.sh: $INBOX_SECTION
+      Work you landed includes a merge you performed yourself under standing merge authority and one the captain merged on the forge: under that authority nothing is ever \"ready for review\", so a landed merge that goes unreported reaches the captain as silence.
+      This is also how you return the answer to a marked from-firstmate request above.
+     @@ bin/fm-brief.sh: The report is the only thing that survives, so anything worth keeping must be in
+    -    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
+    -    FYI progress lines; firstmate reads your pane for that.
+    +    https:// URL exactly as the forge printed it, never a bare number such as "PR 108"; firstmate
+    +    copies that URL from your line rather than assembling one.
+         Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
+     -   known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
+     +   known wait you expect to clear on its own (an upstream release, a rate-limit reset):
+    @@ docs/architecture.md: The deferral is bounded per endpoint by `FM_TURNEND_CHURN_
+      A `kind=secondmate` task's status signal is the parent-directed reply stream and is never absorbed as provably working; its bare turn-ended signal is absorbed only by the ordinary authoritative working proof because an active secondmate does not enter the staleness backbone that would resurface deferred pane-churn evidence.
+     -A crew that declares `paused:` for a known external wait, or carries a verified `captain-held` transfer, is separately absorbed while idle and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge.
+     +A crew that declares `paused:` for a known wait it expects to clear on its own - including its own long background command - or carries a verified `captain-held` transfer, is separately absorbed while idle and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge.
+    - For an ordinary crew that has stopped, the normal-mode watcher first surfaces one stale wake, then applies that same cadence to an unchanged `paused:` or durable `captain-held` endpoint only when the backend confidently reports its agent dead.
+    - Live or inconclusive liveness remains fail-open at that initial surface, and a secondmate's endpoint liveness is still never read at all; a mate is admitted to that same cadence only to serve a declared wait's bounded re-surface, so a forgotten pause or captain hold on a mate cannot rot invisibly.
+    - Its initial normal-mode status signal still surfaces through the no-verb path, while away mode self-handles that routine signal and owns the later recheck.
+    -@@ docs/architecture.md: A secondmate retains a durable receipt for its idempotent report through the est
+    + For an ordinary crew that has stopped, the normal-mode watcher first surfaces one stale wake, then applies that same cadence to an unchanged `paused:` or durable `captain-held` endpoint; the pause classification itself is recovered only when the backend confidently reports its agent dead.
+    + Live or inconclusive liveness remains fail-open at that initial surface, so a worker genuinely waiting on a decision is never silenced.
+    + Its later sights are still held to that same bounded cadence rather than re-alarming on every pane-hash change, because the throttle is keyed to the declaration and not to the pane an idle parked worker keeps ticking.
+    +@@ docs/architecture.md: A secondmate home's terminal child ledger lines, PR registrations, captain holds
+      Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.
+      Each `fm-wake-drain.sh` presentation runs the same liveness guard as the supervision scripts, so a lapsed watcher chain surfaces even on a turn that only handles queued wakes.
+      Routine watcher polling, supervision no-ops, elapsed waiting time, and absorbed benign wakes stay silent.
+    @@ docs/architecture.md: A secondmate retains a durable receipt for its idempotent
+     +A declared wait or verified captain-held transfer trades that silence for one bounded recheck per pause window, carrying an annotated reason that names which human the wait is on and tells a declared wait apart from a suspected wedge, so neither a forgotten pause nor a forgotten hold can remain invisible indefinitely.
+      Crew status files are append-only wake-event logs, not current-state fields.
+      Because of that, a per-wake read of only the latest line can bury an earlier still-open `needs-decision`/`blocked` under later unrelated appends; `fm-wake-drain.sh` prints a separate, fleet-wide OPEN DECISIONS section on every presentation (including the empty-queue path session-start relies on), built through `fm-classify-lib.sh`'s cursor-backed incremental scan using the authoritative `status_open_decisions` fold semantics so the buried decision keeps surfacing until it is explicitly resolved while each presentation folds only new status-log appends.
+    - The drain coordinates that fold and its annotations through a locked fleet-wide snapshot whose `.status-presentation-cursor` manifest records each status file's identity and last-presented byte offset.
+    + The drain coordinates that fold and its annotations through a locked fleet-wide snapshot whose `.status-presentation-cursor` manifest records each status file's identity plus independent annotation and outcome-backstop byte offsets.
+     @@ docs/architecture.md: During no-mistakes' `ci` monitor phase, it also reads the ci step log tail becau
+      The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
+      Only when no matching run exists does it consult semantic busy state; exact busy reports working, exact idle permits fallback to a status-log event whose verb maps to a recognized run-state, and unknown or a dead pane stays unknown instead of trusting a stale log.
+    @@ docs/architecture.md: During no-mistakes' `ci` monitor phase, it also reads the
+     -In that status-log fallback, a declared external wait reports the distinct `paused` state with its reason.
+     +In that status-log fallback, a declared wait reports the distinct `paused` state with its reason.
+      The semantic branch reports working only on an exact busy verdict and names the source that produced it; an unknown verdict never becomes working, never permits the status-log fallback, and never becomes a silent idle.
+    - For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, current crew state, endpoint probes, PR/report pointers, scout reports, bounded current summaries from registered secondmate homes, and secondmate return-channel guidance.
+    - Each home also atomically publishes that same bounded home summary with freshness epoch metadata at `state/home-summary.json` after a locked session start, a watcher-observed status change, task spawn, task teardown, and on a recurring live-watcher cadence; `bin/fm-home-summary-refresh.sh` owns the publication mechanics.
+    + For whole-fleet review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, local current crew state, supervision-owned endpoint evidence, PR/report pointers, scout reports, bounded current summaries from registered secondmate homes, and secondmate return-channel guidance.
+    + Each home atomically publishes that bounded home summary with freshness epoch metadata at `state/home-summary.json` after a locked session start, a watcher-observed status change, task spawn, task teardown, and on a recurring live-watcher cadence; `bin/fm-home-summary-refresh.sh` owns the publication mechanics.
+     @@ docs/architecture.md: On every verified primary harness, tracked hook integration gives the primary se
+      The guard covers the main primary and genuinely marked secondmate homes, exempts child crewmate/scout worktrees, is loop-safe per harness, and is documented in [turnend-guard.md](turnend-guard.md).
+      
+    @@ docs/configuration.md: FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE
+      FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # captain-relevant status regex; nonterminal progress verbs remain excluded even when their prose matches
+     -FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared external wait; excluded from FM_CAPTAIN_RE and distinct from blocked
+     +FM_CLASSIFY_PAUSED_VERB=paused     # leading status verb for a declared wait, including a crew's own background work; excluded from FM_CAPTAIN_RE and distinct from blocked
+    - FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane escalates; stale panes whose crew is not provably working surface immediately unless they declare the pause verb
+    + FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane escalates; stale panes whose crew is not provably working surface immediately unless admitted directly to the declared-wait cadence, while a live idle declared wait still surfaces once before that cadence bounds repeats
+     -FM_BUSY_TURN_MAX_SECS=3600         # maximum age of a busy pane's latest state/<id>.turn-ended marker, or its state/<id>.meta spawn record before any turn completes, before the same wedge escalation used for a provably-working non-busy stale takes over; inspection-only, never an automatic interrupt or restart; a declared external wait or verified captain-held transfer takes the FM_PAUSE_RESURFACE_SECS recheck below instead
+    --FM_PAUSE_RESURFACE_SECS=3600       # seconds before the watcher re-surfaces a declared external wait or verified captain-held transfer for a recheck, including a live busy pane past FM_BUSY_TURN_MAX_SECS; the away-mode daemon uses the same setting for a declared external wait or verified captain-held transfer, ageing its window against the crew's own latest status line rather than pane busy state
+    +-FM_PAUSE_RESURFACE_SECS=3600       # seconds between bounded rechecks of a declared external wait or verified captain-held transfer, including a live idle pane after its first inconclusive stale wake and a live busy pane past FM_BUSY_TURN_MAX_SECS; the away-mode daemon uses the same setting, ageing its window against the crew's own latest status line rather than pane busy state
+     +FM_BUSY_TURN_MAX_SECS=3600         # maximum age of a busy pane's latest state/<id>.turn-ended marker, or its state/<id>.meta spawn record before any turn completes, before the same wedge escalation used for a provably-working non-busy stale takes over; inspection-only, never an automatic interrupt or restart; a declared wait or verified captain-held transfer takes the FM_PAUSE_RESURFACE_SECS recheck below instead
+    -+FM_PAUSE_RESURFACE_SECS=3600       # seconds before the watcher re-surfaces a declared wait or verified captain-held transfer for a recheck, including a live busy pane past FM_BUSY_TURN_MAX_SECS; the away-mode daemon uses the same setting for a declared wait or verified captain-held transfer, ageing its window against the crew's own latest status line rather than pane busy state
+    ++FM_PAUSE_RESURFACE_SECS=3600       # seconds between bounded rechecks of a declared wait or verified captain-held transfer, including a live idle pane after its first inconclusive stale wake and a live busy pane past FM_BUSY_TURN_MAX_SECS; the away-mode daemon uses the same setting, ageing its window against the crew's own latest status line rather than pane busy state
+      FM_SECONDMATE_WAKE_STALL_SECS=60   # minimum age of the oldest valid foreign wake-queue row before an endpoint-recorded local secondmate produces one durable parent wake-loop-stall notification; zero or invalid values use 60
+      FM_WEDGE_DEMAND_INSPECT_COUNT=3    # consecutive provably-working stale escalations on the same unchanged pane before demand-deep-inspection is added
+      FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'   # directory names the wedge detector's task-worktree write probe skips; the default keeps .git out so a supervisor's own read-only git command can never look like crew progress; set it to the empty string to prune nothing, which widens the probe to the whole depth-bounded tree rather than disabling it
+3:  f4b4304e = 3:  a5ac672b test: align fixtures with the reconciler verdicts they stand for
+
+===== pos=11 pr=14 br=fm/12-brief-herdr-lab-justification
+----- old: f4b4304e4a37384e5a2c404ce1c17cea2a1e5ceb..1b2dafc1b38484176c7f348d7ef440c76efa76d1
+----- new: a5ac672b55bdbd77f1242d57de356d61240167dc..48f2f9bb2379ef8693f65d0ea3a8130089547210
+1:  1b2dafc1 = 1:  48f2f9bb fix(bin): justify the Herdr lab contract without a version anchor
+
+===== pos=12 pr=15 br=fm/13-brief-testing-scope
+----- old: 1b2dafc1b38484176c7f348d7ef440c76efa76d1..4ddf13aa3bd719b94a1d008f1f52fff9afbe9b13
+----- new: 48f2f9bb2379ef8693f65d0ea3a8130089547210..b6e275435ccf9cf086ccc10ef522d2bfb778b90f
+1:  4ddf13aa = 1:  b6e27543 feat(brief): bound crewmate testing scope without naming a runner
+
+===== pos=13 pr=16 br=fm/14-pr-local-ff-landing
+----- old: 4ddf13aa3bd719b94a1d008f1f52fff9afbe9b13..891f256b866fa95c22fdb35bbdfb73162e475c84
+----- new: b6e275435ccf9cf086ccc10ef522d2bfb778b90f..37a516340bc744f76df92c26239245a7b0f8004c
+1:  f0dd3493 ! 1:  a4332438 feat(bin): land task PRs as a local fast-forward by default
+    @@ tests/fm-pr-merge.test.sh: test_secondmate_merge_reports_upward_once() {
+     -  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" \
+     +  FM_TEST_HOME="$case_dir/home" run_pr_merge "$case_dir" task-x1 "$url" -- --squash \
+          >"$case_dir/stdout2" 2>"$case_dir/stderr2" || fail "secondmate-merge-reports: repeat merge failed"
+    -   [ "$(parent_reply_lines "$replies" "$url")" -eq 1 ] \
+    +   [ "$(grep -c 'merged-task-x1' "$replies")" -eq 1 ] \
+          || fail "secondmate-merge-reports: a repeat merge of the same PR duplicated the upward line"
+     @@ tests/fm-pr-merge.test.sh: test_secondmate_merge_reports_on_the_local_route() {
+        : >"$case_dir/gh-axi.log"
+    @@ tests/fm-teardown.test.sh: test_teardown_manual_backend_leaves_the_backlog_to_th
+     +test_fast_forward_landed_branch_allows
+      test_no_mistakes_truly_unpushed_refuses
+      test_local_only_force_overrides_unpushed
+    - test_teardown_missing_busy_sidecar_completes
+    + test_secondmate_pr_registration_publishes_ready_line
+2:  f3e8b496 ! 2:  ae64594e docs: reconcile the PR landing contract with the local fast-forward default
+    @@ AGENTS.md: Never merge a red PR under either setting; destructive, irreversible,
+      ### Validate
+     
+      ## docs/architecture.md ##
+    -@@ docs/architecture.md: A ship brief records its mode as a fixed machine-readable line and the spawn ref
+    +@@ docs/architecture.md: It is also the one owner of the no-mistakes `--intent` contract those workers fo
+      When a selected delivery path calls for a diff, `bin/fm-review-diff.sh` refreshes the authoritative base and, when task meta records `pr=`, always fetches and compares against `refs/pull/<n>/head` by default (recorded `pr_head=` is only an offline fallback) before falling back to the local branch with a warning.
+      Where a no-mistakes pipeline stores evidence in the repo, it publishes that PR-viewable validation evidence to an orphan evidence branch that shares no history with code branches, so it never enters the crew branch or the default branch.
+      This repo uses that setting, and its own `.no-mistakes/` directory remains local state that stays gitignored and is rejected by CI if tracked; [`configuration.md`](configuration.md) owns the setting.
+    @@ docs/scripts.md: The shared no-mistakes gate refusal for fleet lifecycle entrypo
+     -| `fm-pr-merge.sh`         | Record PR metadata, merge a task's canonical full GitHub or GitLab URL, then refuse an outcome it cannot prove landed or queued |
+     +| `fm-pr-merge.sh`         | Record PR metadata, then land a task's canonical full GitHub URL as a local fast-forward (or through the forge when a merge method is explicit, refusing an outcome it cannot prove landed or queued), or merge a GitLab MR URL through a guarded `glab` path |
+      | `fm-merge-outcome-lib.sh` | Publish a confirmed merge's durable, role-routed supervision outcome                 |
+    + | `fm-parent-channel-lib.sh` | Resolve a secondmate home's parent channel and append a captain-facing outcome line to it at most once |
+      | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode, and write the ship instructions carrying that mode's definition of done |
+    - | `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
+3:  891f256b = 3:  37a51634 test: state the landing shape in upstream's durable-outcome merge cases
+
+===== pos=14 pr=17 br=fm/15-subagent-must-not-claim-lock
+----- old: 891f256b866fa95c22fdb35bbdfb73162e475c84..fc6e75b4293981f86541c37d501bcbdfacd39654
+----- new: 37a516340bc744f76df92c26239245a7b0f8004c..a987a0684a4cff644538d845d89f35384cdffcc1
+1:  fc6e75b4 = 1:  a987a068 fix(bin): refuse the home's session lease from a harness subagent
+
+===== pos=15 pr=20 br=fm/16-test-failure-detail
+----- old: fc6e75b4293981f86541c37d501bcbdfacd39654..885c101ff9d94cbacc8c0089e173aa238bf4b0f1
+----- new: a987a0684a4cff644538d845d89f35384cdffcc1..5389040abb3dcd216c706caa0cb71257fb8395df
+1:  885c101f ! 1:  5389040a test: carry captured output through failed exit-code assertions
+    @@ tests/fm-pi-watch-extension.test.sh: if (liveArmPids().length !== 0) {
+      EOF
+      )
+        status=$?
+    --  [ "$status" -eq 0 ] || fail "Pi session transitions must rearm through an explicit generation owner (exit $status): $out"
+    -+  expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner" "$out"
+    +-  [ "$status" -eq 0 ] || fail "Pi session transitions must auto-arm through their generation owner (exit $status): $out"
+    ++  expect_code 0 "$status" "Pi session transitions must auto-arm through their generation owner" "$out"
+        [ -z "$out" ] || fail "Pi session-transition generation owner test printed output: $out"
+    -   pass "Pi session transitions use a generation owner across /new /resume /fork, stale callbacks, and quit"
+    +   pass "Pi session transitions auto-arm through a generation owner across /new /resume /fork/reload, stale callbacks, and quit"
+      }
+     @@ tests/fm-pi-watch-extension.test.sh: if (process.listenerCount("exit") !== before + 1) {
+      EOF
+
+===== pos=16 pr=21 br=fm/17-lock-steal-robustness
+----- old: 885c101ff9d94cbacc8c0089e173aa238bf4b0f1..63fb98b8d0dce45958f0139fdb5038dedb0e96bf
+----- new: 5389040abb3dcd216c706caa0cb71257fb8395df..e31071eeb5990a383a62c26e2f768c45cbc73afa
+1:  63fb98b8 = 1:  e31071ee test(lock): expose stale-steal failure outcomes
+
+===== pos=17 pr=22 br=fm/18-startup-network-reap
+----- old: 63fb98b8d0dce45958f0139fdb5038dedb0e96bf..67b7ab82914e9623b81b1bede0de78912863a20f
+----- new: e31071eeb5990a383a62c26e2f768c45cbc73afa..47f62119e9be598e4a11b8036dbc084ab30f353b
+1:  67b7ab82 ! 1:  47f62119 test(startup-network): reap detached suite workers
+    @@ Commit message
+     
+      ## tests/fm-startup-network.test.sh ##
+     @@
+    - #   - an abandoned `running` record is reported as needing a rerun rather than
+      #     staying "in progress" forever
+    - #   - single-flight: a second `start` never launches a competing worker
+    + #   - phase-aware single-flight: a covering worker is reused, while a later
+    + #     locked request supersedes an in-flight probe-only worker
+     +#   - the detached worker is reapable, so it does not outlive this file
+      set -u
+      
+    @@ tests/fm-startup-network.test.sh
+     +# leaves mktemp's result with a doubled separator that the detached script's
+     +# argv has already collapsed, so the two would never match textually.
+     +TMP_ROOT=$(fm_test_tmproot fm-startup-network-tests | sed 's://*:/:g')
+    + DRAIN="$ROOT/bin/fm-wake-drain.sh"
+      FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+     -trap fm_test_cleanup EXIT
+     +
+
+===== pos=18 pr=23 br=fm/19-omp-primary-identity
+----- old: 67b7ab82914e9623b81b1bede0de78912863a20f..37866c2c890c3b2a6f94a539325fcdebe53459a0
+----- new: 47f62119e9be598e4a11b8036dbc084ab30f353b..34e8011344deb4c4aaf3330c7756446b28abae57
+1:  37866c2c = 1:  34e80113 feat(harness): recognize omp as a primary harness identity
+
+===== pos=19 pr=24 br=fm/20-omp-adapter-verification
+----- old: 37866c2c890c3b2a6f94a539325fcdebe53459a0..562dee2d6ee38916f56ed72608dd6ab97a7a8754
+----- new: 34e8011344deb4c4aaf3330c7756446b28abae57..d636b89431f9d583a396d2bcf2576f3b71444217
+ 1:  4a001742 =  1:  3b9612da test(composer): keep the live matrix guard's tmux server alive
+ 2:  d140a90b !  2:  0e2aa50c feat(harness): verify omp as a crewmate and scout adapter
+    @@ docs/verification/runtime-backends.md: Claude, Codex, OpenCode, Pi, pi-signed, G
+      Cursor is deliberately outside this cursor-anchored empty-composer matrix because its terminal cursor is parked outside the composer; tmux's Cursor-specific, process-identity-gated cursorless fallback is covered by the [Cursor Agent CLI](#cursor-agent-cli) section's separate live evidence and drift guard.
+      
+      `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
+    -@@ docs/verification/runtime-backends.md: The focused extension suite also exercised the installed Pi 0.84.4 picker and ou
+    - 
+    - Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.
+    - The extension executes inside the signed CLI's own runtime, so a CLI upgrade can drift ahead of the pinned npm surface; refresh this record after every Pi upgrade by re-running the live guard, picker regression, and strict typecheck above (point `FM_PI_PACKAGE_DIR` at a matching npm install when one exists) and by watching the branch's own fallback line - every branch failure degrades to the pre-branch wake-to-main path by construction, which `tests/fm-pi-branch-extension.test.sh` holds with a broken generator and the live guard holds with the real SDK.
+    +@@ docs/verification/runtime-backends.md: The live probe loads the tracked watcher extension through Pi's real resource lo
+    + It proved that a follow-up the extension sends while main is streaming raises no `before_agent_start` at queue time or when the run reaches it, joins the run as a user `message_start` carrying the exact wake text in its own model turn, and is followed by a verified successor and delivery of the next close; a follow-up sent to the idle main raises `before_agent_start` with the exact text before its user `message_start`.
+    + The portable regression drives the same shape with a fake main that never raises `before_agent_start` while streaming, then proves a replacement replays only the follow-up Pi had not consumed and that an exhausted restoration delivers its typed failure without launching a further arm.
+    + A second regression holds a branch settlement open while the verified successor exits with a failure, and proves that failure takes the ordinary bounded retry once the delivery settles rather than leaving the generation with no watcher and no retry.
+     +
+     +## omp (oh-my-pi)
+     +
+ 3:  c3b0b348 !  3:  2c6a2f8b refactor(spawn): give the launch-boundary marker set one sourceable owner
+    @@ bin/fm-spawn.sh: fm_backlog_directory_present "$STATE" "state directory" || {
+     +. "$SCRIPT_DIR/fm-launch-boundary-lib.sh"
+      # shellcheck source=bin/fm-pr-lib.sh
+      . "$SCRIPT_DIR/fm-pr-lib.sh"
+    - # shellcheck source=bin/fm-trace-context-lib.sh
+    + # shellcheck source=bin/fm-dod-lib.sh
+     @@ bin/fm-spawn.sh: launch_template() {
+          # `cursor` is not the CLI (the installed names are cursor-agent and the
+          # legacy alias agent). The foreign markers that would let an inherited
+    @@ tests/fm-spawn-dispatch-profile.test.sh: test_no_profile_keeps_claude_profile_de
+        assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
+      
+        launch=$(cat "$LAUNCH_LOG")
+    --  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
+    -+  expected="$(fm_launch_marker_prefix)CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
+    +-  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
+    ++  expected="$(fm_launch_marker_prefix)CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
+        [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+        pass "no --model/--effort records defaults and types the claude launch instructions"
+      }
+ 4:  d7c6712b =  4:  29fb5aa8 test(composer): pin omp's wrapped-composer degradation
+ 5:  5b0d332d =  5:  b99f55e1 fix(teardown): remove the per-task omp extension file
+ 6:  3eb22cf5 !  6:  6fec1880 feat(harness): give omp its own primary supervision extensions
+    @@ bin/fm-supervision-instructions.sh: ordinary_wake_line() {
+     
+      ## bin/fm-test-run.sh ##
+     @@ bin/fm-test-run.sh: families_for_changed_path() {
+    -       printf '%s\n' session-bootstrap
+    +       printf '%s\n' "__script__:fm-quota-choose.test.sh"
+            ;;
+          bin/fm-sessionstart-run.sh|.claude/settings.json|.codex/hooks.json|\
+     -    .pi/extensions/fm-primary-turnend-guard.ts)
+    @@ bin/fm-wake-lib.sh: fm_pi_extension_loaded() {
+        session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
+        fm_pid_alive "$session_pid"
+      }
+    -@@ bin/fm-wake-lib.sh: fm_pi_extension_owns_supervision() {
+    +@@ bin/fm-wake-lib.sh: fm_afk_daemon_owns_supervision() {
+      # autoarm: a fresh beacon within grace is healthy even with no live watcher,
+      # because the watcher only runs between turns; only a stale beacon is a lapse.
+      # extension: a live identity-matched watcher is the ordinary healthy state, but a
+ 7:  8f81e53b =  7:  47fc52ed test(omp): cover the primary supervision contracts
+ 8:  828db523 !  8:  e5c24613 docs: record the omp primary supervision adapter
+    @@ README.md: Firstmate's skills live in two separate places with different audienc
+      - [`AGENTS.md`](AGENTS.md) - the distro's always-loaded operating contract and routing index for conditional procedures.
+     
+      ## docs/architecture.md ##
+    -@@ docs/architecture.md: The default path remains local-only; live GitHub enrichment exists only behind t
+    +@@ docs/architecture.md: Live GitHub enrichment exists only behind the bearings `--include-prs` opt-in.
+      Optional Relay integrates with the watcher only after explicit opt-in; [configuration.md](configuration.md#relay-env) owns its generated-artifact and dispatch mechanics.
+      
+      At session start, `bin/fm-session-start.sh` emits exactly one primary-harness supervision block rendered by `bin/fm-supervision-instructions.sh` from `docs/supervision-protocols/`.
+    @@ docs/watcher-continuity.md: Must-work continuity now lives above that process bo
+     +Pi's `.pi/extensions/fm-primary-pi-watch.ts`, omp's `.omp/extensions/fm-primary-omp-watch.ts`, and OpenCode's `.opencode/plugins/fm-primary-watch-arm.js` own continuous re-arm after an actionable child close.
+      Each adapter starts the next arm before delivering the wake prompt, checks current session-lock ownership at launch, preserves one child or scheduled retry at a time, and applies bounded exponential retry after an unexpected or failed close.
+      A failed follow-up never cancels continuity restoration.
+    - Pi same-process session replacement follows the generation-owner contract in `.pi/extensions/fm-primary-pi-watch.ts`.
+    + Pi same-process session replacement follows the generation-owner contract in `.pi/extensions/fm-primary-pi-watch.ts`: an owning `session_start` arms the replacement generation without waiting for a model turn, and a state-scoped replacement handoff carries every actionable close whose delivery overlapped `session_shutdown`, including a main follow-up Pi accepted but had not yet consumed, branch handling, and a retiring child that reports after the bounded shutdown wait.
+    + A main follow-up counts as delivered once Pi accepts it, never once the model reads it, because a follow-up queued while main is streaming joins the running run without a `before_agent_start`; the extension header owns how consumption is observed and why it only decides what a replacement replays.
+     +omp has no equivalent, deliberately: it emits no lifecycle event for a replacement, so its cycle is owned per omp PROCESS and survives a `/new` untouched.
+     +omp also delivers its wake with `pi.sendUserMessage(content)` and no options object, because `deliverAs: "followUp"` only queues there while the session is idle.
+      Cursor's `.cursor/hooks.json` `stop` hook (`bin/fm-turnend-guard-cursor.sh`) owns routine tokenless re-arm for a Cursor primary by parking that awaited hook on `bin/fm-watch-arm.sh` and returning an actionable close as one follow-up; [`turnend-guard.md`](turnend-guard.md#harness-integrations) owns its Pi-host stand-down, loop bounds, and supersession baton.
+ 9:  70b2f5f0 =  9:  c93b53af docs: record that omp's tool_call allow path is inert
+10:  33da1b3d = 10:  6ec0d071 test(omp): assert arm ownership where it is deterministic
+11:  562dee2d = 11:  d636b894 fix(test): keep the omp extension suite parseable by stock macOS Bash
+
+===== pos=20 pr=27 br=fm/fm-atomic-identity
+----- old: 562dee2d6ee38916f56ed72608dd6ab97a7a8754..19facbb1e603f8e37d413274a1797d7096ac3e97
+----- new: d636b89431f9d583a396d2bcf2576f3b71444217..888c0dec25fd7bea57011ee0242ea548734a64a8
+1:  614bd54e = 1:  662a8a30 feat(harness): recognize atomic as a primary harness identity
+2:  19facbb1 = 2:  888c0dec fix(test): silence SC2016 on the atomic fixture's deliberate single quotes
+
+===== pos=21 pr=26 br=fm/fm-atomic-pi-adapt
+----- old: 19facbb1e603f8e37d413274a1797d7096ac3e97..c674e6008a59b8714b0ca5d211e98835f850dc9f
+----- new: 888c0dec25fd7bea57011ee0242ea548734a64a8..7c575b31fa725d1e15abef470d916c309c9da0a4
+1:  c674e600 ! 1:  7c575b31 refactor(pi): retire the Calm presentation extension and its config surface
+    @@ bin/fm-test-run.sh: family_for_basename() {
+          fm-classify-decision-key.test.sh|\
+          fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
+          fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
+    -@@ bin/fm-test-run.sh: tests/fm-bootstrap-network-parallel.test.sh 8000
+    - tests/fm-bootstrap.test.sh 38417
+    - tests/fm-busy-adapter-wiring.test.sh 14880
+    - tests/fm-busy-state.test.sh 714
+    --tests/fm-calm-pi-extension.test.sh 464
+    - tests/fm-classify-decision-key.test.sh 928
+    - tests/fm-claude-stop-autoarm-live-e2e.test.sh 30
+    - tests/fm-claude-stop-autoarm.test.sh 60633
+    +@@ bin/fm-test-run.sh: tests/fm-bootstrap.test.sh 25208
+    + tests/fm-branch-supervision.test.sh 5729
+    + tests/fm-busy-adapter-wiring.test.sh 17873
+    + tests/fm-busy-state.test.sh 2926
+    +-tests/fm-calm-pi-extension.test.sh 256
+    + tests/fm-check-unregister.test.sh 481
+    + tests/fm-classify-corr-token.test.sh 38742
+    + tests/fm-classify-decision-key.test.sh 1167
+     
+      ## docs/calm-mode-feasibility.md (deleted) ##
+     @@
+    @@ docs/calm-mode-feasibility.md (deleted)
+     -| `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Calm wrappers for Pi's seven main-session built-ins | Their call and text-result shells hide while Calm is active; ordinary and stock export rendering delegate to Pi's original renderers. |
+     -| `fm_watch_arm_pi` | Main-session custom tool in `fm-primary-pi-watch.ts` | Its complete self-rendered shell hides while Calm is active and returns unchanged when Calm is off or stock export rendering is active. |
+     -| `fm_branch_outcomes` | Main-session custom tool in `fm-branch-supervision.ts` | Its complete self-rendered shell hides while Calm is active; when visible, the self-renderer reconstructs Pi's ordinary boxed fallback shell and probes Pi's rendered stock fallback to preserve that installed surface's collapsed or all-line output policy plus expanded state, while stock export rendering deliberately falls through to Pi's structured fallback. |
+    --| `fm_branch_report` | Branch-session custom tool supplied directly to `createAgentSession` | It runs only in the headless supervision session and has no main-session `ToolExecutionComponent`; successful execution writes the outcome store and merges a branch note through the separately audited delivery path, so the tool cannot emit a dump-shaped row in the captain's transcript. |
+    +-| `fm_branch_processed` | Main-session custom tool in `fm-branch-supervision.ts` | Its complete self-rendered shell hides while Calm is active, exactly like `fm_branch_outcomes`; when visible, the self-renderer reconstructs Pi's ordinary boxed fallback shell around the one-line acknowledgement result, while stock export rendering deliberately falls through to Pi's structured fallback. |
+    +-| `fm_branch_report` | Branch-session custom tool supplied directly to `createAgentSession` | It runs only in the headless supervision session and has no main-session `ToolExecutionComponent`; successful execution writes the outcome store and delivers a routine note or exact captain entry through the separately audited delivery path, so the tool cannot emit a dump-shaped row in the captain's transcript. |
+     -| branch-local `read` built-in | Branch-session built-in enabled through `createAgentSession` | It runs only in the headless supervision session and has no main-session `ToolExecutionComponent`, so its file output cannot emit a row in the captain's transcript. |
+     -| branch-local `bash` override | Branch-session replacement supplied directly to `createAgentSession` | It runs only in the headless supervision session and has no main-session `ToolExecutionComponent`, so its command output cannot emit a row in the captain's transcript. |
+     -
+    @@ docs/configuration.md: Wake, watcher, away-mode, and Relay-specific state mechan
+     -
+      ## Pi supervision branch
+      
+    - On a Pi primary, a persistent in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, mixed-queue dispatch, heartbeat routing, and the pre-drain recheck.
+    + On a Pi primary, an in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns its conversation lifecycle, row eligibility, mixed-queue dispatch, heartbeat routing, and pre-drain recheck.
+     
+      ## docs/documentation-audiences.json ##
+     @@
+    @@ docs/verification/supervision.md: grok 0.2.103 (89c3d36fb6f1) [stable]
+      
+     -Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.
+     -
+    - Pi same-process session-transition ownership was verified on 2026-07-27 against the tracked extension with a faithful in-process factory rebind (module cache retained, real arm children):
+    + Pi same-process session-transition ownership was verified on 2026-09-01 against the tracked extension with provider-free public lifecycle events, retained and fresh extension-module rebinds, and real arm children:
+      
+      ```sh
+     
+
+===== pos=22 pr=28 br=fm/21-atomic-worker-adapter
+----- old: c674e6008a59b8714b0ca5d211e98835f850dc9f..5ef82dcf56ccc0addaae9ea68223ec49346af3f9
+----- new: 7c575b31fa725d1e15abef470d916c309c9da0a4..b871bc54a2971dbd2b6963a953cd09f610588ad5
+1:  5ef82dcf = 1:  b871bc54 feat(harness): verify atomic as a crewmate and scout adapter
+
+===== pos=23 pr=29 br=fm/22-atomic-control-fallback
+----- old: 5ef82dcf56ccc0addaae9ea68223ec49346af3f9..39031c5052600d113a0ee80d82ab37eb0a8396a7
+----- new: b871bc54a2971dbd2b6963a953cd09f610588ad5..88d8f211f401e67f1eb898fb9c61d707a940370e
+1:  6230d33d = 1:  f52d64d1 fix(herdr): let firstmate evidence carry live unregisterable-harness panes
+2:  0949041c = 2:  9002fac5 feat(spawn): translate the canonical model form per harness arm
+3:  39031c50 = 3:  88d8f211 docs(verification): name the refresh command for herdr's kind list
+
+===== pos=24 pr=31 br=fm/23-pi-branch-fixture-parity
+----- old: 39031c5052600d113a0ee80d82ab37eb0a8396a7..e8c77ecd0a4b4732a8416b2f819a39b8c94d40ee
+----- new: 88d8f211f401e67f1eb898fb9c61d707a940370e..4122b0a6bd066ec18320f066fc76b748c9e53fbb
+1:  e8c77ecd = 1:  4122b0a6 fix(test-run): keep changed-test selection working across an extension retirement
+
+===== pos=25 pr=33 br=fm/24-omp-branch-supervision
+----- old: e8c77ecd0a4b4732a8416b2f819a39b8c94d40ee..9a10bdcb47e4b0fe6079bc9af30570b2af5e6982
+----- new: 4122b0a6bd066ec18320f066fc76b748c9e53fbb..d6df204724b3c85347907b8df5f72d00689178c9
+1:  93fec690 ! 1:  b9605e70 feat(omp): bring supervision branch to the omp primary
+    @@ docs/configuration.md: Wake, watcher, away-mode, and Relay-specific state mechan
+     -## Pi supervision branch
+     +## Supervision branch (Pi and omp)
+      
+    --On a Pi primary, a persistent in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, mixed-queue dispatch, heartbeat routing, and the pre-drain recheck.
+    +-On a Pi primary, an in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns its conversation lifecycle, row eligibility, mixed-queue dispatch, heartbeat routing, and pre-drain recheck.
+     -Supervision is default-on: once a Pi primary session owns this home's fleet lock, the branch is eligible for every task with no captain grant file required.
+     -A genuinely no-op heartbeat is absorbed in bash and never reaches Pi, and every watcher-failure alarm stays on the captain-facing main path.
+    -+On a Pi or omp primary, a persistent in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, mixed-queue dispatch, heartbeat routing, and the pre-drain recheck, and `.omp/extensions/fm-branch-supervision.ts` owns where omp's surface differs.
+    ++On a Pi or omp primary, an in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns its conversation lifecycle, row eligibility, mixed-queue dispatch, heartbeat routing, and the pre-drain recheck, and `.omp/extensions/fm-branch-supervision.ts` owns where omp's surface differs.
+     +Supervision is default-on: once such a primary session owns this home's fleet lock, the branch is eligible for every task with no captain grant file required.
+     +A genuinely no-op heartbeat is absorbed in bash and never reaches the branch, and every watcher-failure alarm stays on the captain-facing main path.
+      Away mode still declines every wake offer, and a broken branch still falls back to today's wake-to-main path.
+    @@ docs/configuration.md: Wake, watcher, away-mode, and Relay-specific state mechan
+      `AGENTS.md`'s `state/` inventory routes the branch's runtime files to their format and lifecycle owners.
+     +The two harnesses share the outcome store and the leases but keep separate conversations and cursors: omp's are the same names under `state/omp-branch-session/`, `.omp-branch-session`, and `.omp-branch-mirror-cursor`, because Pi's extensions load on omp and are inert there, so neither harness may answer an ownership question with the other's state.
+     +On omp the merge note also waits for a fully settled turn rather than riding the next one, because omp has no `agent_settled` event; [docs/supervision-protocols/omp.md](supervision-protocols/omp.md) states what an omp primary should expect.
+    - A captain-facing (verdict `captain`) branch outcome opens exactly one follow-up turn on main, and Pi never separately prints or renders the merge note itself.
+    - The branch prompt owns the unconditional explicit-request rule and the distinction between captain-facing, unsolicited routine, and unchanged-review outcomes.
+    - The generated [Pi supervision protocol](supervision-protocols/pi.md) owns main's required captain-visible response, event ownership, and conversational treatment for merged outcomes.
+    + A captain-facing (verdict `captain`) branch outcome persists as one exact, sequence-keyed visible transcript entry and then opens one sequence-keyed processing turn on main, which stays open until main acknowledges that sequence through its `fm_branch_processed` tool.
+    + The branch prompt's "Verdict: routine or captain" section owns the distinction between captain-facing, unsolicited routine, and unchanged-review outcomes.
+    + The generated [Pi supervision protocol](supervision-protocols/pi.md) owns main's event ownership, acknowledgement duty, and conversational treatment for merged outcomes, while the persisted entry itself owns captain visibility.
+     
+      ## docs/supervision-protocols/omp.md ##
+     @@ docs/supervision-protocols/omp.md: Mode: omp extension background wake with a blocking turn-end stop.
+    @@ docs/supervision-protocols/omp.md: When this session owns supervision and away m
+      Never substitute the Pi extensions: omp's loader accepts them and they are silently inert there.
+     
+      ## docs/verification/runtime-backends.md ##
+    -@@ docs/verification/runtime-backends.md: The focused extension suite also exercised the installed Pi 0.84.4 picker and ou
+    - Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.
+    - The extension executes inside the signed CLI's own runtime, so a CLI upgrade can drift ahead of the pinned npm surface; refresh this record after every Pi upgrade by re-running the live guard, picker regression, and strict typecheck above (point `FM_PI_PACKAGE_DIR` at a matching npm install when one exists) and by watching the branch's own fallback line - every branch failure degrades to the pre-branch wake-to-main path by construction, which `tests/fm-pi-branch-extension.test.sh` holds with a broken generator and the live guard holds with the real SDK.
+    +@@ docs/verification/runtime-backends.md: It proved that a follow-up the extension sends while main is streaming raises no
+    + The portable regression drives the same shape with a fake main that never raises `before_agent_start` while streaming, then proves a replacement replays only the follow-up Pi had not consumed and that an exhausted restoration delivers its typed failure without launching a further arm.
+    + A second regression holds a branch settlement open while the verified successor exits with a failure, and proves that failure takes the ordinary bounded retry once the delivery settles rather than leaving the generation with no watcher and no retry.
+      
+     +## omp supervision branch
+     +
+2:  810e39d2 = 2:  2aeb679e fix(test): drop the unused repo root from the omp capability probe
+3:  2d331fe5 = 3:  e8aa6357 fix(omp): type captain supervision outcomes in the omp branch port
+4:  5bde23bf = 4:  2a26b9bb test(omp): classify the delivered captain outcome, not just its options
+5:  eb2befd4 = 5:  57ff06ce fix(omp): await the async SessionManager.open the branch reopens with
+6:  9a10bdcb = 6:  d6df2047 fix(omp): carry upstream's captain-outcome contract into the omp branch port
+
+===== pos=26 pr=37 br=fm/fm-stack-cascade-4eb587d6
+----- old: 9a10bdcb47e4b0fe6079bc9af30570b2af5e6982..b02331775e928aeffdb49de305e96c3e4b4bb3d5
+----- new: d6df204724b3c85347907b8df5f72d00689178c9..c7aab8347029322f7b34c3853665708dc26bde2a
+1:  034a9ad9 ! 1:  017fd558 fix(docs): repair the dangling calm-mode-feasibility link the cascade created
+    @@ docs/verification/runtime-backends.md: ok - real Pi SDK 0.84.4 delivers a custom
+     +Upstream carried the version-scoped renderer evidence in `docs/calm-mode-feasibility.md`, which this stack deletes with the Calm extension, so the surviving owner of that evidence is `tests/fm-pi-branch-extension.test.sh`: it verifies `fm_branch_outcomes` capability-probed all-line versus collapsed stock output, exact expanded output, and export rendering against the installed renderer.
+     +The probe is what makes that coverage version-independent - it measures the host's stock preview policy at run time rather than pinning a Pi version - which is also why it holds under atomic, whose renderer is not Pi's.
+      
+    - Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.
+    - The extension executes inside the signed CLI's own runtime, so a CLI upgrade can drift ahead of the pinned npm surface; refresh this record after every Pi upgrade by re-running the live guard, picker regression, and strict typecheck above (point `FM_PI_PACKAGE_DIR` at a matching npm install when one exists) and by watching the branch's own fallback line - every branch failure degrades to the pre-branch wake-to-main path by construction, which `tests/fm-pi-branch-extension.test.sh` holds with a broken generator and the live guard holds with the real SDK.
+    + ### 2026-08-29 deterministic captain-outcome delivery
+    + 
+2:  309ffb1f = 2:  531933e3 docs(verification): record which upstream Pi fixes reach omp and atomic
+3:  b0233177 = 3:  c7aab834 fix(test): count the interrupt repeat without a subshell-local throwaway
+
+===== pos=27 pr=38 br=fm/fm-omp-secondmate-enable
+----- old: b02331775e928aeffdb49de305e96c3e4b4bb3d5..da625a39574fe587f5aa2a6858dfe9240a8fd0aa
+----- new: c7aab8347029322f7b34c3853665708dc26bde2a..7b71e859b5b41624db9810701c4400ce126836ca
+1:  e777e22f = 1:  e662e847 feat(spawn): support omp as a secondmate harness
+2:  3dee54b9 = 2:  9871f195 fix(remote-doctor): recognise omp in the remote harness set
+3:  a1e23dd1 = 3:  b1b32910 fix(bootstrap): grade a dead cursor secondmate as recoverable
+4:  4548175f = 4:  bc09db1b docs(harness-adapters): record omp as a verified secondmate harness
+5:  8cd6ed8f = 5:  d4b4f6a4 test: pin omp's secondmate route at every gate it passes through
+6:  465b86b4 = 6:  9c5221e2 chore: drop run logs committed by mistake
+7:  da625a39 = 7:  7b71e859 docs(verification): measure omp's branch extension in a dependency-free home
+
+===== pos=28 pr=41 br=fm/fm-retire-herdr-session-per-project
+----- old: da625a39574fe587f5aa2a6858dfe9240a8fd0aa..1933f621399b30c9ab1bb589fd4f60a36e34d5ca
+----- new: 7b71e859b5b41624db9810701c4400ce126836ca..5d9d4ffacfc53312b84e829ce99140798c224e6a
+1:  1933f621 = 1:  5d9d4ffa docs(verification): record Herdr session placement after retiring the registry selector
+
+===== pos=29 pr=42 br=fm/fm-remote-worker-bad-interpreter
+----- old: 1933f621399b30c9ab1bb589fd4f60a36e34d5ca..03eb060d3dec541af0a79995879785b2e9205c90
+----- new: 5d9d4ffacfc53312b84e829ce99140798c224e6a..453fa00c35f0c0e24ee0d8ac8e36d141956ebd4f
+1:  b8d356f3 = 1:  fdbe0c49 fix(bin): resolve the remote job worker's interpreter through env
+2:  c0a726c6 = 2:  7a37eb99 fix(bin): resolve ps and the digest tool when /bin holds only sh
+3:  679c3468 = 3:  8c416d7f docs(contributing): record the portable-interpreter rule
+4:  03eb060d = 4:  453fa00c fix(tests): parse the interpreter invariant under stock macOS Bash 3.2
+
+===== pos=30 pr=43 br=fm/fm-omp-eval-idle-timeout-clamp
+----- old: 03eb060d3dec541af0a79995879785b2e9205c90..407c9d7ab7e745436c739f066cbcc3f3821a33db
+----- new: 453fa00c35f0c0e24ee0d8ac8e36d141956ebd4f..32c5b38f1183bb4fe1badd0d13035f615e6cc8ac
+1:  407c9d7a = 1:  32c5b38f docs(harness): record what the omp eval cell budget measures
+
