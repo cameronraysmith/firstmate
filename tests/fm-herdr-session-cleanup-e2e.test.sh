@@ -33,6 +33,13 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+# Convert a fatal signal to a normal exit so the cleanup above runs from this
+# suite's own EXIT trap rather than depending on the shell's default
+# disposition for that signal. This suite holds a real lab session in the live
+# fleet until that cleanup runs, and it does not source tests/lib.sh, which
+# installs the same conversion for every suite built on it.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
 
 # Keep the lab helper as the only CLI transport. Production adapter calls have

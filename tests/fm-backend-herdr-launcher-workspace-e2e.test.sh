@@ -41,6 +41,8 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
 
 # Every spawn below states its own launcher identity, so a pane inherited from
 # the terminal this suite was started in must not leak into any of them.
@@ -55,24 +57,25 @@ HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-herdr-launcher-ws) || {
 }
 export HERDR_SESSION="$HERDR_LAB_SESSION"
 
-WORKTREES=()
 CLEANED=0
 # Idempotent: fail() cleans up before exiting and the EXIT trap fires after it,
 # so a second teardown would otherwise report the already-consumed fleet-state
 # tripwire as if the lab had gone wrong.
 cleanup_all() {
-  local wt status=0
+  local status=0
   [ "$CLEANED" = 0 ] || return 0
   CLEANED=1
-  for wt in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
-    [ -n "$wt" ] && treehouse return --force "$wt" >/dev/null 2>&1
-  done
-  WORKTREES=()
   "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || status=$?
+  fm_test_pool_release_all || status=1
   rm -rf "$TMP_ROOT"
   return "$status"
 }
 trap cleanup_all EXIT
+# A fatal signal otherwise skips the EXIT trap entirely, stranding this run's
+# lab session and treehouse pool; converting it to a normal exit runs the
+# cleanup above (tests/lib.sh uses the same pattern).
+trap 'exit 130' INT
+trap 'exit 143' TERM
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 lab() { "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"; }
@@ -81,6 +84,10 @@ lab() { "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"; }
 
 make_scratch_project() {  # <dir>
   local dir=$1
+  # Registering here covers every fixture repo this suite creates, so the
+  # treehouse pool acquired against it is destroyed before the repo is deleted
+  # (tests/cleanup-safety.sh).
+  fm_test_pool_register "$dir"
   mkdir -p "$dir"
   git -C "$dir" init -q
   printf '# scratch\n' > "$dir/README.md"
@@ -139,13 +146,6 @@ spawn_from_launcher() {
       >"$SPAWN_OUT" 2>"$SPAWN_ERR"
   fi
   SPAWN_RC=$?
-  return 0
-}
-
-record_worktree() {  # <meta>
-  local wt
-  wt=$(grep '^worktree=' "$1" 2>/dev/null | cut -d= -f2-)
-  [ -n "$wt" ] && WORKTREES+=("$wt")
   return 0
 }
 
@@ -223,7 +223,6 @@ focused_workspace() {
 spawn_from_launcher "" "$PRIMARY_HOME" uniqA "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a primary-shaped spawn with no herdr parent failed"$'\n'"$(cat "$SPAWN_ERR")"
 UNIQA_META="$PRIMARY_HOME/state/uniqA.meta"
-record_worktree "$UNIQA_META"
 UNIQA_PANE=$(grep '^herdr_pane_id=' "$UNIQA_META" | cut -d= -f2-)
 [ -n "$UNIQA_PANE" ] || fail "uniqA meta is missing herdr_pane_id"
 WS_PRIMARY=$(workspace_of_pane "$UNIQA_PANE")
@@ -243,7 +242,6 @@ EOF
 spawn_from_launcher "$LAUNCH_PRIMARY_PANE" "$PRIMARY_HOME" uniqB "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a primary spawn from a launcher pane failed"$'\n'"$(cat "$SPAWN_ERR")"
 UNIQB_META="$PRIMARY_HOME/state/uniqB.meta"
-record_worktree "$UNIQB_META"
 UNIQB_PANE=$(grep '^herdr_pane_id=' "$UNIQB_META" | cut -d= -f2-)
 [ "$(workspace_of_pane "$UNIQB_PANE")" = "$WS_PRIMARY" ] \
   || fail "a crewmate launched from the 'firstmate' workspace must stay in it"
@@ -255,7 +253,6 @@ pass "real herdr E2E: the normal unique-label path is unchanged when the launche
 spawn_from_launcher "$LAUNCH_PRIMARY_PANE" "$PRES_HOME" presU "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a presentation-enabled spawn from a launcher pane failed"$'\n'"$(cat "$SPAWN_ERR")"
 PRESU_META="$PRES_HOME/state/presU.meta"
-record_worktree "$PRESU_META"
 PRESU_PANE=$(grep '^herdr_pane_id=' "$PRESU_META" | cut -d= -f2-)
 PRESU_WS=$(workspace_of_pane "$PRESU_PANE")
 [ -n "$PRESU_WS" ] || fail "could not read presU's workspace"
@@ -306,7 +303,6 @@ while [ ! -f "$TMP_ROOT/dupC.rc" ] && [ "$i" -lt 120 ]; do sleep 2; i=$((i + 1))
   || fail "the in-pane spawn failed"$'\n'"$(cat "$TMP_ROOT/dupC.err" 2>/dev/null)"
 
 DUPC_META="$PRIMARY_HOME/state/dupC.meta"
-record_worktree "$DUPC_META"
 DUPC_PANE=$(grep '^herdr_pane_id=' "$DUPC_META" | cut -d= -f2-)
 DUPC_WS=$(workspace_of_pane "$DUPC_PANE")
 [ "$DUPC_WS" = "$WS_PRIMARY_DUP" ] \
@@ -330,7 +326,6 @@ pass "real herdr E2E: the duplicate-labeled sibling workspace is left entirely u
 spawn_from_launcher "$LAUNCH_DUP_PANE" "$PRES_HOME" presD "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a projected spawn under a duplicated parent label failed"$'\n'"$(cat "$SPAWN_ERR")"
 PRESD_META="$PRES_HOME/state/presD.meta"
-record_worktree "$PRESD_META"
 PRESD_PANE=$(grep '^herdr_pane_id=' "$PRESD_META" | cut -d= -f2-)
 PRESD_WS=$(workspace_of_pane "$PRESD_PANE")
 [ -n "$PRESD_WS" ] || fail "could not read presD's workspace"
@@ -401,7 +396,6 @@ WS_SM_DECOY_TABS_BEFORE=$(tab_labels_of_workspace "$WS_SM_DECOY")
 spawn_from_launcher "$LAUNCH_SM_PANE" "$SM_HOME" smE "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a secondmate-owned crewmate spawn failed"$'\n'"$(cat "$SPAWN_ERR")"
 SME_META="$SM_HOME/state/smE.meta"
-record_worktree "$SME_META"
 SME_PANE=$(grep '^herdr_pane_id=' "$SME_META" | cut -d= -f2-)
 SME_WS=$(workspace_of_pane "$SME_PANE")
 [ "$SME_WS" = "$WS_SM_LAUNCH" ] \

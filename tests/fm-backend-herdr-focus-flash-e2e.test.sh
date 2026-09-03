@@ -29,6 +29,9 @@ command -v jq >/dev/null 2>&1 || { echo 'skip: jq not found'; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo 'skip: python3 not found'; exit 0; }
 [ -x "$HERDR_LAB_HELPER" ] || { echo "skip: Herdr lab helper not executable at $HERDR_LAB_HELPER"; exit 0; }
 
+# shellcheck source=tests/cleanup-safety.sh
+. "$ROOT/tests/cleanup-safety.sh"
+
 HERDR_ORIGINAL_PATH=$PATH
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-focus-flash-e2e.XXXXXX")
 FAKEBIN="$TMP_ROOT/fakebin"
@@ -43,14 +46,24 @@ cleanup() {
   if [ -n "$SAMPLER_STOP" ]; then
     : > "$SAMPLER_STOP"
   fi
+  # Bounded. The stop file asks the sampler to leave its loop, but a sampler
+  # blocked inside a CLI read never reaches that check, and an unbounded wait
+  # here would strand the lab session and its worktrees by never reaching the
+  # teardown below (tests/cleanup-safety.sh).
   if [ -n "$SAMPLER_PID" ]; then
-    wait "$SAMPLER_PID" 2>/dev/null || true
+    fm_test_reap_bounded "$SAMPLER_PID" >/dev/null 2>&1 || true
+    SAMPLER_PID=
   fi
   env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || status=1
   rm -rf "$TMP_ROOT"
   exit "$status"
 }
 trap cleanup EXIT
+# A fatal signal otherwise skips the EXIT trap entirely, stranding this run's
+# lab session and treehouse pool; converting it to a normal exit runs the
+# cleanup above (tests/lib.sh uses the same pattern).
+trap 'exit 130' INT
+trap 'exit 143' TERM
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
 
 # Keep the lab helper as the only CLI transport. Production adapter calls have
@@ -76,6 +89,18 @@ SH
 chmod +x "$FAKEBIN/herdr"
 
 lab() { env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"; }
+
+# Stop the running sampler within a bound and clear the handle. A bare
+# `wait` here is unbounded, and a sampler wedged inside a CLI read would then
+# block the rest of this script - including the EXIT trap that removes the lab
+# session and releases its worktrees. Fails only when even KILL was needed,
+# which means the samples this part asserts on may be incomplete.
+reap_sampler() {
+  [ -n "$SAMPLER_PID" ] || return 0
+  fm_test_reap_bounded "$SAMPLER_PID" >/dev/null 2>&1 || true
+  SAMPLER_PID=
+  [ "$FM_TEST_REAP_SURVIVED" = 0 ]
+}
 mkws() {  # <label> -> "<workspace_id> <tab_id> <pane_id>"
   lab workspace create --cwd "$ROOT" --label "$1" --no-focus \
     | jq -er '"\(.result.workspace.workspace_id) \(.result.tab.tab_id) \(.result.root_pane.pane_id)"'
@@ -176,8 +201,7 @@ B_OUT=$(PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_FLASH_CALL_LOG="$CALL_LOG" bash 
 B_STATUS=$?
 rm -f "$B_OPERATION_ACTIVE"
 : > "$SAMPLER_STOP"
-wait "$SAMPLER_PID" 2>/dev/null || true
-SAMPLER_PID=
+reap_sampler || fail 'the Part B focus sampler had to be killed; it never left its sampling loop'
 [ "$B_STATUS" -eq 0 ] || fail "the production focus-preserving close failed (status $B_STATUS): $B_OUT"
 [ -s "$B_FOCUS_SAMPLES" ] || fail 'the Part B sampler captured no focus sample during the production close'
 B_WRONG_SAMPLE=$(grep -Fvx -- "$B_BEFORE" "$B_FOCUS_SAMPLES" | head -1)
@@ -310,8 +334,7 @@ C_OUT=$(PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_FLASH_CALL_LOG="$C_CALL_LOG" \
 C_STATUS=$?
 rm -f "$C_OPERATION_ACTIVE"
 : > "$SAMPLER_STOP"
-wait "$SAMPLER_PID" 2>/dev/null || true
-SAMPLER_PID=
+reap_sampler || fail 'the Part C focus sampler had to be killed; it never left its sampling loop'
 [ "$C_STATUS" -eq 0 ] || fail "the production focus-preserving close failed (status $C_STATUS): $C_OUT"
 wait_ws_gone "$C_DOOMED_WS" || fail 'the fallback close left the doomed workspace behind'
 if lab pane get "$C_DOOMED_PANE" >/dev/null 2>&1; then
