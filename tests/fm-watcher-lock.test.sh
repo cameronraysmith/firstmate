@@ -357,6 +357,225 @@ test_lock_empty_pid_uses_minimum_grace() {
   pass "empty mid-acquire lock keeps a minimum grace"
 }
 
+# Install a stat(1) that PASSES the dialect probe and then answers the mtime
+# query with something that is not an mtime, and echo the bin dir to prepend to
+# PATH. This is the gap the probe cannot close: bin/fm-stat-lib.sh proves the
+# format flag is accepted, never that the field came back, so the answer itself
+# has to be validated downstream. Real stat implementations cannot be driven
+# into this state on demand, and CI's lanes never see it, so a shim is the only
+# way to pin the guard anywhere.
+#
+#   empty   - exits 0 having printed nothing
+#   garbage - exits 0 having printed multi-line non-numeric text
+make_unusable_stat_bin() {  # <dir> <empty|garbage>
+  local dir=$1 kind=$2
+  mkdir -p "$dir"
+  cat > "$dir/stat" <<SH
+#!/bin/sh
+case "\$1" in
+  -c)
+    case "\$2" in
+      %h) printf '1\n'; exit 0 ;;
+      %Y)
+        case "$kind" in
+          empty) exit 0 ;;
+          garbage) printf 'File: "/x"\nID: 1 Namelen: 255\n'; exit 0 ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
+exit 1
+SH
+  chmod +x "$dir/stat"
+  printf '%s\n' "$dir"
+}
+
+# run_with_unusable_stat <case> <empty|garbage> <state> <snippet>
+# Run <snippet> against the production library with only the unusable stat on
+# PATH, merging stderr into stdout and returning the snippet's own exit code.
+# The snippet runs from inside <state> so it can name lock paths relatively and
+# stay free of expansions belonging to this shell.
+run_with_unusable_stat() {
+  local name=$1 kind=$2 state=$3 snippet=$4 bin
+  bin=$(make_unusable_stat_bin "$TMP_ROOT/$name/statbin.$kind" "$kind") || return 1
+  (
+    cd "$state" || exit 1
+    PATH="$bin:$PATH" FM_STATE_OVERRIDE="$state" bash -c "
+      set -u
+      . '$LIB'
+      $snippet
+    " _ 2>&1
+  )
+}
+
+test_unusable_mtime_never_reaches_an_integer_comparison() {
+  local dir state kind age out
+  dir=$(make_case lock-unusable-mtime)
+  state="$dir/state"
+  mkdir "$state/.contend.lock"
+  for kind in empty garbage; do
+    age=$(run_with_unusable_stat lock-unusable-mtime "$kind" "$state" \
+      'fm_path_age .contend.lock')
+    assert_not_contains "$age" 'syntax error in expression' \
+      "a stat answering '$kind' must not reach shell arithmetic unvalidated"
+    case "$age" in
+      ''|*[!0-9]*) fail "fm_path_age must print one integer under a stat answering '$kind', got: [$age]" ;;
+    esac
+    out=$(run_with_unusable_stat lock-unusable-mtime "$kind" "$state" \
+      'fm_lock_mid_acquire_is_fresh .contend.lock ""')
+    assert_not_contains "$out" 'integer expression expected' \
+      "a stat answering '$kind' must not compare an empty value as an integer"
+  done
+  pass "an unusable mtime never reaches an integer comparison as an empty value"
+}
+
+test_unusable_mtime_does_not_read_as_epoch_zero() {
+  local dir state kind age now
+  dir=$(make_case lock-unusable-epoch)
+  state="$dir/state"
+  now=$(date +%s)
+  for kind in empty garbage; do
+    age=$(run_with_unusable_stat lock-unusable-epoch "$kind" "$state" 'fm_path_age .')
+    case "$age" in
+      ''|*[!0-9]*) fail "fm_path_age must answer with an integer under '$kind', got: [$age]" ;;
+    esac
+    # An unusable answer read as epoch zero renders any path as decades stale.
+    # Anything near the current epoch is that defect, whatever its exact value.
+    [ "$age" -lt $((now / 2)) ] \
+      || fail "fm_path_age under '$kind' reported an epoch-derived age ($age), not a bounded verdict"
+  done
+  pass "an unusable mtime yields a bounded staleness verdict, not an epoch-derived figure"
+}
+
+test_lock_with_unmeasurable_age_is_not_stolen() {
+  local dir state verdict acquire
+  dir=$(make_case lock-unmeasurable-age)
+  state="$dir/state"
+  mkdir "$state/.contend.lock"
+  # A lock path that EXISTS with no readable age is indeterminate, never
+  # evidence that its owner is gone: stealing it here is how two processes end
+  # up holding the same singleton.
+  if run_with_unusable_stat lock-unmeasurable-age garbage "$state" \
+    'fm_lock_mid_acquire_is_fresh .contend.lock ""' >/dev/null; then
+    verdict=held
+  else
+    verdict=reclaimable
+  fi
+  [ "$verdict" = held ] \
+    || fail "a lock whose age cannot be measured was judged $verdict"
+  if run_with_unusable_stat lock-unmeasurable-age garbage "$state" \
+    'fm_lock_try_acquire .contend.lock' >/dev/null; then
+    acquire=stolen
+  else
+    acquire=refused
+  fi
+  [ "$acquire" = refused ] \
+    || fail "a lock whose age cannot be measured was $acquire"
+  [ -d "$state/.contend.lock" ] || fail 'the unmeasurable lock dir was removed'
+  pass "a lock whose age cannot be measured is left alone rather than stolen"
+}
+
+test_absent_lock_path_stays_determinate_under_a_broken_stat() {
+  local dir state verdict
+  dir=$(make_case lock-absent-broken-stat)
+  state="$dir/state"
+  # Absence is determinate even when nothing can be measured: a lock path that
+  # is gone holds nothing, so acquisition must not stall waiting on it.
+  if run_with_unusable_stat lock-absent-broken-stat garbage "$state" \
+    'fm_lock_mid_acquire_is_fresh .gone.lock ""' >/dev/null; then
+    verdict=held
+  else
+    verdict=absent
+  fi
+  [ "$verdict" = absent ] \
+    || fail "an absent lock path was judged $verdict when the mtime is unreadable"
+  pass "an absent lock path stays determinate under a broken stat"
+}
+
+test_lock_non_numeric_stale_threshold_falls_back_to_the_minimum() {
+  local dir state lockdir out
+  dir=$(make_case lock-bad-threshold)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  mkdir "$lockdir"
+  out=$(FM_LOCK_STALE_AFTER=garbage FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if fm_lock_mid_acquire_is_fresh "$2" ""; then rc=held; else rc=reclaimable; fi
+    printf "verdict=%s\n" "$rc"
+  ' _ "$LIB" "$lockdir" 2>&1)
+  assert_not_contains "$out" 'integer expression expected' \
+    'a non-numeric stale threshold must not be compared as an integer'
+  assert_contains "$out" 'verdict=held' \
+    'a non-numeric stale threshold must fall back to the minimum grace, not to no grace'
+  pass "a non-numeric stale threshold falls back to the minimum grace"
+}
+
+# fm_lock_try_acquire's steal path recurses into "$lockdir.steal" to break ONE
+# stale lock, and it terminates because creating that inner path normally
+# succeeds. It does not terminate when fm_lock_try_create fails for an
+# ENVIRONMENTAL reason instead of contention. A state directory that is gone or
+# unwritable, or a filesystem out of space or inodes, fails identically at every
+# level, so each level appends another ".steal" and another shell frame until
+# the process runs out of stack and dies of SIGSEGV. That kills a supervision
+# watcher outright, with no cleanup and no reason line, which is how this was
+# first seen: the arm reported its own child as "Segmentation fault: 11" from
+# the wait it was blocked in.
+#
+# The assertion is therefore the PROCESS exit status, not a message: a change
+# that printed a diagnostic and still died would not be a fix. Each trigger runs
+# one acquisition in its own shell that exits 0 whatever the lock verdict, so a
+# non-zero status here is the process dying rather than the lock being
+# unavailable, and the verdict itself is read back from the output. ENOSPC is
+# the same fm_lock_try_create failure as these triggers and is covered by them,
+# since there is no portable way to force a full filesystem here.
+test_environmental_lock_failure_never_recurses_until_the_stack_dies() {
+  local dir state trigger sub out pid status verdict
+  dir=$(make_case lock-environmental-failure)
+  state="$dir/state"
+  for trigger in absent-parent removed unwritable; do
+    sub="$state/$trigger"
+    out="$dir/$trigger.out"
+    mkdir -p "$sub"
+    if [ "$trigger" = unwritable ]; then
+      chmod 500 "$sub"
+      # A directory that stayed writable (running as root) would exercise
+      # nothing, so refuse the pass rather than report a case that never ran.
+      if : > "$sub/writable-probe" 2>/dev/null; then
+        chmod 700 "$sub"
+        fail "the unwritable trigger left $sub writable, so this case tested nothing"
+      fi
+    fi
+    FM_STATE_OVERRIDE="$sub" bash -c '
+      set -u
+      . "$1"
+      case "$2" in
+        absent-parent) target="$STATE/gone/x.lock" ;;
+        removed)       rm -rf "$STATE"; target="$STATE/x.lock" ;;
+        unwritable)    target="$STATE/x.lock" ;;
+      esac
+      fm_lock_try_acquire "$target"
+      printf "verdict=%s\n" "$?"
+      exit 0
+    ' _ "$LIB" "$trigger" > "$out" 2>&1 &
+    pid=$!
+    wait_for_exit "$pid" 300
+    status=$?
+    chmod 700 "$sub" 2>/dev/null || true
+    case "$status" in
+      139) fail "an environmental lock-create failure ($trigger) killed the shell with SIGSEGV: the steal path recursed until the stack was exhausted" ;;
+      124) fail "an environmental lock-create failure ($trigger) never returned" ;;
+    esac
+    expect_code 0 "$status" "an environmental lock-create failure ($trigger) must leave the shell alive"
+    verdict=$(sed -n 's/^verdict=//p' "$out")
+    [ -n "$verdict" ] \
+      || fail "no lock verdict was reported for $trigger: $(cat "$out")"
+    [ "$verdict" != 0 ] \
+      || fail "an environmental lock-create failure ($trigger) reported the lock as acquired"
+  done
+  pass "an environmental lock-create failure returns unavailable instead of recursing until the stack dies"
+}
+
 test_lock_late_claim_loses_after_recreate() {
   local dir state lockdir out
   dir=$(make_case lock-late-claim)
@@ -1081,6 +1300,108 @@ test_stale_watch_reclaim_publishes_before_clear() {
   pass "stale watcher reclaim publishes durable recovery evidence before clear"
 }
 
+# A stand-down signal leaves the watcher from wherever its loop happened to be,
+# including from inside a recovery critical section it still holds. The EXIT
+# cleanup then republishes downtime and releases the singleton lock, which
+# re-enters that same lock. No other process can release it, so a wait there can
+# never end. Hold both recovery locks exactly as an interrupted cycle leaves
+# them, then require the stand-down transition to finish with its continuity
+# evidence intact.
+test_stand_down_completes_from_a_self_held_critical_section() {
+  local dir state out pid status
+  dir=$(make_case self-held-critical-section)
+  state="$dir/state"
+  out="$dir/stand-down.out"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090
+    . "$1"
+    marker="$STATE/.watcher-down"
+    watch_lock="$STATE/.watch.lock"
+    fm_lock_try_acquire "$watch_lock" || exit 11
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 12
+    fm_lock_acquire_wait "$marker.lock" || exit 13
+    fm_recovery_transition "$marker" release-lock "$watch_lock" downtime || exit 14
+    [ ! -e "$watch_lock" ] && [ ! -L "$watch_lock" ] || exit 15
+    case "$(cat "$marker" 2>/dev/null || true)" in
+      pending:downtime:*) ;;
+      *) exit 16 ;;
+    esac
+  ' _ "$LIB" > "$out" 2>&1 &
+  pid=$!
+  wait_for_exit "$pid" 150
+  status=$?
+  [ "$status" -ne 124 ] \
+    || fail "stand-down never returned from a recovery lock this process already held"
+  [ "$status" -eq 0 ] \
+    || fail "stand-down from a self-held critical section failed (code $status): $(cat "$out")"
+  pass "watcher stand-down completes from a recovery critical section it still holds"
+}
+
+# The end-to-end form of the same defect: one TERM, no second signal, while the
+# watcher is inside that critical section. The downtime-marker lock is normally
+# held for well under a millisecond per cycle, so an untimed signal reproduces
+# this in roughly one run in ten. Widen exactly that window and nothing else - a
+# PATH shim slows only the readback the marker lock performs against its own
+# owner file, which happens once after the lock link exists and again as it is
+# released - so the single signal lands while the watcher provably holds it.
+test_single_term_stands_down_a_watcher_holding_the_marker_lock() {
+  local dir state fakebin out real_cat pid i saw status token
+  dir=$(make_case single-term-marker-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  real_cat=$(command -v cat) || fail "could not locate cat for the marker-lock window fixture"
+  cat > "$fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  */.watcher-down.lock*/pid) sleep 0.4 ;;
+esac
+exec "$FM_TEST_REAL_CAT" "$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  PATH="$fakebin:$PATH" FM_TEST_REAL_CAT="$real_cat" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=0.1 FM_SIGNAL_GRACE=0.1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" 2>&1 &
+  pid=$!
+
+  # The watcher takes this same lock during startup, before its signal traps
+  # exist, where a TERM dies at the default disposition and proves nothing. The
+  # beacon is touched only inside the trapped supervision loop.
+  i=0
+  while [ "$i" -lt 300 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] \
+    || fail "watcher never entered its trapped supervision loop: $(cat "$out")"
+
+  saw=0
+  i=0
+  while [ "$i" -lt 500 ]; do
+    if [ -e "$state/.watcher-down.lock" ]; then saw=1; break; fi
+    is_live_non_zombie "$pid" || break
+    sleep 0.02
+    i=$((i + 1))
+  done
+  [ "$saw" -eq 1 ] \
+    || fail "never observed the watcher holding its downtime-marker lock, so nothing was tested"
+
+  kill -TERM "$pid" 2>/dev/null || fail "could not signal the watcher"
+  wait_for_exit "$pid" 200
+  status=$?
+  [ "$status" -ne 124 ] \
+    || fail "one TERM did not stand down a watcher holding its downtime-marker lock"
+  [ ! -e "$state/.watch.lock" ] && [ ! -L "$state/.watch.lock" ] \
+    || fail "signalled watcher exited without releasing the singleton lock"
+  token=$(cat "$state/.watcher-down" 2>/dev/null || true)
+  case "$token" in
+    pending:downtime:*) ;;
+    *) fail "signalled watcher left no durable downtime evidence ('$token')" ;;
+  esac
+  pass "one TERM stands down a watcher holding its downtime-marker lock"
+}
+
 test_msys_pid_identity_uses_proc() {
   local live identity
   case "$(uname)" in
@@ -1108,6 +1429,8 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
+test_stand_down_completes_from_a_self_held_critical_section
+test_single_term_stands_down_a_watcher_holding_the_marker_lock
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency
@@ -1116,6 +1439,12 @@ test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
+test_unusable_mtime_never_reaches_an_integer_comparison
+test_unusable_mtime_does_not_read_as_epoch_zero
+test_lock_with_unmeasurable_age_is_not_stolen
+test_absent_lock_path_stays_determinate_under_a_broken_stat
+test_lock_non_numeric_stale_threshold_falls_back_to_the_minimum
+test_environmental_lock_failure_never_recurses_until_the_stack_dies
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
