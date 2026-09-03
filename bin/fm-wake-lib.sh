@@ -9,10 +9,14 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
-# Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
-# confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
-# the platform (Git Bash/MSYS) that already pays the highest fork price.
+# Resolved once at source time: fm_pid_identity runs inside 0.2s confirm and 0.5s
+# attach polls, and forking uname per call is a measurable cost on the platform
+# (Git Bash/MSYS) that already pays the highest fork price. This names the kernel
+# only - fm_path_mtime's stat dialect is a capability, probed by fm-stat-lib.sh.
 _FM_UNAME=$(uname 2>/dev/null || echo unknown)
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$FM_WAKE_LIB_DIR/fm-stat-lib.sh"
 mkdir -p "$STATE"
 
 # Most wake-library consumers need only queue and lock primitives, including
@@ -82,10 +86,10 @@ fm_pid_identity() {
 }
 
 fm_path_mtime() {
-  if [ "$_FM_UNAME" = Darwin ]; then
-    stat -f %m "$1" 2>/dev/null
-  else
+  if fm_stat_is_gnu; then
     stat -c %Y "$1" 2>/dev/null
+  else
+    stat -f %m "$1" 2>/dev/null
   fi
 }
 
@@ -1660,7 +1664,7 @@ fm_wake_signal_sig() {  # <file> -> reported-state signature
       status_observed_signature "$1"
       ;;
     *)
-      if [ "$_FM_UNAME" = Darwin ]; then stat -f '%z:%Fm' "$1" 2>/dev/null; else stat -c '%s:%Y' "$1" 2>/dev/null; fi
+      if fm_stat_is_gnu; then stat -c '%s:%Y' "$1" 2>/dev/null; else stat -f '%z:%Fm' "$1" 2>/dev/null; fi
       ;;
   esac
 }

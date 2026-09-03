@@ -37,7 +37,7 @@ cleanup_remote_job_fixture() {
 trap cleanup_remote_job_fixture EXIT
 
 cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" \
-  "$ROOT/bin/fm-remote-delta-read.sh" "$REMOTE_ROOT/bin/"
+  "$ROOT/bin/fm-remote-delta-read.sh" "$ROOT/bin/fm-stat-lib.sh" "$REMOTE_ROOT/bin/"
 printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
 cat > "$REMOTE_ROOT/bin/fm-probe-job.sh" <<'SH'
 #!/bin/bash
@@ -197,10 +197,10 @@ done
 assert_present "$STATE_ROOT/worker.ready" "the worker did not publish its readiness heartbeat"
 
 file_mode() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %Lp "$1"
-  else
+  if fm_stat_is_gnu; then
     stat -c %a "$1"
+  else
+    stat -f %Lp "$1"
   fi
 }
 

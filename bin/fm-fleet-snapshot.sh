@@ -172,6 +172,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the shared hard bound
+# shellcheck source=bin/fm-stat-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-stat-lib.sh"
 
 usage() {
   cat <<'EOF'
@@ -850,15 +853,16 @@ FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=${FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME:
 case "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" in ''|*[!0-9]*) FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=10 ;; esac
 
 # GNU stat treats -f as a filesystem-report command, so a BSD-first fallback can
-# pollute arithmetic input before failing. Select the platform syntax once.
-if [ "$(uname 2>/dev/null || true)" = Darwin ]; then
-  SNAPSHOT_STAT_STYLE=bsd
-  file_mtime_epoch() { stat -f '%m' "$1" 2>/dev/null || true; }
-  file_mode_octal() { stat -f '%Lp' "$1" 2>/dev/null || true; }
-else
+# pollute arithmetic input before failing. Resolve the syntax once, and pass the
+# resolved style to the child below rather than making it re-probe.
+if fm_stat_is_gnu; then
   SNAPSHOT_STAT_STYLE=gnu
   file_mtime_epoch() { stat -c '%Y' "$1" 2>/dev/null || true; }
   file_mode_octal() { stat -c '%a' "$1" 2>/dev/null || true; }
+else
+  SNAPSHOT_STAT_STYLE=bsd
+  file_mtime_epoch() { stat -f '%m' "$1" 2>/dev/null || true; }
+  file_mode_octal() { stat -f '%Lp' "$1" 2>/dev/null || true; }
 fi
 
 registry_secondmates_json() {
