@@ -93,23 +93,20 @@ fm_control_harness_family() {  # <recorded-harness>
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse, omp, and atomic are
+# Which task kinds an adapter is verified to run. muse and atomic are
 # crewmate/scout adapters only, for different reasons. muse has no primary
-# supervision protocol at all. omp now has one - its own tracked .omp/extensions
-# pair - but the secondmate LAUNCH is a separate unwired surface: a secondmate
-# home's extensions are passed by absolute path at launch, and neither that
-# template nor the remote secondmate paths are built or verified for omp. atomic
-# is in omp's position rather than muse's: it has the full primary capability
-# surface, being a Pi fork whose extension API is pi's, but the same secondmate
-# launch surface is unbuilt for it. bin/fm-spawn.sh refuses a --secondmate launch
-# on all three. The control plane asks this BEFORE it stops anything, so an
-# incompatible relaunch target is refused while the current agent is still
-# running rather than after it has been stopped.
+# supervision protocol at all. atomic is not in muse's position: it has the full
+# primary capability surface, being a Pi fork whose extension API is pi's, but it
+# has no tracked primary extension tree and no supervision protocol of its own,
+# so the secondmate launch surface is unbuilt for it. bin/fm-spawn.sh refuses a
+# --secondmate launch on both. The control plane asks this BEFORE it stops
+# anything, so an incompatible relaunch target is refused while the current agent
+# is still running rather than after it has been stopped.
 fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse|omp|atomic) [ "$kind" != secondmate ] || return 1 ;;
+    muse|atomic) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
